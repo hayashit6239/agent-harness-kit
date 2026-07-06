@@ -10,6 +10,14 @@ allowed-tools: Bash, Skill, Read, Write
 
 > **`reviewing-multi-angle` skill との関係**: skill は 3 review skill を per-PR で並列 spawn → dedup + 優先度付け + 統合 max 10 件 + `summary_markdown` 組み立てまで担う orchestration。出力は `{ findings, has_blocker, truncated, summary_markdown }`。本 wrapper は per-PR の git worktree を用意して skill を呼び(CWD 前提)、skill が返す `summary_markdown` をそのまま PR コメント本文として投稿する。**skill が返す `has_blocker`(「1 件でも 🔴」)は参考値**であり、merge 可否の判定には使わない — 本 wrapper が手順 5.5 で `findings[].severity / sources` から**再集計した `has_blocker`(harness-kit 定義)**を使う(ゴム印対策: arch/google 由来の 🟡 も blocker に含める)。
 
+## ロールの契約
+
+**Why**: 単一観点のレビューは網羅範囲が狭く、単独判定は「判定の丸投げ」(Cognitive Surrender) を招く。本ロールは doer ≠ judge の judge 側として、3 観点並列 + 作者との往復サイクルで観点の網羅と判定の独立を両立する。
+
+- **触る (専権)**: `pr.status` の判定遷移 (`starting review` → `ready for merge` / `completed review`)、`pr.lastReviewedStatus`、`merge ready` ラベル、レビューコメント投稿。
+- **触らない**: 終端 status (`merged pr` / `closed issue`)・`githubState`・PR 本文編集・close・merge・`issue.*`・他ラベル・コード修正 (`--fix`)。
+- **follow-up の最終判断は reviewer 責務**: 「この指摘は merge 後の対応でよい / もうマージしてよい」を決めるのは作者・対応側ではなく本ロール。対応側は指摘対応後 `waiting for review` に戻すだけ (対応側の規約は `.harness/CLAUDE.harness.md`)。
+
 ## 状態源と選別
 
 **選別源は GitHub ラベルではなく、対象 repo 内の `.harness/plan-progress.json`**(CWD の git repo ルート基準。`/harness-init` が生成した進捗台帳)。各 step の PR フェーズ status(enum)を読み、レビュー待ち lifecycle 段階だけを対象にする。台帳が repo 内にあるため、この選別は CI からも同じファイルで検証される(harness-gate)。
@@ -110,18 +118,29 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
    - `summary_markdown` は **per-finding 詳細・判定・専担領域メモまで含む完成形** で、手順 5 の本文組み立てでそのまま使う
    - **skill が返す `has_blocker` は参考値**(「1 件でも 🔴」の skill 定義)。merge 可否は手順 5.5 の再集計で決める
 
-5. **投稿(H1 ヘッダー必須)** — skill が返す `summary_markdown` を本体として、wrapper 側で **H1 ヘッダー + 1 行イントロ + footer** だけラップして投稿する(本文組み立てロジックは skill 側に移譲済みで、wrapper は薄く保つ):
+4.5. **増分レビュー(既出 findings の差分計算)** — 同一 PR への 2 回目以降のレビューで、前回と同じ指摘をそのまま再掲しない(作者のノイズ削減と 3 観点並列コストの節約。**判定には影響させない**):
+   - `gh pr view <n> --repo <repo> --json comments` で過去の `# PR Reviewer` コメントを取得し、既出 findings を `(file, line, summary)` で抽出
+   - 今回の `findings[]` と突き合わせ、各 finding を **新規 / 既出(持ち越し)** に分類
+   - **判定(手順 5.5)は分類に関係なく全 findings で行う**(未解消の既出 🔴 は依然 blocker — 増分は「見せ方」の工夫であって判定の緩和ではない)
+   - 投稿本文(手順 5)では既出分に「(前回指摘・未解消)」の注記を付け、報告(手順 8)の findings 列は `M 新規 / K 既出` で書く
+   - 初回レビュー(過去 `# PR Reviewer` コメント無し)はこの手順をスキップ
+
+5. **投稿(H1 ヘッダー必須)** — skill が返す `summary_markdown` を本体として、wrapper 側で **H1 ヘッダー + 1 行イントロ + 証拠錨 + footer** だけラップして投稿する(本文組み立てロジックは skill 側に移譲済みで、wrapper は薄く保つ):
    ```
+   # 台帳から証拠錨を読む(done が無ければ test にフォールバック)
+   EVIDENCE_DONE=$(jq -r '.evidence.done // .evidence.test // "未定義"' "$PLAN")
    {
      printf '# PR Reviewer - レビュー実施\n\n'
      printf '`/reviewing-multi-angle %s` で点検しました(3 観点並列: /code-review + reviewing-pr-architecture + reviewing-pr-google-method、dedup + 優先度付け済み、統合 max 10 件)。\n\n' "$EFFORT"
-     # skill の summary_markdown をそのまま挿入(per-finding 詳細・判定・専担領域メモまで含む完成形)
+     printf '**証拠錨**: merge 前に `evidence.done`(`%s`)が exit 0 であることを作者が確認すること(台帳 `.harness/plan-progress.json`)。\n\n' "$EVIDENCE_DONE"
+     # skill の summary_markdown をそのまま挿入(per-finding 詳細・判定・専担領域メモまで含む完成形。既出分は「(前回指摘・未解消)」を注記)
      printf '%s\n' "$SUMMARY_MARKDOWN"
      printf '\n<sub>🤖 Generated with [Claude Code](https://claude.com/claude-code) — `/harness-review-pr` wrapper, `/reviewing-multi-angle %s` skill</sub>\n' "$EFFORT"
    } > <tmpfile>
    gh pr comment <n> --repo <repo> --body-file <tmpfile>
    ```
    - H1 ヘッダー(`# PR Reviewer - レビュー実施`)が無いと PR コメント一覧で「どのロールが投稿したか」が一目で分からなくなる(同一 GitHub アカウントから複数ロールが投稿するため)
+   - `EVIDENCE_DONE` が `未定義` の場合はその旨を明記し「`/harness-init` で証拠を定義すること」を添える(黙って省略しない)
 
 5.5. **has_blocker 再集計(harness-kit 定義)** — skill の `findings[]` を `severity` / `sources` で再判定する:
    - いずれかの finding が **severity 🔴** → `has_blocker = true`
@@ -167,7 +186,7 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 
    | PR | タイトル | レビュー時 status → 自動進行先 | findings | 再集計 has_blocker | merge ready ラベル | コメント |
    |---|---|---|---|---|---|---|
-   | #N | (PR タイトル) | (lastReviewedStatus) → **(新 status)** | M 件 | true/false(skill 値と差異あれば注記) | 付与 / 除去(冪等) | [#issuecomment-...](URL) |
+   | #N | (PR タイトル) | (lastReviewedStatus) → **(新 status)** | M 新規 / K 既出 | true/false(skill 値と差異あれば注記) | 付与 / 除去(冪等) | [#issuecomment-...](URL) |
 
    ### 🔍 各 PR の findings(per-PR 詳細)
 

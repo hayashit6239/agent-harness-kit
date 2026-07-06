@@ -23,6 +23,8 @@
 - コードを書く人 (main developer = 普段のセッション) と、レビューして判定する人 (reviewer = 別セッションで `/harness-review-pr` を起動) を分ける。別セッションなので reviewer は変更を初見で見る。
 - reviewer が進められる status は `ready for merge` まで。**終端の `merged pr` / `closed issue` は、人間が実際に merge / close した時にだけ書く**。
 - `completed review` になったら、実装者が指摘の採否を判断して修正し、`waiting for review` に戻す。
+- **対応側が `ready for merge` を立てるのは越権 (例外なし)**。指摘が解消不可 (環境依存の実測値が要る等) でも、「merge 後の対応でよい」と作者間で合意した場合でも、対応側は `waiting for review` に戻すだけ。merge 後対応にするか否かの最終判断は reviewer の責務。
+  (実事故の教訓: 対応側が「作者と合意済みの follow-up」を根拠に直接 `ready for merge` へ進め、reviewer の検証を飛ばした)
 
 ## 台帳の書込経路
 
