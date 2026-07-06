@@ -43,9 +43,9 @@
       },
       "pr": {
         "number": 5,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created pr"
+        "lastReviewedStatus": "waiting for review"
       }
     },
     {
@@ -59,9 +59,9 @@
       },
       "pr": {
         "number": 5,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created pr"
+        "lastReviewedStatus": "waiting for review"
       }
     },
     {
@@ -75,9 +75,9 @@
       },
       "pr": {
         "number": 5,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created pr"
+        "lastReviewedStatus": "waiting for review"
       }
     },
     {
