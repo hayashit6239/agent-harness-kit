@@ -9,6 +9,7 @@
 - status は schema (`.harness/plan-progress.schema.json`) の enum にある語だけを使う。一覧は下の status 表。勝手な語を足さない・言い換えない。
 - 状況が変わるたびに status と `updatedAt` (YYYY-MM-DD) を更新する。
 - `githubState` は GitHub の実態を写す欄。願望や予定を書かない (CI の drift 検査が失敗する)。
+- 任意フィールド: `lastReviewedStatus` は reviewer がレビュー時の status を記録用に書く欄 (選別では参照しない・作者は触らない)。`isDraft` は GitHub の draft 実態を写す任意欄 (drift 照合はキーがある場合のみ行われる)。
 - CI (harness-gate) が常時スキーマ検査を、PR 時と日次で GitHub との突き合わせ (drift 検査) を行う。手元では
   `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` で同じ検査ができる。
   GitHub との突き合わせは `--drift` (要 gh 認証)。

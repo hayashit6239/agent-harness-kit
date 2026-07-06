@@ -163,7 +163,7 @@ def check_schema(data, enums):
         if key not in data:
             err(key, "必須キーが無い。", "plan-progress.init.json を参考にキーを追加する")
 
-    # 移行ガード: 旧形式の statusEnums 複製が台帳に残ったまま黙って schema と乖離するのを防ぐ
+    # 再導入防止 (恒久規則): 台帳に statusEnums を置かない — 複製が schema と黙って乖離するため
     if "statusEnums" in data:
         err("statusEnums", "台帳に statusEnums を置かない (語彙の単一源は schema)。",
             "statusEnums キーを削除する (enum は plan-progress.schema.json だけが持つ)")
@@ -282,21 +282,30 @@ def resolve_repo_root(target):
     return res.stdout.strip()
 
 
+def flush_errors_then_fatal(where, cause, fix):
+    # WHY: drift 検査ループの途中で fatal すると蓄積済みの検出済み drift が消える (診断情報の損失) ため、先に全件出力する
+    for e in errors:
+        print(e)
+    fatal(where, cause, fix)
+
+
 def gh_json(args, where, cwd):
     """gh を台帳のある repo ルート (cwd) で実行する。失敗は drift ではなく実行エラー。"""
     try:
         res = subprocess.run(["gh"] + args, capture_output=True, text=True, cwd=cwd)
     except FileNotFoundError:
-        fatal(where, "gh コマンドが見つからない (drift 検査は実行できていない)。",
-              "gh をインストールして認証する")
+        flush_errors_then_fatal(where, "gh コマンドが見つからない (drift 検査は実行できていない)。",
+                                "gh をインストールして認証する")
     if res.returncode != 0:
-        fatal(where, f"gh 呼出に失敗した ({res.stderr.strip()})。drift ではなく実行エラー。",
-              "番号の実在と gh の認証 (GH_TOKEN) を確認する")
+        flush_errors_then_fatal(
+            where, f"gh 呼出に失敗した ({res.stderr.strip()})。drift ではなく実行エラー。",
+            "番号の実在と gh の認証 (GH_TOKEN) を確認する")
     try:
         return json.loads(res.stdout)
     except json.JSONDecodeError:
-        fatal(where, f"gh の出力を JSON として読めない ({res.stdout.strip()!r})。",
-              "gh のバージョンを確認する")
+        flush_errors_then_fatal(
+            where, f"gh の出力を JSON として読めない ({res.stdout.strip()!r})。",
+            "gh のバージョンを確認する")
 
 
 def check_drift(data, repo_root):

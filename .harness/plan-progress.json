@@ -5,7 +5,7 @@
   "evidence": {
     "build": null,
     "test": "bash tests/smoke/run-smoke.sh",
-    "lint": "python3 -m py_compile templates/validate-plan-progress.py",
+    "lint": "python3 -m py_compile templates/validate-plan-progress.py scripts/reaggregate-has-blocker.py",
     "done": "bash tests/smoke/run-smoke.sh"
   },
   "steps": [

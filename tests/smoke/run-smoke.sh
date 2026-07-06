@@ -8,9 +8,11 @@
 # 4. 失敗 9 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
 #    githubState null / 終端不整合 / literal-guard / isDraft drift) がすべて non-zero で、
 #    かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
-# 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する
-# 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定が期待通り
+# 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する /
+#    gh が途中で失敗しても蓄積済みの検出済み drift が全件出力される
+# 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定が期待通り (fail-closed 境界を含む)
 # 7. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
+#    (templates/ の全ファイルがペア列挙 + 既知除外でカバーされていることも検査)
 # 8. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
@@ -44,7 +46,7 @@ expect_fail_with() {
 # --- 1. fixture を複製し .harness/ を組み立てる -----------------------------
 cp -R "$FIXTURE" "$TMP/target-repo"
 REPO="$TMP/target-repo"
-git init -q "$REPO" # drift 検査は台帳のある git repo ルートで gh を実行する (F5)
+git init -q "$REPO" # validator は gh を台帳のある git repo ルートで実行するため、fixture も git repo にする
 HARNESS="$REPO/.harness"
 mkdir -p "$HARNESS"
 cp "$TEMPLATES/plan-progress.schema.json" "$HARNESS/"
@@ -113,7 +115,7 @@ elif mode == "drift":
     # (iv) 台帳は open と主張 (mismatch 用 stub gh は MERGED を返す)
     step["pr"] = {"number": 1, "status": "created pr", "githubState": "open"}
 elif mode == "statusenums":
-    # (v) 旧形式の statusEnums 複製が台帳に残っている (移行ガードに掛かる)
+    # (v) 旧形式の statusEnums 複製が台帳に残っている (再導入防止ガードに掛かる)
     d["statusEnums"] = {"issue": [None, "created issue"], "pr": [None, "created pr"]}
 elif mode == "ghstate-null":
     # (vi) number があるのに githubState が null (drift の一方向判定をすり抜ける穴)
@@ -176,7 +178,7 @@ expect_fail_with "(iv) drift 食い違い" \
   env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
 echo "[4/8] (iv) drift 食い違い -> non-zero + 期待文言"
 
-# (v) 旧形式の statusEnums 複製が台帳に残っている (移行ガード)
+# (v) 旧形式の statusEnums 複製が台帳に残っている (再導入防止ガード)
 make_broken "$TMP/broken-statusenums.json" statusenums
 expect_fail_with "(v) statusEnums 残存" \
   "台帳に statusEnums を置かない" \
@@ -274,6 +276,50 @@ expect_fail_with "gh 実行失敗の区別" \
   env PATH="$STUB_BROKEN:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
 echo "[5/8] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
 
+# gh 途中失敗: 2 step の台帳で step A (PR #1) は drift を検出し、step B (PR #2) で
+# gh が失敗する。fatal しても蓄積済みの検出済み drift が全件出力されること (診断情報を失わない)
+PARTIAL_PLAN="$HARNESS/partial-fail-ledger.json"
+python3 - "$PLAN" "$PARTIAL_PLAN" <<'PY'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as f:
+    d = json.load(f)
+d["steps"] = [
+    {"id": "SA", "title": "drift する step",
+     "issue": {"number": None, "status": None, "githubState": None},
+     "pr": {"number": 1, "status": "created pr", "githubState": "open"}},
+    {"id": "SB", "title": "gh が失敗する step",
+     "issue": {"number": None, "status": None, "githubState": None},
+     "pr": {"number": 2, "status": "created pr", "githubState": "open"}},
+]
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
+PY
+STUB_PARTIAL="$TMP/stub-partial-bin"
+mkdir -p "$STUB_PARTIAL"
+cat > "$STUB_PARTIAL/gh" <<'SH'
+#!/usr/bin/env bash
+# smoke 用 gh 代役: PR #1 は台帳と食い違う状態を返し、PR #2 では実行失敗する
+case "$1 $2 $3" in
+  "pr view 1") echo '{"state":"MERGED","isDraft":false}' ;;
+  "pr view 2") echo "smoke: broken gh for pr 2" >&2; exit 1 ;;
+  *)           echo '{}' ;;
+esac
+SH
+chmod +x "$STUB_PARTIAL/gh"
+partial_rc=0
+partial_out="$(env PATH="$STUB_PARTIAL:$PATH" python3 "$VALIDATOR" --drift "$PARTIAL_PLAN" 2>&1)" || partial_rc=$?
+if [ "$partial_rc" -ne 1 ]; then
+  fail "gh 途中失敗: exit 1 を期待したが exit $partial_rc (出力: $partial_out)"
+fi
+grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$partial_out" \
+  || fail "gh 途中失敗: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $partial_out)"
+grep -qF "gh 呼出に失敗した" <<< "$partial_out" \
+  || fail "gh 途中失敗: gh 失敗エラーが出力に無い (got: $partial_out)"
+echo "[5/8] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
+
 # --- 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定 ----------------
 REAGG="$ROOT/scripts/reaggregate-has-blocker.py"
 
@@ -302,22 +348,70 @@ assert_reagg "(e) 未知 source 🟡 (fail-closed)" true \
 printf '%s' '[{"severity":"🟡","sources":["mystery-skill"]}]' \
   | python3 "$REAGG" | grep -qF "mystery-skill" \
   || fail "(e) 未知 source が unknown_source_blockers に記録されていない"
-echo "[6/8] reaggregate-has-blocker 判定 5 ケース OK"
+
+# severity の境界 (包含判定 + fail-closed)
+assert_reagg "(f) 付記つき 🔴 (包含判定)" true \
+  '[{"severity":"🔴 critical","sources":["code-review"]}]'
+assert_reagg "(g) severity 欠損 (fail-closed)" true \
+  '[{"sources":["code-review"]}]'
+assert_reagg "(h) 未知 severity \"red\" (fail-closed)" true \
+  '[{"severity":"red","sources":["code-review"],"summary":"boundary case"}]'
+# (h) は該当 finding が unknown_severity_blockers に記録されることも確認する
+printf '%s' '[{"severity":"red","sources":["code-review"],"summary":"boundary case"}]' \
+  | python3 "$REAGG" | grep -qF "unknown_severity_blockers" \
+  || fail "(h) unknown_severity_blockers が出力に無い"
+printf '%s' '[{"severity":"red","sources":["code-review"],"summary":"boundary case"}]' \
+  | python3 "$REAGG" | grep -qF "boundary case" \
+  || fail "(h) 該当 finding の識別情報が unknown_severity_blockers に記録されていない"
+assert_reagg "(i) findings 空配列" false '[]'
+
+# (j) 不正入力 (配列でない) -> exit 2 (入力エラーは判定エラーと区別される)
+reagg_rc=0
+printf '%s' '{"not":"array"}' | python3 "$REAGG" >/dev/null 2>&1 || reagg_rc=$?
+if [ "$reagg_rc" -ne 2 ]; then
+  fail "(j) 配列でない入力で exit 2 を期待したが exit $reagg_rc"
+fi
+echo "[6/8] reaggregate-has-blocker 判定 10 ケース OK (fail-closed 境界を含む)"
 
 # --- 7. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
 if [ -d "$ROOT/.harness" ]; then
-  for pair in \
-    "templates/validate-plan-progress.py:.harness/validate-plan-progress.py" \
-    "templates/plan-progress.schema.json:.harness/plan-progress.schema.json" \
-    "templates/CLAUDE.harness.md:.harness/CLAUDE.harness.md" \
-    "templates/harness-gate.yml:.github/workflows/harness-gate.yml"; do
+  COPY_PAIRS=(
+    "templates/validate-plan-progress.py:.harness/validate-plan-progress.py"
+    "templates/plan-progress.schema.json:.harness/plan-progress.schema.json"
+    "templates/CLAUDE.harness.md:.harness/CLAUDE.harness.md"
+    "templates/harness-gate.yml:.github/workflows/harness-gate.yml"
+  )
+  # 複製対象外の既知除外 (init.json は導入先で書き換わる雛形なので複製一致を求めない)
+  COPY_EXCLUDED=(
+    "templates/plan-progress.init.json"
+  )
+
+  # 列挙の fail-open 防止: templates/ に新ファイルが増えたのにペア列挙への追記が
+  # 漏れると、複製一致検査が黙って素通しになる。全ファイルのカバーを検査する
+  for f in "$ROOT/templates"/*; do
+    base="$(basename "$f")"
+    # __pycache__ は py_compile (evidence.lint) の副産物で、templates のファイルではない
+    [ "$base" = "__pycache__" ] && continue
+    rel="templates/$base"
+    covered=no
+    for pair in "${COPY_PAIRS[@]}"; do
+      [ "${pair%%:*}" = "$rel" ] && covered=yes
+    done
+    for excl in "${COPY_EXCLUDED[@]}"; do
+      [ "$excl" = "$rel" ] && covered=yes
+    done
+    [ "$covered" = yes ] \
+      || fail "複製ペア列挙に未登録: $rel (run-smoke.sh の COPY_PAIRS に複製先を追記するか、複製対象外なら COPY_EXCLUDED に加える)"
+  done
+
+  for pair in "${COPY_PAIRS[@]}"; do
     src="${pair%%:*}"
     dst="${pair##*:}"
     diff -u "$ROOT/$src" "$ROOT/$dst" \
       || fail "複製が古い: $dst が $src と一致しない。cp で同期せよ (cp $src $dst)"
   done
-  echo "[7/8] 複製一致検査 (kit checkout) OK"
+  echo "[7/8] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
 else
   echo "[7/8] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi

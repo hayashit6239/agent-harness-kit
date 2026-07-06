@@ -37,7 +37,7 @@ allowed-tools: [Bash, Skill, Read, Write]
 | false(🔴 なし、かつ arch/google 由来の 🟡 なし) | `ready for merge` | **付与**(冪等。既に付いていれば no-op) |
 | true(🔴 1 件以上、**または** arch/google 由来の 🟡 1 件以上) | `completed review`(分岐点 — 作者が `starting review work` に進める想定) | **除去**(冪等。付いていなければ no-op) |
 
-**has_blocker の再集計(harness-kit 定義・手順 5.5)**: skill の `has_blocker` は「1 件でも 🔴」だったが、それだと `reviewing-pr-architecture` / `reviewing-pr-google-method` の 🟡 が素通しになり ready for merge へ倒れやすい(ゴム印)。本 wrapper は `findings[]` を再判定する — **いずれかの finding が 🔴、または sources に arch/google 系を含む 🟡 が 1 件でもあれば true**。🟢(nit・好み)は blocker にしない。
+**has_blocker の再集計(harness-kit 定義・手順 5.5)**: skill 定義の「1 件でも 🔴」より広く blocker を取る(ゴム印対策)。**規則の正は `scripts/reaggregate-has-blocker.py`** — 判定はスクリプト実行で行い、exit 2(入力エラー)なら停止する。
 
 **ラベルの対称運用**: `merge ready` は「マージ可能と判断された」シグナルなので、再レビューで blocker が見つかったらラベルも下ろす(嘘を残さない)。
 
@@ -150,16 +150,12 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
    ```
    # FINDINGS_JSON = skill 出力の findings 配列(JSON 文字列)
    RESULT=$(printf '%s' "$FINDINGS_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/reaggregate-has-blocker.py")
-   # -> {"has_blocker": true|false, "blocker_count": N, "unknown_source_blockers": [...]}
+   # -> {"has_blocker": true|false, "blocker_count": N,
+   #     "unknown_source_blockers": [...], "unknown_severity_blockers": [...]}
    ```
-   スクリプトが実装する規則(prose は参照用。実際の判定は必ず上のスクリプトで行う):
-   - いずれかの finding が **severity 🔴** → `has_blocker = true`
-   - **severity 🟡 かつ sources に arch 系(`arch` / `reviewing-pr-architecture` を含む)/ google 系(`google` を含む)の識別子を含むものが 1 件でもある** → `has_blocker = true`
-   - **🟡 の sources が既知の識別子(code-review 系 / arch 系 / google 系)のいずれにも一致しない場合は blocker 扱い(fail-closed)**(表記ゆれ・skill 出力の変化で 🟡 が素通しになるのを防ぐ)
-   - 上記に該当しない(findings 0 件、または残りが 🟢、または 🟡 が code-review 系単独由来のみ)→ `has_blocker = false`
-   - `unknown_source_blockers` が空でなければ、報告に「未知の source 表記 X を blocker 扱いした」と 1 行残す
+   - 意図: 🔴 に加え arch/google 由来の 🟡 も blocker に含める(ゴム印対策)。**規則の正は `scripts/reaggregate-has-blocker.py`**(prose に規則を複製しない。判定は必ずスクリプト実行で行い、exit 2(入力エラー)ならレビューを進めず状態を報告して停止する — 黙って LLM 判定に切り替えない)
+   - `unknown_source_blockers` / `unknown_severity_blockers` が空でなければ、報告に「未知の source / severity 表記を blocker 扱いした(fail-closed)」と 1 行残す
    - skill が返した `has_blocker` と再集計結果が異なる場合は、報告にその旨を 1 行残す(判定の透明性)
-   - スクリプトが exit 2(入力エラー)の場合はレビューを進めず、状態を報告して停止する(黙って LLM 判定に切り替えない)
 
 6. **レビュー完了マーカー(自動進行 + ラベル管理)** — 手順 5.5 の再集計 `has_blocker` の真偽で `pr.status` を自動進行し、`merge ready` ラベルを同期する:
    - `has_blocker == false`:
