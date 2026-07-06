@@ -6,7 +6,7 @@ allowed-tools: Bash, Skill, Read, Write
 
 # /harness-review-pr — レビュー待ち PR の自動コードレビュー(reviewer ロール / wrapper / policy 層)
 
-これは **運用(policy)** の層であり、Phase 0 の **reviewer ロール**(doer ≠ judge の judge 側。main developer とは**別の Claude Code セッション**で起動する)。レビュー判断そのものは **`reviewing-multi-angle` skill**(orchestration mechanism)に委譲し、その下で `/code-review`(correctness)+ `reviewing-pr-architecture`(アーキ 6 観点)+ `reviewing-pr-google-method`(命名/規約/テスト品質)が 3 並列で動く。wrapper は「どれを・いつ・結果をどうするか(選別 / has_blocker 再集計 / status 進行 / 投稿 / ラベル同期 / 報告)」を担い、レビュー判定の中身には立ち入らない。
+これは **運用(policy)** の層であり、minimal 構成の **reviewer ロール**(doer ≠ judge の judge 側。main developer とは**別の Claude Code セッション**で起動する)。レビュー判断そのものは **`reviewing-multi-angle` skill**(orchestration mechanism)に委譲し、その下で `/code-review`(correctness)+ `reviewing-pr-architecture`(アーキ 6 観点)+ `reviewing-pr-google-method`(命名/規約/テスト品質)が 3 並列で動く。wrapper は「どれを・いつ・結果をどうするか(選別 / has_blocker 再集計 / status 進行 / 投稿 / ラベル同期 / 報告)」を担い、レビュー判定の中身には立ち入らない。
 
 > **`reviewing-multi-angle` skill との関係**: skill は 3 review skill を per-PR で並列 spawn → dedup + 優先度付け + 統合 max 10 件 + `summary_markdown` 組み立てまで担う orchestration。出力は `{ findings, has_blocker, truncated, summary_markdown }`。本 wrapper は per-PR の git worktree を用意して skill を呼び(CWD 前提)、skill が返す `summary_markdown` をそのまま PR コメント本文として投稿する。**skill が返す `has_blocker`(「1 件でも 🔴」)は参考値**であり、merge 可否の判定には使わない — 本 wrapper が手順 5.5 で `findings[].severity / sources` から**再集計した `has_blocker`(harness-kit 定義)**を使う(ゴム印対策: arch/google 由来の 🟡 も blocker に含める)。
 
@@ -239,10 +239,10 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 
 ## 既知の制限・拡張ポイント
 
-- **status 自動進行のトレードオフ(重要)**: 本コマンドは「レビューを実施する者が自分の判定で status を進める」。Phase 0 の担保は (1) 別セッション起動による doer ≠ judge のロール分離、(2) `ready for merge` を上限とする終端の人間ゲート、(3) 🟡 まで広げた blocker 再集計、の 3 点。reviewer に reject インセンティブを持たせる敵対的 Verifier は Phase 1。
+- **status 自動進行のトレードオフ(重要)**: 本コマンドは「レビューを実施する者が自分の判定で status を進める」。現行構成の担保は (1) 別セッション起動による doer ≠ judge のロール分離、(2) `ready for merge` を上限とする終端の人間ゲート、(3) 🟡 まで広げた blocker 再集計、の 3 点。reviewer に reject 誘因を持たせる敵対的 Verifier は現行版では未実装(開発計画は kit リポジトリの README / issue #1)。
 - **過剰 hold の逆リスク**: 🟡 を blocker に含めたため、effort=high / max では hold が頻発しうる。緩和条件は (a) effort=medium 固定、(b) 🟡 の件数閾値化(足すときに削り方を決めておく)。
 - **可搬性の判断ギャップ(明示)**: 本コマンドは個人 skill 群(`reviewing-multi-angle` / `reviewing-pr-architecture` / `reviewing-pr-google-method`)に依存し、それらは plugin に**同梱しない**。他環境で使う場合はこれらの skill を先に用意する必要がある(README に前提として明記)。
-- **台帳が repo 内にある意味**: 元方式は選別源が `~/.claude` 配下で無人 CI から見えなかったが、本 kit は `.harness/plan-progress.json` に移したため CI(harness-gate)が同じ台帳を機械検証できる。ただし本コマンド自体のレビュー実行は引き続き Claude セッションが必要(無人化は Phase 2)。
+- **台帳が repo 内にある意味**: 元方式は選別源が `~/.claude` 配下で無人 CI から見えなかったが、本 kit は `.harness/plan-progress.json` に移したため CI(harness-gate)が同じ台帳を機械検証できる。ただし本コマンド自体のレビュー実行は引き続き Claude セッションが必要(無人化は現行版では未対応)。
 - **CWD 隔離(worktree)コスト**: PR ごとに worktree 作成・削除のオーバーヘッドあり。1 tick 5 件上限のため許容範囲。残骸が残ったら tick 開始時に `git worktree prune` で掃除推奨。
 - **`reviewing-multi-angle` のコスト(3x 化)**: 内部で 3 review skill を並列実行するため、単独 `/code-review` 比で約 3x のトークン消費。`/loop` の間隔は **30 分以上推奨**。
 - **PR 本文編集後の再レビュー**: status が `ready for merge` / `completed review` のままなら再発火しない。即時再レビューしたいなら作者が `waiting for review` に巻き戻す。

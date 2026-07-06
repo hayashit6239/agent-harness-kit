@@ -1,12 +1,12 @@
 ---
-description: 対象 repo に agent-harness-kit (Phase 0) を導入する。対話で build/test/lint コマンドを聞き取り (証拠錨)、.harness/ (進捗台帳 + スキーマ + 検証器 + 規約断片) と CI (harness-gate) を生成し、CLAUDE.md には参照 1 行だけをマーカー付きで追記する (冪等)。
+description: 対象 repo に agent-harness-kit (minimal 構成) を導入する。対話で build/test/lint コマンドを聞き取り (証拠錨)、.harness/ (進捗台帳 + スキーマ + 検証器 + 規約断片) と CI (harness-gate) を生成し、CLAUDE.md には参照 1 行だけをマーカー付きで追記する (冪等)。
 argument-hint: "[target-repo-path]  省略時: CWD"
 allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 ---
 
-# /harness-init — Phase 0 の導入 (scaffold)
+# /harness-init — minimal 構成の導入 (scaffold)
 
-対象 repo に「1人 + 台帳」構成 (Phase 0) を導入する: plan-progress 台帳・証拠錨・CI drift ガード。
+対象 repo に「1人 + 台帳」の minimal 構成を導入する: plan-progress 台帳・証拠錨・CI drift ガード。
 生成する雛形の原本は `${CLAUDE_PLUGIN_ROOT}/templates/` にある (単一源。ここから複製する)。
 
 ## 手順

@@ -1,6 +1,6 @@
-# agent-harness-kit Phase 0 規約
+# agent-harness-kit 運用規約
 
-この repo は agent-harness-kit (Phase 0) で進捗を管理する。守るものは 3 つ:
+この repo は agent-harness-kit (minimal 構成 = 「1人 + 台帳」) で進捗を管理する。守るものは 3 つ:
 ①台帳と GitHub 実態の一致 ②merge 前に証拠 (test) が緑 ③作る人と判定する人の分離。
 
 ## 進捗台帳 (`.harness/plan-progress.json`)
