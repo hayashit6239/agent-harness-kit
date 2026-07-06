@@ -2,11 +2,14 @@
 # agent-harness-kit Phase 0 smoke テスト — LLM 不要・決定論的。
 #
 # 1. fixture (捨て repo) に templates を複製し、evidence.test を実コマンドで埋めた
-#    plan-progress.json を組み立てる
+#    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
 # 2. validate --schema が exit 0
 # 3. evidence.test の実行が exit 0
-# 4. 失敗 4 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift) がすべて non-zero
-# 5. すべて通れば "SMOKE OK" を出して exit 0
+# 4. 失敗 5 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 不一致) が
+#    すべて non-zero で、かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
+# 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する
+# 6. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
+# 7. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,9 +24,25 @@ fail() {
   exit 1
 }
 
+# exit 非 0 と、出力に期待する ::error:: 文言が含まれることを両方 assert する
+# $1=ラベル $2=期待する部分文字列 $3...=実行するコマンド
+expect_fail_with() {
+  local label="$1" want="$2"
+  shift 2
+  local out rc=0
+  out="$("$@" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    fail "$label: 成功してしまった (non-zero を期待)"
+  fi
+  if ! grep -qF "$want" <<< "$out"; then
+    fail "$label: 期待文言が出力に無い (want: ${want} / got: ${out})"
+  fi
+}
+
 # --- 1. fixture を複製し .harness/ を組み立てる -----------------------------
 cp -R "$FIXTURE" "$TMP/target-repo"
 REPO="$TMP/target-repo"
+git init -q "$REPO" # drift 検査は台帳のある git repo ルートで gh を実行する (F5)
 HARNESS="$REPO/.harness"
 mkdir -p "$HARNESS"
 cp "$TEMPLATES/plan-progress.schema.json" "$HARNESS/"
@@ -48,20 +67,20 @@ d["evidence"]["done"] = "make test"
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(d, f, ensure_ascii=False, indent=2)
 PY
-echo "[1/5] fixture + .harness/ を組み立てた: $REPO"
+echo "[1/7] fixture + .harness/ を組み立てた: $REPO"
 
 # --- 2. schema 検証: exit 0 を期待 ------------------------------------------
 python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
-echo "[2/5] --schema exit 0"
+echo "[2/7] --schema exit 0"
 
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
 ( cd "$REPO" && eval "$TEST_CMD" ) \
   || fail "evidence.test ($TEST_CMD) が exit 0 で終わらなかった"
-echo "[3/5] evidence.test ($TEST_CMD) exit 0"
+echo "[3/7] evidence.test ($TEST_CMD) exit 0"
 
-# --- 4. 失敗 4 パターン (すべて non-zero を期待) ------------------------------
+# --- 4. 失敗 5 パターン (すべて non-zero + 期待文言を期待) --------------------
 
 # 正常台帳に step を 1 つ足しつつ、モードに応じて壊した variant を作る
 make_broken() { # $1=出力パス $2=変異モード
@@ -89,8 +108,11 @@ elif mode == "evidence":
     step["pr"] = {"number": 1, "status": "ready for merge", "githubState": "open"}
     d["evidence"]["test"] = None
 elif mode == "drift":
-    # (iv) 台帳は open と主張 (stub gh は MERGED を返す)
+    # (iv) 台帳は open と主張 (mismatch 用 stub gh は MERGED を返す)
     step["pr"] = {"number": 1, "status": "created pr", "githubState": "open"}
+elif mode == "statusenums":
+    # (v) 台帳の statusEnums を schema と食い違わせる
+    d["statusEnums"]["pr"] = d["statusEnums"]["pr"] + ["banana"]
 else:
     raise SystemExit(f"unknown mode: {mode}")
 d["steps"] = [step]
@@ -101,30 +123,31 @@ PY
 
 # (i) enum 逸脱
 make_broken "$TMP/broken-enum.json" enum
-if python3 "$VALIDATOR" --schema "$TMP/broken-enum.json" > /dev/null; then
-  fail "(i) enum 外の status で --schema が成功してしまった"
-fi
-echo "[4/5] (i) enum 逸脱 -> non-zero"
+expect_fail_with "(i) enum 逸脱" \
+  "steps[S1].pr.status: enum 外の値" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-enum.json"
+echo "[4/7] (i) enum 逸脱 -> non-zero + 期待文言"
 
 # (ii) 整合規則 (number:null なのに status:"created pr")
 make_broken "$TMP/broken-consistency.json" consistency
-if python3 "$VALIDATOR" --schema "$TMP/broken-consistency.json" > /dev/null; then
-  fail "(ii) number:null + status:'created pr' で --schema が成功してしまった"
-fi
-echo "[4/5] (ii) 整合規則違反 -> non-zero"
+expect_fail_with "(ii) 整合規則違反" \
+  "number が null なのに status が 'created pr'" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-consistency.json"
+echo "[4/7] (ii) 整合規則違反 -> non-zero + 期待文言"
 
 # (iii) evidence-gate (ready 系 status ありで evidence.test:null)
 make_broken "$TMP/broken-evidence.json" evidence
-if python3 "$VALIDATOR" --schema "$TMP/broken-evidence.json" > /dev/null; then
-  fail "(iii) ready 系 + evidence.test:null で --schema が成功してしまった"
-fi
-echo "[4/5] (iii) evidence-gate -> non-zero"
+expect_fail_with "(iii) evidence-gate" \
+  "evidence.test が null" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-evidence.json"
+echo "[4/7] (iii) evidence-gate -> non-zero + 期待文言"
 
 # (iv) drift: PATH 先頭に固定 JSON を返す gh の代役 (stub) を置き、
-#      台帳の githubState (open) と食い違わせる
-STUB="$TMP/stub-bin"
-mkdir -p "$STUB"
-cat > "$STUB/gh" <<'SH'
+#      台帳の githubState (open) と食い違わせる。台帳は git repo 内に置く
+#      (validator が台帳の repo ルートで gh を実行するため)
+STUB_MISMATCH="$TMP/stub-mismatch-bin"
+mkdir -p "$STUB_MISMATCH"
+cat > "$STUB_MISMATCH/gh" <<'SH'
 #!/usr/bin/env bash
 # smoke 用 gh 代役: 台帳と食い違う固定 JSON を返す
 case "$1 $2" in
@@ -133,14 +156,75 @@ case "$1 $2" in
   *)            echo '{}' ;;
 esac
 SH
-chmod +x "$STUB/gh"
+chmod +x "$STUB_MISMATCH/gh"
 
-make_broken "$TMP/broken-drift.json" drift
-if PATH="$STUB:$PATH" python3 "$VALIDATOR" --drift "$TMP/broken-drift.json" > /dev/null; then
-  fail "(iv) githubState の食い違いで --drift が成功してしまった"
+DRIFT_PLAN="$HARNESS/drift-ledger.json"
+make_broken "$DRIFT_PLAN" drift
+expect_fail_with "(iv) drift 食い違い" \
+  "台帳は 'open' だが GitHub (PR #1) は 'merged'" \
+  env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
+echo "[4/7] (iv) drift 食い違い -> non-zero + 期待文言"
+
+# (v) statusEnums が schema と不一致
+make_broken "$TMP/broken-statusenums.json" statusenums
+expect_fail_with "(v) statusEnums 不一致" \
+  "statusEnums.pr: schema (definitions.prStatus.enum) と一致しない" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-statusenums.json"
+echo "[4/7] (v) statusEnums 不一致 -> non-zero + 期待文言"
+
+# --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
+
+# 正系: stub gh が台帳と一致する状態 (OPEN) を返す -> exit 0
+# (fatal や検査ロジックの壊れで「たまたま non-zero」になっていないことの保証)
+STUB_MATCH="$TMP/stub-match-bin"
+mkdir -p "$STUB_MATCH"
+cat > "$STUB_MATCH/gh" <<'SH'
+#!/usr/bin/env bash
+# smoke 用 gh 代役: 台帳と一致する固定 JSON を返す
+case "$1 $2" in
+  "pr view")    echo '{"state":"OPEN","isDraft":false}' ;;
+  "issue view") echo '{"state":"OPEN"}' ;;
+  *)            echo '{}' ;;
+esac
+SH
+chmod +x "$STUB_MATCH/gh"
+env PATH="$STUB_MATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN" \
+  || fail "drift 正系 (stub gh が台帳と一致) で --drift が失敗した"
+echo "[5/7] drift 正系 -> exit 0"
+
+# gh 実行失敗: 壊れた gh (常に exit 1) では「drift 検出」ではなく
+# 「実行エラー」と分かる文言で fail すること (紛れの防止)
+STUB_BROKEN="$TMP/stub-broken-bin"
+mkdir -p "$STUB_BROKEN"
+cat > "$STUB_BROKEN/gh" <<'SH'
+#!/usr/bin/env bash
+echo "smoke: broken gh" >&2
+exit 1
+SH
+chmod +x "$STUB_BROKEN/gh"
+expect_fail_with "gh 実行失敗の区別" \
+  "gh 呼出に失敗した" \
+  env PATH="$STUB_BROKEN:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
+echo "[5/7] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
+
+# --- 6. kit 自身の checkout なら複製の一致を検査 ------------------------------
+# (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
+if [ -d "$ROOT/.harness" ]; then
+  for pair in \
+    "templates/validate-plan-progress.py:.harness/validate-plan-progress.py" \
+    "templates/plan-progress.schema.json:.harness/plan-progress.schema.json" \
+    "templates/CLAUDE.harness.md:.harness/CLAUDE.harness.md" \
+    "templates/harness-gate.yml:.github/workflows/harness-gate.yml"; do
+    src="${pair%%:*}"
+    dst="${pair##*:}"
+    diff -u "$ROOT/$src" "$ROOT/$dst" \
+      || fail "複製が古い: $dst が $src と一致しない。cp で同期せよ (cp $src $dst)"
+  done
+  echo "[6/7] 複製一致検査 (kit checkout) OK"
+else
+  echo "[6/7] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi
-echo "[4/5] (iv) drift 食い違い -> non-zero"
 
-# --- 5. 完了 ------------------------------------------------------------------
-echo "[5/5] 全アサーション通過"
+# --- 7. 完了 ------------------------------------------------------------------
+echo "[7/7] 全アサーション通過"
 echo "SMOKE OK"

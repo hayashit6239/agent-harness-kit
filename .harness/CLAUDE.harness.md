@@ -12,6 +12,40 @@
 - CI (harness-gate) が常時スキーマ検査を、PR 時と日次で GitHub との突き合わせ (drift 検査) を行う。手元では
   `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` で同じ検査ができる。
 
+### status 一覧 (意味と遷移)
+
+issue フェーズ (8 status):
+
+| status | 主体 | 意味 | 次の遷移先 |
+|---|---|---|---|
+| null | — | 未着手 (issue 未起票) | created issue |
+| created issue | 作者 | issue を起票した (初回レビュー待ち) | starting review |
+| starting review | reviewer | reviewer がレビュー実行中 | completed review / ready for implementation |
+| completed review | reviewer | レビュー完了・blocker あり (作者の対応待ち) | starting review work |
+| ready for implementation | reviewer | レビュー完了・blocker なし (実装に着手できる) | — (PR フェーズへ) |
+| starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
+| waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
+| closed issue | 人間 | 実際に close した (終端。githubState=closed) | — |
+
+PR フェーズ (9 status):
+
+| status | 主体 | 意味 | 次の遷移先 |
+|---|---|---|---|
+| null | — | 未着手 (実装前) | implementation-ready / created pr |
+| implementation-ready | 作者 | **実装完了・PR 未作成** (PR を作れば created pr) | created pr |
+| created pr | 作者 | PR を作成した (初回レビュー待ち) | starting review |
+| starting review | reviewer | reviewer がレビュー実行中 | ready for merge / completed review |
+| completed review | reviewer | レビュー完了・blocker あり (作者の対応待ち) | starting review work |
+| ready for merge | reviewer | レビュー完了・blocker なし (merge 可。reviewer の上限) | merged pr (merge は人間) |
+| starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
+| waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
+| merged pr | 人間 | 実際に merge した (終端。githubState=merged) | — |
+
+紛らわしい 3 点:
+- `starting review` = **reviewer** がレビューを実行中 (レビュー開始マーカー)。
+- `starting review work` = **作者** が指摘対応を開始 (レビューではなく対応作業)。
+- `implementation-ready` = **実装完了・PR 未作成**。「実装に着手できる」ではない — それは issue 側の `ready for implementation` で、別物。
+
 ## 証拠 (evidence)
 
 - `evidence` の build / test / lint / done は、この repo でそれぞれを実行するコマンド (無いものは null)。

@@ -65,16 +65,20 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 
 0. **同期 + 前提検査** — 選別の前に必ず行う:
    - **台帳の同期**: main 上で `git pull --ff-only` を実行する(古い main の台帳で選別しない)。fast-forward できない(ローカルに未 push の変更がある等)場合は、状態を報告して停止する。
+   - **前提コマンドの存在検査**: `gh` / `python3` / `jq` がすべて使えることを確認する。1 つでも無ければ「前提コマンド <名前> が見つからない。インストール後に再実行すること」とエラーで停止する:
+     ```
+     for c in gh python3 jq; do command -v "$c" >/dev/null || { echo "前提コマンド $c が見つからない"; exit 1; }; done
+     ```
    - **前提 skill の存在検査**: 次の 4 つがすべて使えることを確認する。1 つでも無ければ「前提 skill <名前> が見つからない。インストール後に再実行すること」と**明確なエラーで停止する**(観点が欠けたまま黙ってレビューしない):
      - `reviewing-multi-angle` / `reviewing-pr-architecture` / `reviewing-pr-google-method`: `test -f ~/.claude/skills/<name>/SKILL.md`
      - `/code-review`: Claude Code 標準 skill として利用可能 skill 一覧にあること
 
-1. **選別** — 台帳を `jq` で読み、対象を上限 5 件抽出(`PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"`。無ければ「`/harness-init` 未実行」とエラーで停止):
+1. **選別** — 台帳を `jq` で読み、対象を上限 5 件抽出(`PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"`。無ければ「`/harness-init` 未実行」とエラーで停止)。`unique_by(.number)` は複数 step が同一 PR を共有するケースで同じ PR を 1 tick に複数回レビューしないための重複除去(`[:5]` の前に掛ける):
    ```
    jq -c '[ .steps[]
      | select(.pr.number != null and .pr.githubState == "open")
      | select(.pr.status == "created pr" or .pr.status == "waiting for review")
-     | {id, number: .pr.number, status: .pr.status} ] | .[:5]' "$PLAN"
+     | {id, number: .pr.number, status: .pr.status} ] | unique_by(.number) | .[:5]' "$PLAN"
    ```
    0 件なら「レビュー対象 PR なし」と報告して終了。
 
@@ -145,6 +149,7 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 5.5. **has_blocker 再集計(harness-kit 定義)** — skill の `findings[]` を `severity` / `sources` で再判定する:
    - いずれかの finding が **severity 🔴** → `has_blocker = true`
    - **severity 🟡 かつ sources に `reviewing-pr-architecture` / `reviewing-pr-google-method` 系の識別子**(例: `arch` / `google` を含む source 文字列。実際の文字列は skill 出力の `sources` 表記に合わせる)**を含むものが 1 件でもある** → `has_blocker = true`
+   - **🟡 の sources が既知の識別子(code-review 系 / arch 系 / google 系)のいずれにも一致しない場合は blocker 扱い(fail-closed)**とし、報告に「未知の source 表記 X を blocker 扱いした」と 1 行残す(表記ゆれ・skill 出力の変化で 🟡 が素通しになるのを防ぐ)
    - 上記に該当しない(findings 0 件、または残りが 🟢、または 🟡 が `/code-review` 単独由来のみ)→ `has_blocker = false`
    - skill が返した `has_blocker` と再集計結果が異なる場合は、報告にその旨を 1 行残す(判定の透明性)
 

@@ -8,11 +8,15 @@
         gh コマンドで GitHub の実態と台帳の githubState / isDraft を突き合わせる
         (gh の認証が必要。CI では GH_TOKEN を渡す)。
 
-status の語彙 (enum) は同じディレクトリの plan-progress.schema.json から読む (単一源 —
-このファイル内に enum を重複定義しない)。
+status の語彙 (enum) は同じディレクトリの plan-progress.schema.json から読む (単一源)。
+コードが参照する status / githubState のリテラル (ready 系・終端系) は起動時ガードで
+schema の enum と突き合わせ、schema 改名にコードが未追随なら exit 1 で止める。
 
-判定は一方向: 台帳の主張が GitHub と矛盾したら fail。GitHub に在って台帳に無いものは不問。
+判定は一方向: 台帳の主張が GitHub と矛盾したら fail。GitHub に在って台帳に無いものは不問
+(ただし number を主張する step は githubState も主張しなければならない — 穴を閉じるため)。
 失敗は「::error:: <場所>: <原因> <修正方法>」を出力して exit 1。成功は exit 0。
+gh 呼出そのものの失敗 (未インストール / 認証切れ等) は drift ではなく実行エラーとして
+「gh 呼出に失敗した」系の文言で fail する。
 """
 
 import datetime
@@ -24,8 +28,15 @@ from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "plan-progress.schema.json"
 
+# コードが参照する status / githubState のリテラル。
+# 起動時ガード (check_literals) で schema の enum に含まれることを検査する。
 READY_ISSUE_STATUS = "ready for implementation"
 READY_PR_STATUS = "ready for merge"
+IMPL_READY_PR_STATUS = "implementation-ready"
+MERGED_PR_STATUS = "merged pr"
+CLOSED_ISSUE_STATUS = "closed issue"
+GH_STATE_MERGED = "merged"
+GH_STATE_CLOSED = "closed"
 
 errors = []
 
@@ -69,9 +80,48 @@ def load_enums():
     return issue_status, pr_status, issue_gh, pr_gh
 
 
+def check_literals(issue_status, pr_status, issue_gh, pr_gh):
+    """起動時ガード: コードが参照するリテラルが schema の enum に含まれることを検査する。
+
+    schema 側で status / githubState を改名したのにこのファイルが未追随のまま動く
+    (検査が空振りして素通しになる) 事故を防ぐ。
+    """
+    checks = [
+        ("READY_ISSUE_STATUS", READY_ISSUE_STATUS, issue_status, "definitions.issueStatus"),
+        ("CLOSED_ISSUE_STATUS", CLOSED_ISSUE_STATUS, issue_status, "definitions.issueStatus"),
+        ("READY_PR_STATUS", READY_PR_STATUS, pr_status, "definitions.prStatus"),
+        ("IMPL_READY_PR_STATUS", IMPL_READY_PR_STATUS, pr_status, "definitions.prStatus"),
+        ("MERGED_PR_STATUS", MERGED_PR_STATUS, pr_status, "definitions.prStatus"),
+        ("GH_STATE_CLOSED", GH_STATE_CLOSED, issue_gh, "issue.githubState"),
+        ("GH_STATE_MERGED", GH_STATE_MERGED, pr_gh, "pr.githubState"),
+    ]
+    for name, literal, enum, enum_name in checks:
+        if literal not in enum:
+            fatal("literal-guard",
+                  f"コードのリテラル {name}={literal!r} が schema の {enum_name} の enum に無い"
+                  " (schema 改名にコードが未追随)。",
+                  "validate-plan-progress.py のリテラルを schema に合わせて更新する")
+
+
 # ---------------------------------------------------------------------------
 # --schema: enum / 型 / 必須キー / 整合規則 / evidence-gate
 # ---------------------------------------------------------------------------
+
+def check_status_enums_match(claimed, expected, where, enum_name):
+    """台帳の statusEnums が schema 側 enum と完全一致 (順序含む) することを検査する。"""
+    if claimed == expected:
+        return
+    extra = [v for v in claimed if v not in expected]
+    missing = [v for v in expected if v not in claimed]
+    detail = []
+    if extra:
+        detail.append(f"台帳に余分: {extra}")
+    if missing:
+        detail.append(f"台帳に欠落: {missing}")
+    if not detail:
+        detail.append("順序が schema と不一致")
+    err(where, f"schema ({enum_name}.enum) と一致しない ({' / '.join(detail)})。",
+        "plan-progress.schema.json の enum と完全一致 (順序含む) に修正する")
 
 def check_phase(step, where, phase, status_enum, gh_enum):
     """step の issue / pr フェーズを検査し、フェーズの dict (無効なら None) を返す。"""
@@ -107,8 +157,8 @@ def check_phase(step, where, phase, status_enum, gh_enum):
     return p
 
 
-def check_schema(data):
-    issue_status_enum, pr_status_enum, issue_gh_enum, pr_gh_enum = load_enums()
+def check_schema(data, enums):
+    issue_status_enum, pr_status_enum, issue_gh_enum, pr_gh_enum = enums
 
     if not isinstance(data, dict):
         err("(top-level)", "オブジェクトでない。", "plan-progress.json 全体を {...} にする")
@@ -136,6 +186,12 @@ def check_schema(data):
                 or not isinstance(se.get("pr"), list)):
             err("statusEnums", "issue / pr の配列を持つオブジェクトでない。",
                 "plan-progress.init.json の statusEnums を複製する")
+        else:
+            # 台帳の statusEnums は schema 側 enum と完全一致 (順序含む) が必須
+            check_status_enums_match(se["issue"], issue_status_enum,
+                                     "statusEnums.issue", "definitions.issueStatus")
+            check_status_enums_match(se["pr"], pr_status_enum,
+                                     "statusEnums.pr", "definitions.prStatus")
 
     evidence = data.get("evidence")
     if "evidence" in data:
@@ -177,10 +233,35 @@ def check_schema(data):
                     err(f"{where}.issue",
                         f"number が null なのに status が {issue.get('status')!r}。",
                         "issue を起票して number を入れるか、status を null に戻す")
-                if pr and pr.get("number") is None and pr.get("status") not in (None, "implementation-ready"):
+                if pr and pr.get("number") is None and pr.get("status") not in (None, IMPL_READY_PR_STATUS):
                     err(f"{where}.pr",
                         f"number が null なのに status が {pr.get('status')!r}。",
-                        'PR を作成して number を入れるか、status を null / "implementation-ready" に戻す')
+                        f'PR を作成して number を入れるか、status を null / "{IMPL_READY_PR_STATUS}" に戻す')
+
+                # 整合規則: number を主張するなら githubState も主張する
+                # (githubState:null のままだと drift の一方向判定をすり抜けるため)
+                if issue and issue.get("number") is not None and issue.get("githubState") is None:
+                    err(f"{where}.issue.githubState",
+                        f"number ({issue.get('number')!r}) があるのに githubState が null。",
+                        "GitHub の実態 (open / closed) を写す")
+                if pr and pr.get("number") is not None and pr.get("githubState") is None:
+                    err(f"{where}.pr.githubState",
+                        f"number ({pr.get('number')!r}) があるのに githubState が null。",
+                        "GitHub の実態 (open / merged / closed) を写す")
+
+                # 整合規則: 終端 status なら githubState も終端でなければならない
+                if pr and pr.get("status") == MERGED_PR_STATUS and pr.get("githubState") != GH_STATE_MERGED:
+                    err(f"{where}.pr",
+                        f'status が "{MERGED_PR_STATUS}" なのに githubState が'
+                        f" {pr.get('githubState')!r}。",
+                        f'実際に merge されたなら githubState を "{GH_STATE_MERGED}" にする'
+                        "。されていないなら status を戻す")
+                if issue and issue.get("status") == CLOSED_ISSUE_STATUS and issue.get("githubState") != GH_STATE_CLOSED:
+                    err(f"{where}.issue",
+                        f'status が "{CLOSED_ISSUE_STATUS}" なのに githubState が'
+                        f" {issue.get('githubState')!r}。",
+                        f'実際に close されたなら githubState を "{GH_STATE_CLOSED}" にする'
+                        "。されていないなら status を戻す")
 
                 if issue and issue.get("status") == READY_ISSUE_STATUS:
                     ready_exists = True
@@ -199,13 +280,31 @@ def check_schema(data):
 # --drift: gh で GitHub の実態と照合
 # ---------------------------------------------------------------------------
 
-def gh_json(args, where):
+def resolve_repo_root(target):
+    """台帳ファイルのある git repo ルートを解決する (gh を照合先 repo に固定するため)。"""
+    ledger_dir = Path(target).resolve().parent
     try:
-        res = subprocess.run(["gh"] + args, capture_output=True, text=True)
+        res = subprocess.run(
+            ["git", "-C", str(ledger_dir), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True)
     except FileNotFoundError:
-        fatal(where, "gh コマンドが見つからない。", "gh をインストールして認証する")
+        fatal("drift", "git コマンドが見つからない。", "git をインストールする")
+    if res.returncode != 0 or not res.stdout.strip():
+        fatal("drift",
+              f"台帳 ({target}) のある git repo ルートを解決できない ({res.stderr.strip()})。",
+              "台帳を git repo 内に置く (照合先 repo の固定に必要)")
+    return res.stdout.strip()
+
+
+def gh_json(args, where, cwd):
+    """gh を台帳のある repo ルート (cwd) で実行する。失敗は drift ではなく実行エラー。"""
+    try:
+        res = subprocess.run(["gh"] + args, capture_output=True, text=True, cwd=cwd)
+    except FileNotFoundError:
+        fatal(where, "gh コマンドが見つからない (drift 検査は実行できていない)。",
+              "gh をインストールして認証する")
     if res.returncode != 0:
-        fatal(where, f"gh 呼出に失敗した ({res.stderr.strip()})。",
+        fatal(where, f"gh 呼出に失敗した ({res.stderr.strip()})。drift ではなく実行エラー。",
               "番号の実在と gh の認証 (GH_TOKEN) を確認する")
     try:
         return json.loads(res.stdout)
@@ -214,7 +313,7 @@ def gh_json(args, where):
               "gh のバージョンを確認する")
 
 
-def check_drift(data):
+def check_drift(data, repo_root):
     steps = data.get("steps") if isinstance(data, dict) else None
     if not isinstance(steps, list):
         fatal("steps", "配列でない。", "先に --schema 検査を通す")
@@ -227,7 +326,7 @@ def check_drift(data):
         if isinstance(issue, dict) and is_int(issue.get("number")):
             n = issue["number"]
             actual = gh_json(["issue", "view", str(n), "--json", "state"],
-                             f"steps[{sid}].issue")
+                             f"steps[{sid}].issue", repo_root)
             actual_state = str(actual.get("state", "")).lower()
             claimed = issue.get("githubState")
             if claimed is not None and claimed != actual_state:
@@ -239,7 +338,7 @@ def check_drift(data):
         if isinstance(pr, dict) and is_int(pr.get("number")):
             n = pr["number"]
             actual = gh_json(["pr", "view", str(n), "--json", "state,isDraft"],
-                             f"steps[{sid}].pr")
+                             f"steps[{sid}].pr", repo_root)
             actual_state = str(actual.get("state", "")).lower()
             claimed = pr.get("githubState")
             if claimed is not None and claimed != actual_state:
@@ -261,12 +360,17 @@ def main():
               file=sys.stderr)
         sys.exit(2)
     mode, target = sys.argv[1], sys.argv[2]
+
+    # 起動時ガード: コードが参照するリテラルを schema の enum と突き合わせる (両モード共通)
+    enums = load_enums()
+    check_literals(*enums)
+
     data = load_json(target, "plan-progress")
 
     if mode == "--schema":
-        check_schema(data)
+        check_schema(data, enums)
     else:
-        check_drift(data)
+        check_drift(data, resolve_repo_root(target))
 
     if errors:
         for e in errors:
