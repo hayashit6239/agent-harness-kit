@@ -1,0 +1,66 @@
+---
+description: 対象 repo に agent-harness-kit (Phase 0) を導入する。対話で build/test/lint コマンドを聞き取り (証拠錨)、.harness/ (進捗台帳 + スキーマ + 検証器 + 規約断片) と CI (harness-gate) を生成し、CLAUDE.md には参照 1 行だけをマーカー付きで追記する (冪等)。
+argument-hint: "[target-repo-path]  省略時: CWD"
+allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
+---
+
+# /harness-init — Phase 0 の導入 (scaffold)
+
+対象 repo に「1人 + 台帳」構成 (Phase 0) を導入する: plan-progress 台帳・証拠錨・CI drift ガード。
+生成する雛形の原本は `${CLAUDE_PLUGIN_ROOT}/templates/` にある (単一源。ここから複製する)。
+
+## 手順
+
+### 1. 対象 repo の確定
+
+- `$ARGUMENTS` にパスがあればそれを、無ければ CWD を対象とする。
+- 対象ディレクトリで `git rev-parse --show-toplevel` を実行して git repo のルートを確認する。git repo でなければ「対象が git repo でない」と明確なエラーで停止する。
+- 以降の生成パスはすべてこのルート基準。
+
+### 2. 証拠コマンドの聞き取り (証拠錨)
+
+ユーザーに対話で次の 4 つを聞く。**自動検出はしない** (stack 自動検出は別 issue の範囲。推測で埋めず、必ず本人に入力してもらう):
+
+- `build`: ビルドを実行するコマンド (無ければ null)
+- `test`: テストを実行するコマンド (無ければ null — ただし ready 系 status を使う時点で CI が non-null を強制する)
+- `lint`: lint を実行するコマンド (無ければ null)
+- `done`: 完了ゲートとして実行するコマンド。**既定は test と同じ値** (ユーザーが変えたい場合のみ上書き)
+
+`steps` は既定で `[]` (空。作業単位は運用開始後に足す)。
+
+### 3. 対象 repo への生成
+
+`${CLAUDE_PLUGIN_ROOT}/templates/` の雛形を対象 repo に複製する:
+
+| 生成先 | 内容 |
+|---|---|
+| `.harness/plan-progress.schema.json` | そのまま複製 |
+| `.harness/validate-plan-progress.py` | そのまま複製 (CI は plugin 非インストール環境で走るため、repo 内で自己完結させる) |
+| `.harness/plan-progress.json` | `plan-progress.init.json` を元に、`project` = repo 名、`evidence` = 手順 2 の値、`updatedAt` = 今日 (YYYY-MM-DD) を埋める |
+| `.harness/CLAUDE.harness.md` | そのまま複製 |
+| `.github/workflows/harness-gate.yml` | そのまま複製 |
+
+既に同名ファイルがある場合は上書きせず、ユーザーに確認する。
+
+### 4. 既存 CLAUDE.md の保護 (参照 1 行だけ)
+
+規約本文は `.harness/CLAUDE.harness.md` に隔離してある。対象 repo の `CLAUDE.md` には次の 3 行だけを追記する:
+
+```
+<!-- BEGIN agent-harness-kit -->
+@.harness/CLAUDE.harness.md
+<!-- END agent-harness-kit -->
+```
+
+- `CLAUDE.md` が無ければ、この 3 行だけの `CLAUDE.md` を新規作成する。
+- `<!-- BEGIN agent-harness-kit -->` マーカーが既にあれば**何もしない (冪等スキップ)**。
+- マーカーの外にある既存の記述は一切書き換えない。
+
+### 5. 仕上げ
+
+- `gh label create "merge ready" --color "0e8a16" --description "reviewer が merge 可能と判定した PR" --force` を実行する (`--force` で冪等。reviewer ロールが使うラベル。**人への作業依頼にしない** — このコマンドがここで作る)。
+- 前提 skill の存在を検査する: `reviewing-multi-angle` / `reviewing-pr-architecture` / `reviewing-pr-google-method` は `~/.claude/skills/<name>/SKILL.md` を `test -f` で確認し、`/code-review` は利用可能な skill 一覧にあることを確認する。無いものがあれば**警告**を出す (init 自体は続行してよいが、`/harness-review-pr` の実行には必須と伝える)。
+- 最後に、生成物の一覧と次の検証フローを表示する:
+  1. `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` が exit 0
+  2. `evidence.test` のコマンドを実行して exit 0
+  3. 以後、PR を作ると CI (harness-gate) が schema 検査 + drift 照合を行う

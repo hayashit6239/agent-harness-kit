@@ -1,0 +1,8 @@
+{
+  "name": "agent-harness-kit",
+  "version": "0.1.0",
+  "description": "Phase 0 harness kit for Claude Code: install a plan-progress ledger, evidence anchor, reviewer command, and CI drift gate into any repo via /harness-init.",
+  "author": { "name": "hayashi" },
+  "keywords": ["harness", "plan-progress", "reviewer", "ci-gate", "claude-code-plugin"],
+  "license": "MIT"
+}
