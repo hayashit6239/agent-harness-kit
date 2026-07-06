@@ -4,7 +4,7 @@
   "title": "plan-progress",
   "description": "agent-harness-kit の進捗台帳スキーマ。status の語彙 (enum) はこのファイルが単一源 — validate-plan-progress.py もここから enum を読む。",
   "type": "object",
-  "required": ["updatedAt", "statusEnums", "evidence", "steps"],
+  "required": ["updatedAt", "evidence", "steps"],
   "properties": {
     "project": { "type": "string" },
     "description": { "type": "string" },
@@ -12,14 +12,6 @@
       "type": "string",
       "format": "date",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
-    },
-    "statusEnums": {
-      "type": "object",
-      "required": ["issue", "pr"],
-      "properties": {
-        "issue": { "type": "array", "items": { "type": ["string", "null"] } },
-        "pr": { "type": "array", "items": { "type": ["string", "null"] } }
-      }
     },
     "evidence": {
       "type": "object",
@@ -67,7 +59,7 @@
       "required": ["id", "issue", "pr"],
       "properties": {
         "id": { "type": "string" },
-        "kind": { "type": "string" },
+        "kind": { "type": "string", "description": "人間用の分類メモ (feat/ci/chore 等)。機械は読まない" },
         "title": { "type": "string" },
         "issue": {
           "type": "object",

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# agent-harness-kit Phase 0 smoke テスト — LLM 不要・決定論的。
+# agent-harness-kit smoke テスト — LLM 不要・決定論的。
 #
 # 1. fixture (捨て repo) に templates を複製し、evidence.test を実コマンドで埋めた
 #    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
 # 2. validate --schema が exit 0
 # 3. evidence.test の実行が exit 0
-# 4. 失敗 5 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 不一致) が
-#    すべて non-zero で、かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
+# 4. 失敗 9 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
+#    githubState null / 終端不整合 / literal-guard / isDraft drift) がすべて non-zero で、
+#    かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
 # 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する
-# 6. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
-# 7. すべて通れば "SMOKE OK" を出して exit 0
+# 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定が期待通り
+# 7. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
+# 8. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -67,20 +69,20 @@ d["evidence"]["done"] = "make test"
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(d, f, ensure_ascii=False, indent=2)
 PY
-echo "[1/7] fixture + .harness/ を組み立てた: $REPO"
+echo "[1/8] fixture + .harness/ を組み立てた: $REPO"
 
 # --- 2. schema 検証: exit 0 を期待 ------------------------------------------
 python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
-echo "[2/7] --schema exit 0"
+echo "[2/8] --schema exit 0"
 
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
 ( cd "$REPO" && eval "$TEST_CMD" ) \
   || fail "evidence.test ($TEST_CMD) が exit 0 で終わらなかった"
-echo "[3/7] evidence.test ($TEST_CMD) exit 0"
+echo "[3/8] evidence.test ($TEST_CMD) exit 0"
 
-# --- 4. 失敗 5 パターン (すべて non-zero + 期待文言を期待) --------------------
+# --- 4. 失敗 9 パターン (すべて non-zero + 期待文言を期待) --------------------
 
 # 正常台帳に step を 1 つ足しつつ、モードに応じて壊した variant を作る
 make_broken() { # $1=出力パス $2=変異モード
@@ -111,8 +113,17 @@ elif mode == "drift":
     # (iv) 台帳は open と主張 (mismatch 用 stub gh は MERGED を返す)
     step["pr"] = {"number": 1, "status": "created pr", "githubState": "open"}
 elif mode == "statusenums":
-    # (v) 台帳の statusEnums を schema と食い違わせる
-    d["statusEnums"]["pr"] = d["statusEnums"]["pr"] + ["banana"]
+    # (v) 旧形式の statusEnums 複製が台帳に残っている (移行ガードに掛かる)
+    d["statusEnums"] = {"issue": [None, "created issue"], "pr": [None, "created pr"]}
+elif mode == "ghstate-null":
+    # (vi) number があるのに githubState が null (drift の一方向判定をすり抜ける穴)
+    step["pr"] = {"number": 1, "status": "created pr", "githubState": None}
+elif mode == "terminal-mismatch":
+    # (vii) 終端 status "merged pr" なのに githubState が open
+    step["pr"] = {"number": 1, "status": "merged pr", "githubState": "open"}
+elif mode == "isdraft":
+    # (ix) 台帳は isDraft:false と主張 (mismatch 用 stub gh は isDraft:true を返す)
+    step["pr"] = {"number": 1, "status": "created pr", "githubState": "open", "isDraft": False}
 else:
     raise SystemExit(f"unknown mode: {mode}")
 d["steps"] = [step]
@@ -126,21 +137,21 @@ make_broken "$TMP/broken-enum.json" enum
 expect_fail_with "(i) enum 逸脱" \
   "steps[S1].pr.status: enum 外の値" \
   python3 "$VALIDATOR" --schema "$TMP/broken-enum.json"
-echo "[4/7] (i) enum 逸脱 -> non-zero + 期待文言"
+echo "[4/8] (i) enum 逸脱 -> non-zero + 期待文言"
 
 # (ii) 整合規則 (number:null なのに status:"created pr")
 make_broken "$TMP/broken-consistency.json" consistency
 expect_fail_with "(ii) 整合規則違反" \
   "number が null なのに status が 'created pr'" \
   python3 "$VALIDATOR" --schema "$TMP/broken-consistency.json"
-echo "[4/7] (ii) 整合規則違反 -> non-zero + 期待文言"
+echo "[4/8] (ii) 整合規則違反 -> non-zero + 期待文言"
 
 # (iii) evidence-gate (ready 系 status ありで evidence.test:null)
 make_broken "$TMP/broken-evidence.json" evidence
 expect_fail_with "(iii) evidence-gate" \
   "evidence.test が null" \
   python3 "$VALIDATOR" --schema "$TMP/broken-evidence.json"
-echo "[4/7] (iii) evidence-gate -> non-zero + 期待文言"
+echo "[4/8] (iii) evidence-gate -> non-zero + 期待文言"
 
 # (iv) drift: PATH 先頭に固定 JSON を返す gh の代役 (stub) を置き、
 #      台帳の githubState (open) と食い違わせる。台帳は git repo 内に置く
@@ -163,14 +174,70 @@ make_broken "$DRIFT_PLAN" drift
 expect_fail_with "(iv) drift 食い違い" \
   "台帳は 'open' だが GitHub (PR #1) は 'merged'" \
   env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
-echo "[4/7] (iv) drift 食い違い -> non-zero + 期待文言"
+echo "[4/8] (iv) drift 食い違い -> non-zero + 期待文言"
 
-# (v) statusEnums が schema と不一致
+# (v) 旧形式の statusEnums 複製が台帳に残っている (移行ガード)
 make_broken "$TMP/broken-statusenums.json" statusenums
-expect_fail_with "(v) statusEnums 不一致" \
-  "statusEnums.pr: schema (definitions.prStatus.enum) と一致しない" \
+expect_fail_with "(v) statusEnums 残存" \
+  "台帳に statusEnums を置かない" \
   python3 "$VALIDATOR" --schema "$TMP/broken-statusenums.json"
-echo "[4/7] (v) statusEnums 不一致 -> non-zero + 期待文言"
+echo "[4/8] (v) statusEnums 残存 -> non-zero + 期待文言"
+
+# (vi) number があるのに githubState:null
+make_broken "$TMP/broken-ghstate-null.json" ghstate-null
+expect_fail_with "(vi) githubState null" \
+  "number (1) があるのに githubState が null" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-ghstate-null.json"
+echo "[4/8] (vi) githubState null -> non-zero + 期待文言"
+
+# (vii) 終端 status "merged pr" なのに githubState が open
+make_broken "$TMP/broken-terminal.json" terminal-mismatch
+expect_fail_with "(vii) 終端不整合" \
+  'status が "merged pr" なのに githubState が '"'open'" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-terminal.json"
+echo "[4/8] (vii) 終端不整合 -> non-zero + 期待文言"
+
+# (viii) literal-guard: schema 複製から "ready for merge" を取り除いた壊れ schema を
+#        台帳と同じディレクトリに置いて起動 (validator は台帳側の schema を優先解決する)
+LITDIR="$TMP/literal-guard"
+mkdir -p "$LITDIR"
+cp "$PLAN" "$LITDIR/plan-progress.json"
+python3 - "$HARNESS/plan-progress.schema.json" "$LITDIR/plan-progress.schema.json" <<'PY'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as f:
+    schema = json.load(f)
+schema["definitions"]["prStatus"]["enum"].remove("ready for merge")
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(schema, f, ensure_ascii=False, indent=2)
+PY
+expect_fail_with "(viii) literal-guard" \
+  "literal-guard" \
+  python3 "$VALIDATOR" --schema "$LITDIR/plan-progress.json"
+echo "[4/8] (viii) literal-guard -> non-zero + 期待文言"
+
+# (ix) isDraft drift: 台帳は isDraft:false、stub gh は state 一致 (OPEN) だが isDraft:true
+STUB_DRAFT="$TMP/stub-draft-bin"
+mkdir -p "$STUB_DRAFT"
+cat > "$STUB_DRAFT/gh" <<'SH'
+#!/usr/bin/env bash
+# smoke 用 gh 代役: state は台帳と一致、isDraft だけ食い違う固定 JSON を返す
+case "$1 $2" in
+  "pr view")    echo '{"state":"OPEN","isDraft":true}' ;;
+  "issue view") echo '{"state":"OPEN"}' ;;
+  *)            echo '{}' ;;
+esac
+SH
+chmod +x "$STUB_DRAFT/gh"
+
+ISDRAFT_PLAN="$HARNESS/isdraft-ledger.json"
+make_broken "$ISDRAFT_PLAN" isdraft
+expect_fail_with "(ix) isDraft drift" \
+  "台帳は False だが GitHub (PR #1) は True" \
+  env PATH="$STUB_DRAFT:$PATH" python3 "$VALIDATOR" --drift "$ISDRAFT_PLAN"
+echo "[4/8] (ix) isDraft drift -> non-zero + 期待文言"
 
 # --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
 
@@ -190,7 +257,7 @@ SH
 chmod +x "$STUB_MATCH/gh"
 env PATH="$STUB_MATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN" \
   || fail "drift 正系 (stub gh が台帳と一致) で --drift が失敗した"
-echo "[5/7] drift 正系 -> exit 0"
+echo "[5/8] drift 正系 -> exit 0"
 
 # gh 実行失敗: 壊れた gh (常に exit 1) では「drift 検出」ではなく
 # 「実行エラー」と分かる文言で fail すること (紛れの防止)
@@ -205,9 +272,39 @@ chmod +x "$STUB_BROKEN/gh"
 expect_fail_with "gh 実行失敗の区別" \
   "gh 呼出に失敗した" \
   env PATH="$STUB_BROKEN:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
-echo "[5/7] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
+echo "[5/8] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
 
-# --- 6. kit 自身の checkout なら複製の一致を検査 ------------------------------
+# --- 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定 ----------------
+REAGG="$ROOT/scripts/reaggregate-has-blocker.py"
+
+# $1=ラベル $2=期待する has_blocker (true/false) $3=findings JSON
+assert_reagg() {
+  local label="$1" want="$2" json="$3" out got
+  out="$(printf '%s' "$json" | python3 "$REAGG")" \
+    || fail "$label: reaggregate-has-blocker の実行に失敗した"
+  got="$(python3 -c 'import json, sys; print(str(json.loads(sys.argv[1])["has_blocker"]).lower())' "$out")"
+  if [ "$got" != "$want" ]; then
+    fail "$label: has_blocker=$got (期待: $want / 出力: $out)"
+  fi
+}
+
+assert_reagg "(a) 🔴" true \
+  '[{"severity":"🔴","sources":["code-review"]}]'
+assert_reagg "(b) arch 🟡" true \
+  '[{"severity":"🟡","sources":["reviewing-pr-architecture"]}]'
+assert_reagg "(c) code-review 単独 🟡" false \
+  '[{"severity":"🟡","sources":["code-review"]}]'
+assert_reagg "(d) 🟢 のみ" false \
+  '[{"severity":"🟢","sources":["reviewing-pr-google-method"]}]'
+assert_reagg "(e) 未知 source 🟡 (fail-closed)" true \
+  '[{"severity":"🟡","sources":["mystery-skill"]}]'
+# (e) は未知 source が unknown_source_blockers に記録されることも確認する
+printf '%s' '[{"severity":"🟡","sources":["mystery-skill"]}]' \
+  | python3 "$REAGG" | grep -qF "mystery-skill" \
+  || fail "(e) 未知 source が unknown_source_blockers に記録されていない"
+echo "[6/8] reaggregate-has-blocker 判定 5 ケース OK"
+
+# --- 7. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
 if [ -d "$ROOT/.harness" ]; then
   for pair in \
@@ -220,11 +317,11 @@ if [ -d "$ROOT/.harness" ]; then
     diff -u "$ROOT/$src" "$ROOT/$dst" \
       || fail "複製が古い: $dst が $src と一致しない。cp で同期せよ (cp $src $dst)"
   done
-  echo "[6/7] 複製一致検査 (kit checkout) OK"
+  echo "[7/8] 複製一致検査 (kit checkout) OK"
 else
-  echo "[6/7] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
+  echo "[7/8] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi
 
-# --- 7. 完了 ------------------------------------------------------------------
-echo "[7/7] 全アサーション通過"
+# --- 8. 完了 ------------------------------------------------------------------
+echo "[8/8] 全アサーション通過"
 echo "SMOKE OK"

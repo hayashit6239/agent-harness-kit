@@ -11,6 +11,19 @@ allowed-tools: [Read, Glob, Grep, Bash, Write, Edit]
 
 ## 手順
 
+### 0. 前提コマンドの検査 (ファイル生成前に必ず)
+
+**ファイルを 1 つでも生成する前に**、前提コマンドを検査する。欠けていたら「前提コマンド <名前> が見つからない (または gh が未認証)。インストール / 認証後に再実行すること」とエラーで停止する (中途半端な `.harness/` を残さない):
+
+```
+for c in gh python3 jq; do command -v "$c" >/dev/null || { echo "前提コマンド $c が見つからない"; exit 1; }; done
+gh auth status >/dev/null 2>&1 || { echo "gh が未認証 (gh auth login で認証してから再実行する)"; exit 1; }
+```
+
+- `gh`: 手順 5 のラベル作成と CI (harness-gate) の drift 照合の前提。存在に加えて `gh auth status` で認証も確認する。
+- `python3`: 検証器 (`validate-plan-progress.py`) の実行に必要。
+- `jq`: `/harness-review-pr` の台帳選別に必要。
+
 ### 1. 対象 repo の確定
 
 - `$ARGUMENTS` にパスがあればそれを、無ければ CWD を対象とする。

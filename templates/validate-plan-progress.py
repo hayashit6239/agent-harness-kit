@@ -8,7 +8,8 @@
         gh コマンドで GitHub の実態と台帳の githubState / isDraft を突き合わせる
         (gh の認証が必要。CI では GH_TOKEN を渡す)。
 
-status の語彙 (enum) は同じディレクトリの plan-progress.schema.json から読む (単一源)。
+status の語彙 (enum) は plan-progress.schema.json から読む (単一源)。schema は台帳ファイルと
+同じディレクトリのものを優先し、無ければこのスクリプトと同じディレクトリのものを使う。
 コードが参照する status / githubState のリテラル (ready 系・終端系) は起動時ガードで
 schema の enum と突き合わせ、schema 改名にコードが未追随なら exit 1 で止める。
 
@@ -25,8 +26,6 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-
-SCHEMA_PATH = Path(__file__).resolve().parent / "plan-progress.schema.json"
 
 # コードが参照する status / githubState のリテラル。
 # 起動時ガード (check_literals) で schema の enum に含まれることを検査する。
@@ -65,9 +64,21 @@ def load_json(path, label):
         fatal(label, f"JSON として読めない ({e})。", "構文を修正する")
 
 
-def load_enums():
+def resolve_schema_path(target):
+    """schema の解決: 台帳ファイルと同じディレクトリを優先、無ければスクリプト位置 (fallback)。
+
+    WHY: 新旧混在環境 (kit 側の新 schema と導入先の旧 schema が並存する等) で、
+    台帳を別の場所の schema で検査して取り違えるのを防ぐ — 台帳が置かれた側の schema が正。
+    """
+    ledger_side = Path(target).resolve().parent / "plan-progress.schema.json"
+    if ledger_side.is_file():
+        return ledger_side
+    return Path(__file__).resolve().parent / "plan-progress.schema.json"
+
+
+def load_enums(schema_path):
     """plan-progress.schema.json から status / githubState の enum を読む (単一源)。"""
-    schema = load_json(SCHEMA_PATH, "schema")
+    schema = load_json(schema_path, "schema")
     try:
         defs = schema["definitions"]
         issue_status = defs["issueStatus"]["enum"]
@@ -106,22 +117,6 @@ def check_literals(issue_status, pr_status, issue_gh, pr_gh):
 # ---------------------------------------------------------------------------
 # --schema: enum / 型 / 必須キー / 整合規則 / evidence-gate
 # ---------------------------------------------------------------------------
-
-def check_status_enums_match(claimed, expected, where, enum_name):
-    """台帳の statusEnums が schema 側 enum と完全一致 (順序含む) することを検査する。"""
-    if claimed == expected:
-        return
-    extra = [v for v in claimed if v not in expected]
-    missing = [v for v in expected if v not in claimed]
-    detail = []
-    if extra:
-        detail.append(f"台帳に余分: {extra}")
-    if missing:
-        detail.append(f"台帳に欠落: {missing}")
-    if not detail:
-        detail.append("順序が schema と不一致")
-    err(where, f"schema ({enum_name}.enum) と一致しない ({' / '.join(detail)})。",
-        "plan-progress.schema.json の enum と完全一致 (順序含む) に修正する")
 
 def check_phase(step, where, phase, status_enum, gh_enum):
     """step の issue / pr フェーズを検査し、フェーズの dict (無効なら None) を返す。"""
@@ -164,9 +159,14 @@ def check_schema(data, enums):
         err("(top-level)", "オブジェクトでない。", "plan-progress.json 全体を {...} にする")
         return
 
-    for key in ("updatedAt", "statusEnums", "evidence", "steps"):
+    for key in ("updatedAt", "evidence", "steps"):
         if key not in data:
             err(key, "必須キーが無い。", "plan-progress.init.json を参考にキーを追加する")
+
+    # 移行ガード: 旧形式の statusEnums 複製が台帳に残ったまま黙って schema と乖離するのを防ぐ
+    if "statusEnums" in data:
+        err("statusEnums", "台帳に statusEnums を置かない (語彙の単一源は schema)。",
+            "statusEnums キーを削除する (enum は plan-progress.schema.json だけが持つ)")
 
     if "updatedAt" in data:
         updated = data["updatedAt"]
@@ -178,20 +178,6 @@ def check_schema(data, enums):
                 datetime.date.fromisoformat(updated)
             except ValueError:
                 err("updatedAt", f"実在しない日付 ({updated!r})。", "正しい日付に修正する")
-
-    if "statusEnums" in data:
-        se = data["statusEnums"]
-        if (not isinstance(se, dict)
-                or not isinstance(se.get("issue"), list)
-                or not isinstance(se.get("pr"), list)):
-            err("statusEnums", "issue / pr の配列を持つオブジェクトでない。",
-                "plan-progress.init.json の statusEnums を複製する")
-        else:
-            # 台帳の statusEnums は schema 側 enum と完全一致 (順序含む) が必須
-            check_status_enums_match(se["issue"], issue_status_enum,
-                                     "statusEnums.issue", "definitions.issueStatus")
-            check_status_enums_match(se["pr"], pr_status_enum,
-                                     "statusEnums.pr", "definitions.prStatus")
 
     evidence = data.get("evidence")
     if "evidence" in data:
@@ -362,7 +348,7 @@ def main():
     mode, target = sys.argv[1], sys.argv[2]
 
     # 起動時ガード: コードが参照するリテラルを schema の enum と突き合わせる (両モード共通)
-    enums = load_enums()
+    enums = load_enums(resolve_schema_path(target))
     check_literals(*enums)
 
     data = load_json(target, "plan-progress")

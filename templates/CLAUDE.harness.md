@@ -6,11 +6,12 @@
 ## 進捗台帳 (`.harness/plan-progress.json`)
 
 - 1 つの作業単位 = `steps[]` の 1 要素。issue フェーズと PR フェーズそれぞれの status を持つ。
-- status は `statusEnums` にある語だけを使う (語彙の単一源は `.harness/plan-progress.schema.json`)。勝手な語を足さない・言い換えない。
+- status は schema (`.harness/plan-progress.schema.json`) の enum にある語だけを使う。一覧は下の status 表。勝手な語を足さない・言い換えない。
 - 状況が変わるたびに status と `updatedAt` (YYYY-MM-DD) を更新する。
 - `githubState` は GitHub の実態を写す欄。願望や予定を書かない (CI の drift 検査が失敗する)。
 - CI (harness-gate) が常時スキーマ検査を、PR 時と日次で GitHub との突き合わせ (drift 検査) を行う。手元では
   `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` で同じ検査ができる。
+  GitHub との突き合わせは `--drift` (要 gh 認証)。
 
 ### status 一覧 (意味と遷移)
 

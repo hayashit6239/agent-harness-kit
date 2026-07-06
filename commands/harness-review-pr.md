@@ -1,7 +1,7 @@
 ---
 description: 対象 repo の .harness/plan-progress.json の PR フェーズ status を選別源に、pr.status が 'created pr' または 'waiting for review' の PR を `reviewing-multi-angle` skill 経由で 3 観点並列レビュー(`/code-review` correctness + `reviewing-pr-architecture` YAGNI/6 観点 + `reviewing-pr-google-method` 命名/規約/テスト品質)し、dedup + 優先度付け済みの統合 findings(max 10 件)を 1 件の PR コメントとして投稿。`has_blocker` は wrapper 側で再集計(全 source の 🔴 に加え arch/google 由来の 🟡 も blocker)し、真偽で pr.status を自動進行(false→'ready for merge'(+ `merge ready` ラベル付与) / true→'completed review'(+ ラベル除去))する reviewer ロール。台帳の状態遷移は main へ直接コミット。別セッションで手動起動 or /loop。
 argument-hint: "[owner/repo] [effort]  省略時: CWD の origin から自動判定 / medium(低い順 low/medium/high/max/ultra)"
-allowed-tools: Bash, Skill, Read, Write
+allowed-tools: [Bash, Skill, Read, Write]
 ---
 
 # /harness-review-pr — レビュー待ち PR の自動コードレビュー(reviewer ロール / wrapper / policy 層)
@@ -146,12 +146,20 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
    - H1 ヘッダー(`# PR Reviewer - レビュー実施`)が無いと PR コメント一覧で「どのロールが投稿したか」が一目で分からなくなる(同一 GitHub アカウントから複数ロールが投稿するため)
    - `EVIDENCE_DONE` が `未定義` の場合はその旨を明記し「`/harness-init` で証拠を定義すること」を添える(黙って省略しない)
 
-5.5. **has_blocker 再集計(harness-kit 定義)** — skill の `findings[]` を `severity` / `sources` で再判定する:
+5.5. **has_blocker 再集計(harness-kit 定義)** — **判定は LLM の解釈で行わない**。skill の `findings[]` JSON を stdin で `${CLAUDE_PLUGIN_ROOT}/scripts/reaggregate-has-blocker.py` に渡し、その出力を判定として使う(決定論):
+   ```
+   # FINDINGS_JSON = skill 出力の findings 配列(JSON 文字列)
+   RESULT=$(printf '%s' "$FINDINGS_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/reaggregate-has-blocker.py")
+   # -> {"has_blocker": true|false, "blocker_count": N, "unknown_source_blockers": [...]}
+   ```
+   スクリプトが実装する規則(prose は参照用。実際の判定は必ず上のスクリプトで行う):
    - いずれかの finding が **severity 🔴** → `has_blocker = true`
-   - **severity 🟡 かつ sources に `reviewing-pr-architecture` / `reviewing-pr-google-method` 系の識別子**(例: `arch` / `google` を含む source 文字列。実際の文字列は skill 出力の `sources` 表記に合わせる)**を含むものが 1 件でもある** → `has_blocker = true`
-   - **🟡 の sources が既知の識別子(code-review 系 / arch 系 / google 系)のいずれにも一致しない場合は blocker 扱い(fail-closed)**とし、報告に「未知の source 表記 X を blocker 扱いした」と 1 行残す(表記ゆれ・skill 出力の変化で 🟡 が素通しになるのを防ぐ)
-   - 上記に該当しない(findings 0 件、または残りが 🟢、または 🟡 が `/code-review` 単独由来のみ)→ `has_blocker = false`
+   - **severity 🟡 かつ sources に arch 系(`arch` / `reviewing-pr-architecture` を含む)/ google 系(`google` を含む)の識別子を含むものが 1 件でもある** → `has_blocker = true`
+   - **🟡 の sources が既知の識別子(code-review 系 / arch 系 / google 系)のいずれにも一致しない場合は blocker 扱い(fail-closed)**(表記ゆれ・skill 出力の変化で 🟡 が素通しになるのを防ぐ)
+   - 上記に該当しない(findings 0 件、または残りが 🟢、または 🟡 が code-review 系単独由来のみ)→ `has_blocker = false`
+   - `unknown_source_blockers` が空でなければ、報告に「未知の source 表記 X を blocker 扱いした」と 1 行残す
    - skill が返した `has_blocker` と再集計結果が異なる場合は、報告にその旨を 1 行残す(判定の透明性)
+   - スクリプトが exit 2(入力エラー)の場合はレビューを進めず、状態を報告して停止する(黙って LLM 判定に切り替えない)
 
 6. **レビュー完了マーカー(自動進行 + ラベル管理)** — 手順 5.5 の再集計 `has_blocker` の真偽で `pr.status` を自動進行し、`merge ready` ラベルを同期する:
    - `has_blocker == false`:
