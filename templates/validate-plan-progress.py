@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""plan-progress.json の検証器 (agent-harness-kit Phase 0)。python3 標準ライブラリのみの 1 ファイル。
+"""plan-progress.json の検証器 (agent-harness-kit)。python3 標準ライブラリのみの 1 ファイル。
 
 使い方:
     python3 validate-plan-progress.py --schema <plan-progress.json>

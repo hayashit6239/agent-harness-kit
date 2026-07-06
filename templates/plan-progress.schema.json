@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "plan-progress.schema.json",
   "title": "plan-progress",
-  "description": "agent-harness-kit Phase 0 の進捗台帳スキーマ。status の語彙 (enum) はこのファイルが単一源 — validate-plan-progress.py もここから enum を読む。",
+  "description": "agent-harness-kit の進捗台帳スキーマ。status の語彙 (enum) はこのファイルが単一源 — validate-plan-progress.py もここから enum を読む。",
   "type": "object",
   "required": ["updatedAt", "statusEnums", "evidence", "steps"],
   "properties": {
