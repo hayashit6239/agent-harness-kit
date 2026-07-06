@@ -1,0 +1,85 @@
+{
+  "project": "agent-harness-kit",
+  "description": "kit 自身の進捗台帳 (dogfood)。状態遷移の規約は .harness/CLAUDE.harness.md を参照。",
+  "updatedAt": "2026-07-06",
+  "statusEnums": {
+    "issue": [
+      null,
+      "created issue",
+      "starting review",
+      "completed review",
+      "ready for implementation",
+      "starting review work",
+      "waiting for review",
+      "closed issue"
+    ],
+    "pr": [
+      null,
+      "implementation-ready",
+      "created pr",
+      "starting review",
+      "completed review",
+      "ready for merge",
+      "starting review work",
+      "waiting for review",
+      "merged pr"
+    ]
+  },
+  "evidence": {
+    "build": null,
+    "test": "bash tests/smoke/run-smoke.sh",
+    "lint": "python3 -m py_compile templates/validate-plan-progress.py",
+    "done": "bash tests/smoke/run-smoke.sh"
+  },
+  "steps": [
+    {
+      "id": "P1",
+      "kind": "feat",
+      "title": "Phase 0 scaffold — plugin 骨格 + /harness-init + /harness-review-pr + 雛形一式",
+      "issue": { "number": 2, "status": "created issue", "githubState": "open" },
+      "pr": { "number": null, "status": null, "githubState": null }
+    },
+    {
+      "id": "P2",
+      "kind": "ci",
+      "title": "harness-gate — plan-progress の schema 検証 + GitHub drift 照合",
+      "issue": { "number": 3, "status": "created issue", "githubState": "open" },
+      "pr": { "number": null, "status": null, "githubState": null }
+    },
+    {
+      "id": "P3",
+      "kind": "chore",
+      "title": "dogfood — kit 自身を .harness 台帳 + harness-gate で管理",
+      "issue": { "number": 4, "status": "created issue", "githubState": "open" },
+      "pr": { "number": null, "status": null, "githubState": null }
+    },
+    {
+      "id": "P4",
+      "kind": "feat",
+      "title": "証拠 elicitation — 技術構成の自動検出 + build/test/lint の対話取得 (issue #1 未決 A)",
+      "issue": { "number": null, "status": null, "githubState": null },
+      "pr": { "number": null, "status": null, "githubState": null }
+    },
+    {
+      "id": "P5",
+      "kind": "feat",
+      "title": "roadmap-interview skill — 要件定義壁打ちの skill 化 + 台帳 seed (issue #1 未決 B)",
+      "issue": { "number": null, "status": null, "githubState": null },
+      "pr": { "number": null, "status": null, "githubState": null }
+    },
+    {
+      "id": "P6",
+      "kind": "feat",
+      "title": "Phase 1 — 5 ロール + capability hook + 敵対的 Verifier + 4 種停止条件",
+      "issue": { "number": null, "status": null, "githubState": null },
+      "pr": { "number": null, "status": null, "githubState": null }
+    },
+    {
+      "id": "P7",
+      "kind": "feat",
+      "title": "Phase 2 — orchestrator loop + Automations (discover→enqueue) + heartbeat",
+      "issue": { "number": null, "status": null, "githubState": null },
+      "pr": { "number": null, "status": null, "githubState": null }
+    }
+  ]
+}
