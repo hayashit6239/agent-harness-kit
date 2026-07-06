@@ -5,14 +5,17 @@
 #    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
 # 2. validate --schema が exit 0
 # 3. evidence.test の実行が exit 0
-# 4. 失敗 9 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
-#    githubState null / 終端不整合 / literal-guard / isDraft drift) がすべて non-zero で、
+# 4. 失敗 14 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
+#    githubState null / 終端不整合 / literal-guard / isDraft drift / issue 側の整合・終端・drift /
+#    evidence 空白のみ / --drift 単独の主張規則違反) がすべて non-zero で、
 #    かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
 # 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する /
-#    gh が途中で失敗しても蓄積済みの検出済み drift が全件出力される
+#    gh が途中で失敗しても蓄積済みの検出済み drift が全件出力される /
+#    gh が非オブジェクト JSON (null) を返したら実行エラーとして fail し蓄積 drift も失わない
 # 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定が期待通り (fail-closed 境界を含む)
 # 7. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
-#    (templates/ の全ファイルがペア列挙 + 既知除外でカバーされていることも検査)
+#    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
+#    カバーされていることも検査)
 # 8. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
@@ -126,6 +129,19 @@ elif mode == "terminal-mismatch":
 elif mode == "isdraft":
     # (ix) 台帳は isDraft:false と主張 (mismatch 用 stub gh は isDraft:true を返す)
     step["pr"] = {"number": 1, "status": "created pr", "githubState": "open", "isDraft": False}
+elif mode == "issue-consistency":
+    # (x) issue.number:null なのに issue.status:"created issue"
+    step["issue"] = {"number": None, "status": "created issue", "githubState": None}
+elif mode == "issue-terminal":
+    # (xi) 終端 status "closed issue" なのに issue.githubState が open
+    step["issue"] = {"number": 1, "status": "closed issue", "githubState": "open"}
+elif mode == "issue-drift":
+    # (xii) 台帳は issue open と主張 (mismatch 用 stub gh は CLOSED を返す)
+    step["issue"] = {"number": 1, "status": "created issue", "githubState": "open"}
+elif mode == "evidence-blank":
+    # (xiii) ready 系 status ありで evidence.test が空文字列 (null 素通しの双子経路)
+    step["pr"] = {"number": 1, "status": "ready for merge", "githubState": "open"}
+    d["evidence"]["test"] = ""
 else:
     raise SystemExit(f"unknown mode: {mode}")
 d["steps"] = [step]
@@ -241,6 +257,45 @@ expect_fail_with "(ix) isDraft drift" \
   env PATH="$STUB_DRAFT:$PATH" python3 "$VALIDATOR" --drift "$ISDRAFT_PLAN"
 echo "[4/8] (ix) isDraft drift -> non-zero + 期待文言"
 
+# (x) issue 側の整合規則 (issue.number:null なのに status:"created issue")
+make_broken "$TMP/broken-issue-consistency.json" issue-consistency
+expect_fail_with "(x) issue 整合規則違反" \
+  "number が null なのに status が 'created issue'" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-issue-consistency.json"
+echo "[4/8] (x) issue 整合規則違反 -> non-zero + 期待文言"
+
+# (xi) issue 側の終端不整合 ("closed issue" なのに githubState が open)
+make_broken "$TMP/broken-issue-terminal.json" issue-terminal
+expect_fail_with "(xi) issue 終端不整合" \
+  'status が "closed issue" なのに githubState が '"'open'" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-issue-terminal.json"
+echo "[4/8] (xi) issue 終端不整合 -> non-zero + 期待文言"
+
+# (xii) issue 側の drift: 台帳は open と主張、mismatch 用 stub gh は CLOSED を返す
+ISSUE_DRIFT_PLAN="$HARNESS/issue-drift-ledger.json"
+make_broken "$ISSUE_DRIFT_PLAN" issue-drift
+expect_fail_with "(xii) issue drift 食い違い" \
+  "台帳は 'open' だが GitHub (issue #1) は 'closed'" \
+  env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$ISSUE_DRIFT_PLAN"
+echo "[4/8] (xii) issue drift 食い違い -> non-zero + 期待文言"
+
+# (xiii) evidence-gate: ready 系 status ありで evidence.test が空文字列
+#        (null 素通しの双子経路 — 空白のみ文字列は null と同等に扱われること)
+make_broken "$TMP/broken-evidence-blank.json" evidence-blank
+expect_fail_with "(xiii) evidence-gate 空文字列" \
+  "evidence.test が null または空白のみ" \
+  python3 "$VALIDATOR" --schema "$TMP/broken-evidence-blank.json"
+echo "[4/8] (xiii) evidence-gate 空文字列 -> non-zero + 期待文言"
+
+# (xiv) --drift 単独実行での主張規則違反: number ありで githubState:null は
+#       schema を併走しない手元単独実行でも素通しさせない (gh 自体は成功する状況で fail)
+GHNULL_DRIFT_PLAN="$HARNESS/ghstate-null-drift-ledger.json"
+make_broken "$GHNULL_DRIFT_PLAN" ghstate-null
+expect_fail_with "(xiv) --drift 単独の主張規則違反" \
+  "number (1) があるのに githubState が null" \
+  env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$GHNULL_DRIFT_PLAN"
+echo "[4/8] (xiv) --drift 単独の主張規則違反 -> non-zero + 期待文言"
+
 # --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
 
 # 正系: stub gh が台帳と一致する状態 (OPEN) を返す -> exit 0
@@ -320,6 +375,32 @@ grep -qF "gh 呼出に失敗した" <<< "$partial_out" \
   || fail "gh 途中失敗: gh 失敗エラーが出力に無い (got: $partial_out)"
 echo "[5/8] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
 
+# (xv) gh が非オブジェクト JSON (null) を返す: json.loads は null / 配列 / 文字列も受理する
+#      ため、dict 形状検証で実行エラーとして fail し、蓄積済みの検出済み drift (PR #1) も
+#      失わないこと (PARTIAL_PLAN を再利用: SA=PR#1 は drift、SB=PR#2 で null が返る)
+STUB_NULL="$TMP/stub-null-bin"
+mkdir -p "$STUB_NULL"
+cat > "$STUB_NULL/gh" <<'SH'
+#!/usr/bin/env bash
+# smoke 用 gh 代役: PR #1 は台帳と食い違う状態を返し、PR #2 では null (非オブジェクト JSON) を返す
+case "$1 $2 $3" in
+  "pr view 1") echo '{"state":"MERGED","isDraft":false}' ;;
+  "pr view 2") echo 'null' ;;
+  *)           echo '{}' ;;
+esac
+SH
+chmod +x "$STUB_NULL/gh"
+null_rc=0
+null_out="$(env PATH="$STUB_NULL:$PATH" python3 "$VALIDATOR" --drift "$PARTIAL_PLAN" 2>&1)" || null_rc=$?
+if [ "$null_rc" -ne 1 ]; then
+  fail "(xv) gh null 出力: exit 1 を期待したが exit $null_rc (出力: $null_out)"
+fi
+grep -qF "JSON オブジェクトでない" <<< "$null_out" \
+  || fail "(xv) gh null 出力: dict 形状エラー文言が出力に無い (got: $null_out)"
+grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$null_out" \
+  || fail "(xv) gh null 出力: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $null_out)"
+echo "[5/8] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
+
 # --- 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定 ----------------
 REAGG="$ROOT/scripts/reaggregate-has-blocker.py"
 
@@ -371,7 +452,27 @@ printf '%s' '{"not":"array"}' | python3 "$REAGG" >/dev/null 2>&1 || reagg_rc=$?
 if [ "$reagg_rc" -ne 2 ]; then
   fail "(j) 配列でない入力で exit 2 を期待したが exit $reagg_rc"
 fi
-echo "[6/8] reaggregate-has-blocker 判定 10 ケース OK (fail-closed 境界を含む)"
+
+# source 照合の境界 (正規化後の完全一致 — 部分文字列照合の穴を塞いだことの検査)
+# (k) "not-a-code-review-skill" は code-review を部分文字列に含むが、非 blocker に誤マッチしない
+assert_reagg "(k) 未知 source not-a-code-review-skill 🟡 (fail-closed)" true \
+  '[{"severity":"🟡","sources":["not-a-code-review-skill"]}]'
+printf '%s' '[{"severity":"🟡","sources":["not-a-code-review-skill"]}]' \
+  | python3 "$REAGG" | grep -qF "not-a-code-review-skill" \
+  || fail "(k) 未知 source (not-a-code-review-skill) が unknown_source_blockers に記録されていない"
+# (l) "deep-search" は arch を部分文字列に含むが、誤 arch 化せず unknown として記録される
+assert_reagg "(l) 未知 source deep-search 🟡 (誤 arch 化しない)" true \
+  '[{"severity":"🟡","sources":["deep-search"]}]'
+printf '%s' '[{"severity":"🟡","sources":["deep-search"]}]' \
+  | python3 "$REAGG" | grep -qF "deep-search" \
+  || fail "(l) 未知 source (deep-search) が unknown_source_blockers に記録されていない (誤 arch 化の疑い)"
+# (m) 🟡 で sources キー欠損 -> blocker + unknown_source_blockers に記録 (fail-closed)
+assert_reagg "(m) 🟡 sources キー欠損 (fail-closed)" true \
+  '[{"severity":"🟡","summary":"no sources key"}]'
+printf '%s' '[{"severity":"🟡","summary":"no sources key"}]' \
+  | python3 "$REAGG" | grep -qF "sources なし" \
+  || fail "(m) sources キー欠損が unknown_source_blockers に記録されていない"
+echo "[6/8] reaggregate-has-blocker 判定 13 ケース OK (fail-closed 境界を含む)"
 
 # --- 7. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
@@ -389,6 +490,8 @@ if [ -d "$ROOT/.harness" ]; then
 
   # 列挙の fail-open 防止: templates/ に新ファイルが増えたのにペア列挙への追記が
   # 漏れると、複製一致検査が黙って素通しになる。全ファイルのカバーを検査する
+  # (dotglob: 隠しファイル (.* 名) も列挙対象にする — 無いと未登録の隠しファイルが素通しになる)
+  shopt -s dotglob
   for f in "$ROOT/templates"/*; do
     base="$(basename "$f")"
     # __pycache__ は py_compile (evidence.lint) の副産物で、templates のファイルではない
@@ -404,6 +507,7 @@ if [ -d "$ROOT/.harness" ]; then
     [ "$covered" = yes ] \
       || fail "複製ペア列挙に未登録: $rel (run-smoke.sh の COPY_PAIRS に複製先を追記するか、複製対象外なら COPY_EXCLUDED に加える)"
   done
+  shopt -u dotglob
 
   for pair in "${COPY_PAIRS[@]}"; do
     src="${pair%%:*}"

@@ -15,9 +15,13 @@ schema の enum と突き合わせ、schema 改名にコードが未追随なら
 
 判定は一方向: 台帳の主張が GitHub と矛盾したら fail。GitHub に在って台帳に無いものは不問
 (ただし number を主張する step は githubState も主張しなければならない — 穴を閉じるため)。
+主張規則 (number の型 / number⇒githubState / 終端 status⇒githubState 整合) は --schema と
+--drift の両モードで検査する (--drift 単独の手元実行でも素通しさせない)。
 失敗は「::error:: <場所>: <原因> <修正方法>」を出力して exit 1。成功は exit 0。
 gh 呼出そのものの失敗 (未インストール / 認証切れ等) は drift ではなく実行エラーとして
 「gh 呼出に失敗した」系の文言で fail する。
+
+exit code: 0 = 合格 / 1 = 検査失敗 (実行エラー含む) / 2 = usage エラー (引数不正)。
 """
 
 import datetime
@@ -52,6 +56,11 @@ def fatal(where, cause, fix):
 def is_int(v):
     """bool は int の派生型なので除外する。"""
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def is_blank(v):
+    """None または空白のみ文字列。evidence-gate では null と同等 (実行できるコマンドでない) に扱う。"""
+    return v is None or (isinstance(v, str) and not v.strip())
 
 
 def load_json(path, label):
@@ -115,6 +124,49 @@ def check_literals(issue_status, pr_status, issue_gh, pr_gh):
 
 
 # ---------------------------------------------------------------------------
+# 主張規則 (--schema / --drift 両モード共通)
+# ---------------------------------------------------------------------------
+
+def check_claims(p, where, phase):
+    """フェーズ (issue / pr) の主張規則を検査する。
+
+    WHY 両モード共通: --drift 単独の手元実行 (schema 検査を併走しない) でも、
+    number の型崩れ / githubState:null / 終端 status の不整合が素通しにならないよう、
+    GitHub との照合前にここで検査する。
+    """
+    if not isinstance(p, dict):
+        return
+    n = p.get("number")
+
+    # number が非 null なら整数型 (型崩れは drift 照合もすり抜けるため主張規則で止める)
+    if n is not None and not is_int(n):
+        err(f"{where}.{phase}.number", f"整数か null でない ({n!r})。",
+            "GitHub の番号 (整数) か null にする")
+
+    # number を主張するなら githubState も主張する
+    # (githubState:null のままだと drift の一方向判定をすり抜けるため)
+    if n is not None and p.get("githubState") is None:
+        states = "open / closed" if phase == "issue" else "open / merged / closed"
+        err(f"{where}.{phase}.githubState",
+            f"number ({n!r}) があるのに githubState が null。",
+            f"GitHub の実態 ({states}) を写す")
+
+    # 終端 status なら githubState も終端でなければならない
+    if phase == "pr" and p.get("status") == MERGED_PR_STATUS and p.get("githubState") != GH_STATE_MERGED:
+        err(f"{where}.pr",
+            f'status が "{MERGED_PR_STATUS}" なのに githubState が'
+            f" {p.get('githubState')!r}。",
+            f'実際に merge されたなら githubState を "{GH_STATE_MERGED}" にする'
+            "。されていないなら status を戻す")
+    if phase == "issue" and p.get("status") == CLOSED_ISSUE_STATUS and p.get("githubState") != GH_STATE_CLOSED:
+        err(f"{where}.issue",
+            f'status が "{CLOSED_ISSUE_STATUS}" なのに githubState が'
+            f" {p.get('githubState')!r}。",
+            f'実際に close されたなら githubState を "{GH_STATE_CLOSED}" にする'
+            "。されていないなら status を戻す")
+
+
+# ---------------------------------------------------------------------------
 # --schema: enum / 型 / 必須キー / 整合規則 / evidence-gate
 # ---------------------------------------------------------------------------
 
@@ -132,10 +184,7 @@ def check_phase(step, where, phase, status_enum, gh_enum):
     for k in ("number", "status", "githubState"):
         if k not in p:
             err(f"{where}.{phase}.{k}", "必須キーが無い。", "null でよいので明示する")
-    n = p.get("number")
-    if "number" in p and n is not None and not is_int(n):
-        err(f"{where}.{phase}.number", f"整数か null でない ({n!r})。",
-            "GitHub の番号 (整数) か null にする")
+    # number の型は主張規則 (check_claims — 両モード共通) 側で検査する
     if "status" in p and p.get("status") not in status_enum:
         err(f"{where}.{phase}.status", f"enum 外の値 ({p.get('status')!r})。",
             f"次のいずれかにする: {status_enum}")
@@ -224,30 +273,9 @@ def check_schema(data, enums):
                         f"number が null なのに status が {pr.get('status')!r}。",
                         f'PR を作成して number を入れるか、status を null / "{IMPL_READY_PR_STATUS}" に戻す')
 
-                # 整合規則: number を主張するなら githubState も主張する
-                # (githubState:null のままだと drift の一方向判定をすり抜けるため)
-                if issue and issue.get("number") is not None and issue.get("githubState") is None:
-                    err(f"{where}.issue.githubState",
-                        f"number ({issue.get('number')!r}) があるのに githubState が null。",
-                        "GitHub の実態 (open / closed) を写す")
-                if pr and pr.get("number") is not None and pr.get("githubState") is None:
-                    err(f"{where}.pr.githubState",
-                        f"number ({pr.get('number')!r}) があるのに githubState が null。",
-                        "GitHub の実態 (open / merged / closed) を写す")
-
-                # 整合規則: 終端 status なら githubState も終端でなければならない
-                if pr and pr.get("status") == MERGED_PR_STATUS and pr.get("githubState") != GH_STATE_MERGED:
-                    err(f"{where}.pr",
-                        f'status が "{MERGED_PR_STATUS}" なのに githubState が'
-                        f" {pr.get('githubState')!r}。",
-                        f'実際に merge されたなら githubState を "{GH_STATE_MERGED}" にする'
-                        "。されていないなら status を戻す")
-                if issue and issue.get("status") == CLOSED_ISSUE_STATUS and issue.get("githubState") != GH_STATE_CLOSED:
-                    err(f"{where}.issue",
-                        f'status が "{CLOSED_ISSUE_STATUS}" なのに githubState が'
-                        f" {issue.get('githubState')!r}。",
-                        f'実際に close されたなら githubState を "{GH_STATE_CLOSED}" にする'
-                        "。されていないなら status を戻す")
+                # 主張規則 (number 型 / number⇒githubState / 終端整合) — 両モード共通実装
+                check_claims(issue, where, "issue")
+                check_claims(pr, where, "pr")
 
                 if issue and issue.get("status") == READY_ISSUE_STATUS:
                     ready_exists = True
@@ -256,9 +284,11 @@ def check_schema(data, enums):
 
     # evidence-gate: ready 系 status の step があるなら evidence.test は non-null
     # (init 忘れ・削除を防ぐ「床」。test が実際に走った保証ではない)
-    if ready_exists and (not isinstance(evidence, dict) or evidence.get("test") is None):
+    # 空白のみの文字列は「実行できるコマンド」ではないので null と同等に扱う (素通し防止)
+    if ready_exists and (not isinstance(evidence, dict) or is_blank(evidence.get("test"))):
         err("evidence.test",
-            f'"{READY_ISSUE_STATUS}" / "{READY_PR_STATUS}" の step があるのに evidence.test が null。',
+            f'"{READY_ISSUE_STATUS}" / "{READY_PR_STATUS}" の step があるのに evidence.test が null'
+            " または空白のみ。",
             "test を実行するコマンドを evidence.test に設定する")
 
 
@@ -290,7 +320,12 @@ def flush_errors_then_fatal(where, cause, fix):
 
 
 def gh_json(args, where, cwd):
-    """gh を台帳のある repo ルート (cwd) で実行する。失敗は drift ではなく実行エラー。"""
+    """gh を台帳のある repo ルート (cwd) で実行する。失敗は drift ではなく実行エラー。
+
+    返り値は「state (非空文字列) を持つ JSON オブジェクト (dict)」であることまで検証する
+    (json.loads は null / 配列 / 文字列も受理するため、形状崩れは照合前にここで止める。
+    両呼出元 (issue view / pr view) とも --json state を要求する前提)。
+    """
     try:
         res = subprocess.run(["gh"] + args, capture_output=True, text=True, cwd=cwd)
     except FileNotFoundError:
@@ -301,11 +336,21 @@ def gh_json(args, where, cwd):
             where, f"gh 呼出に失敗した ({res.stderr.strip()})。drift ではなく実行エラー。",
             "番号の実在と gh の認証 (GH_TOKEN) を確認する")
     try:
-        return json.loads(res.stdout)
+        parsed = json.loads(res.stdout)
     except json.JSONDecodeError:
         flush_errors_then_fatal(
             where, f"gh の出力を JSON として読めない ({res.stdout.strip()!r})。",
             "gh のバージョンを確認する")
+    if not isinstance(parsed, dict):
+        flush_errors_then_fatal(
+            where, f"gh の出力が JSON オブジェクトでない ({res.stdout.strip()!r})。",
+            "gh のバージョンを確認する")
+    state = parsed.get("state")
+    if not isinstance(state, str) or not state.strip():
+        flush_errors_then_fatal(
+            where, f"gh の出力に state (非空文字列) が無い ({res.stdout.strip()!r})。",
+            "gh のバージョンと --json state の対応を確認する")
+    return parsed
 
 
 def check_drift(data, repo_root):
@@ -317,12 +362,17 @@ def check_drift(data, repo_root):
             continue
         sid = step.get("id") if isinstance(step.get("id"), str) else str(i)
 
+        # 主張規則 (number 型 / number⇒githubState / 終端整合) — 照合前に検査する。
+        # --schema を併走しない手元単独実行でも false-pass させない (両モード共通実装)
+        check_claims(step.get("issue"), f"steps[{sid}]", "issue")
+        check_claims(step.get("pr"), f"steps[{sid}]", "pr")
+
         issue = step.get("issue")
         if isinstance(issue, dict) and is_int(issue.get("number")):
             n = issue["number"]
             actual = gh_json(["issue", "view", str(n), "--json", "state"],
                              f"steps[{sid}].issue", repo_root)
-            actual_state = str(actual.get("state", "")).lower()
+            actual_state = actual["state"].lower()
             claimed = issue.get("githubState")
             if claimed is not None and claimed != actual_state:
                 err(f"steps[{sid}].issue.githubState",
@@ -334,7 +384,7 @@ def check_drift(data, repo_root):
             n = pr["number"]
             actual = gh_json(["pr", "view", str(n), "--json", "state,isDraft"],
                              f"steps[{sid}].pr", repo_root)
-            actual_state = str(actual.get("state", "")).lower()
+            actual_state = actual["state"].lower()
             claimed = pr.get("githubState")
             if claimed is not None and claimed != actual_state:
                 err(f"steps[{sid}].pr.githubState",

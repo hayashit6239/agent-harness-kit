@@ -65,9 +65,10 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 
 0. **同期 + 前提検査** — 選別の前に必ず行う:
    - **台帳の同期**: main 上で `git pull --ff-only` を実行する(古い main の台帳で選別しない)。fast-forward できない(ローカルに未 push の変更がある等)場合は、状態を報告して停止する。
-   - **前提コマンドの存在検査**: `gh` / `python3` / `jq` がすべて使えることを確認する。1 つでも無ければ「前提コマンド <名前> が見つからない。インストール後に再実行すること」とエラーで停止する:
+   - **前提コマンドの存在検査**: `gh` / `python3` / `jq` がすべて使えることを確認する。1 つでも無ければ「前提コマンド <名前> が見つからない。インストール後に再実行すること」とエラーで停止する。`gh` は存在に加えて `gh auth status` で認証も確認する (`/harness-init` 手順 0 と対称 — 未認証のまま選別・レビューに進まない):
      ```
      for c in gh python3 jq; do command -v "$c" >/dev/null || { echo "前提コマンド $c が見つからない"; exit 1; }; done
+     gh auth status >/dev/null 2>&1 || { echo "gh が未認証 (gh auth login で認証してから再実行する)"; exit 1; }
      ```
    - **前提 skill の存在検査**: 次の 4 つがすべて使えることを確認する。1 つでも無ければ「前提 skill <名前> が見つからない。インストール後に再実行すること」と**明確なエラーで停止する**(観点が欠けたまま黙ってレビューしない):
      - `reviewing-multi-angle` / `reviewing-pr-architecture` / `reviewing-pr-google-method`: `test -f ~/.claude/skills/<name>/SKILL.md`
