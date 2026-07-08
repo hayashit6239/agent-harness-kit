@@ -128,9 +128,9 @@
       },
       "pr": {
         "number": 7,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created pr"
+        "lastReviewedStatus": "waiting for review"
       }
     },
     {
