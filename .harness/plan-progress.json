@@ -123,14 +123,14 @@
       "title": "smoke の data-driven 化ほか PR #5 レビュー残件 (follow-up)",
       "issue": {
         "number": 6,
-        "status": "completed review",
-        "githubState": "open",
+        "status": "closed issue",
+        "githubState": "closed",
         "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": 7,
-        "status": "waiting for review",
-        "githubState": "open",
+        "status": "merged pr",
+        "githubState": "merged",
         "lastReviewedStatus": "waiting for review"
       }
     },
