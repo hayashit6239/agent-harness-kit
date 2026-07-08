@@ -162,7 +162,7 @@
       },
       "pr": {
         "number": 10,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
