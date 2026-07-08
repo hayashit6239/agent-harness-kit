@@ -24,7 +24,7 @@ gh 呼出そのものの失敗 (未インストール / 認証切れ等) は dri
 exit code: 0 = 合格 / 1 = 検査失敗 (実行エラー含む) / 2 = usage エラー (引数不正)。
 
 検査規則はグローバル状態を持たない (errors リストを引数で受け渡す。check_drift は gh subprocess の
-I/O を含むため純粋関数ではない)。import して直接テスト可能 (smoke が check_claims の直接呼出で固定化)。
+I/O を含むため純粋関数ではない)。import して直接テスト可能 (kit の smoke が check_claims の直接呼出で固定化)。
 """
 
 import datetime
@@ -43,6 +43,12 @@ MERGED_PR_STATUS = "merged pr"
 CLOSED_ISSUE_STATUS = "closed issue"
 GH_STATE_MERGED = "merged"
 GH_STATE_CLOSED = "closed"
+
+def flush_errors(errors):
+    """蓄積した ::error:: 行を全件出力する。出力仕様 (1 行 1 エラー) はここ 1 箇所で管理する。"""
+    for line in errors:
+        print(line)
+
 
 def format_error(where, cause, fix):
     """GitHub Actions が拾う ::error:: アノテーションの共通整形。
@@ -431,14 +437,12 @@ def main():
     except Fatal as e:
         # WHY: 蓄積済みの errors を先に全件出力する — drift 検査ループの途中で止まっても
         # 検出済みの drift (診断情報) を失わないため
-        for line in errors:
-            print(line)
+        flush_errors(errors)
         print(e)
         sys.exit(1)
 
     if errors:
-        for e in errors:
-            print(e)
+        flush_errors(errors)
         sys.exit(1)
     print(f"OK: {mode} 検査を通過 ({target})")
     sys.exit(0)

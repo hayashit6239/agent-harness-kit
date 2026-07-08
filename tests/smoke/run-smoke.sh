@@ -3,7 +3,7 @@
 #
 # 1. fixture (捨て repo) に templates を複製し、evidence.test を実コマンドで埋めた
 #    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
-# 2. validate --schema が exit 0
+# 2. validate --schema が exit 0 + 検査規則 (check_claims) の import 直接呼出が違反を検出
 # 3. evidence.test の実行が exit 0
 # 4. 失敗パターン群がすべて non-zero + 期待する ::error:: 文言で落ちる
 #    (内訳は FAIL_CASES 表と個別ケース節を参照 — ここに列挙しない。列挙は乖離の温床)
@@ -90,6 +90,8 @@ spec.loader.exec_module(m)
 errors = []
 m.check_claims(errors, {"number": 1, "status": "created pr", "githubState": None}, "steps[direct].pr", "pr")
 assert errors, "check_claims の直接呼出が主張規則違反 (number⇒githubState) を検出しない"
+assert "があるのに githubState が null" in errors[0], (
+    f"期待する規則の文言が無い (got: {errors[0]!r})")  # 規則単位の固定化 (FAIL_CASES と同じ流儀)
 PY_DIRECT
 echo "[2/8] 検査規則の直接呼出 (import) OK"
 
