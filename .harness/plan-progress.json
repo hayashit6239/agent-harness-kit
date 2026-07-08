@@ -20,7 +20,7 @@
       },
       "pr": {
         "number": 5,
-        "status": "starting review work",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
@@ -36,7 +36,7 @@
       },
       "pr": {
         "number": 5,
-        "status": "starting review work",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
@@ -52,7 +52,7 @@
       },
       "pr": {
         "number": 5,
-        "status": "starting review work",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
@@ -110,6 +110,21 @@
         "number": null,
         "status": null,
         "githubState": null
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      }
+    },
+    {
+      "id": "P8",
+      "kind": "test",
+      "title": "smoke の data-driven 化ほか PR #5 レビュー残件 (follow-up)",
+      "issue": {
+        "number": 6,
+        "status": "created issue",
+        "githubState": "open"
       },
       "pr": {
         "number": null,
