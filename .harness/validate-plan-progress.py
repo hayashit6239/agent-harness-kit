@@ -23,7 +23,8 @@ gh 呼出そのものの失敗 (未インストール / 認証切れ等) は dri
 
 exit code: 0 = 合格 / 1 = 検査失敗 (実行エラー含む) / 2 = usage エラー (引数不正)。
 
-検査規則は純粋関数 (errors を引数/戻り値で受け渡し)。将来 import して直接テスト可能。
+検査規則はグローバル状態を持たない (errors リストを引数で受け渡す。check_drift は gh subprocess の
+I/O を含むため純粋関数ではない)。import して直接テスト可能 (smoke が check_claims の直接呼出で固定化)。
 """
 
 import datetime
@@ -43,6 +44,13 @@ CLOSED_ISSUE_STATUS = "closed issue"
 GH_STATE_MERGED = "merged"
 GH_STATE_CLOSED = "closed"
 
+def format_error(where, cause, fix):
+    """GitHub Actions が拾う ::error:: アノテーションの共通整形。
+    形式は CI とテストの期待文言が依存する load-bearing な契約 — 1 箇所で管理する。
+    """
+    return f"::error:: {where}: {cause} {fix}"
+
+
 class Fatal(Exception):
     """検査を続行できない失敗。::error:: 形式の 1 行を str として持つ。
 
@@ -51,12 +59,12 @@ class Fatal(Exception):
     """
 
     def __init__(self, where, cause, fix):
-        super().__init__(f"::error:: {where}: {cause} {fix}")
+        super().__init__(format_error(where, cause, fix))
 
 
 def err(errors, where, cause, fix):
     """検査エラーを errors (呼び出し側が所有するリスト) に蓄積する。"""
-    errors.append(f"::error:: {where}: {cause} {fix}")
+    errors.append(format_error(where, cause, fix))
 
 
 def is_int(v):

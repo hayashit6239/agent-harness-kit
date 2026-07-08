@@ -5,10 +5,8 @@
 #    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
 # 2. validate --schema が exit 0
 # 3. evidence.test の実行が exit 0
-# 4. 失敗パターン群 (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
-#    githubState null / 終端不整合 / literal-guard / isDraft drift / issue 側の整合・終端・drift /
-#    evidence 空白のみ / --drift 単独の主張規則違反) がすべて non-zero で、
-#    かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
+# 4. 失敗パターン群がすべて non-zero + 期待する ::error:: 文言で落ちる
+#    (内訳は FAIL_CASES 表と個別ケース節を参照 — ここに列挙しない。列挙は乖離の温床)
 # 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する /
 #    gh が途中で失敗しても蓄積済みの検出済み drift が全件出力される /
 #    gh が非オブジェクト JSON (null) を返したら実行エラーとして fail し蓄積 drift も失わない
@@ -80,6 +78,20 @@ echo "[1/8] fixture + .harness/ を組み立てた: $REPO"
 python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
 echo "[2/8] --schema exit 0"
+
+# validator を import して検査規則を直接呼ぶ (直接テスト可能性の固定化 — 構造の退行検知)
+python3 - "$VALIDATOR" <<'PY_DIRECT'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("vpp", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+errors = []
+m.check_claims(errors, {"number": 1, "status": "created pr", "githubState": None}, "steps[direct].pr", "pr")
+assert errors, "check_claims の直接呼出が主張規則違反 (number⇒githubState) を検出しない"
+PY_DIRECT
+echo "[2/8] 検査規則の直接呼出 (import) OK"
 
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
