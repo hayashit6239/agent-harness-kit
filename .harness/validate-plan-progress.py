@@ -22,6 +22,8 @@ gh 呼出そのものの失敗 (未インストール / 認証切れ等) は dri
 「gh 呼出に失敗した」系の文言で fail する。
 
 exit code: 0 = 合格 / 1 = 検査失敗 (実行エラー含む) / 2 = usage エラー (引数不正)。
+
+検査規則は純粋関数 (errors を引数/戻り値で受け渡し)。将来 import して直接テスト可能。
 """
 
 import datetime
@@ -41,16 +43,20 @@ CLOSED_ISSUE_STATUS = "closed issue"
 GH_STATE_MERGED = "merged"
 GH_STATE_CLOSED = "closed"
 
-errors = []
+class Fatal(Exception):
+    """検査を続行できない失敗。::error:: 形式の 1 行を str として持つ。
+
+    main() が捕捉し、蓄積済み errors を全件出力してから自身を出力して exit 1 する
+    (drift 検査ループの途中で止まっても検出済みの drift を失わない — 診断情報の保全)。
+    """
+
+    def __init__(self, where, cause, fix):
+        super().__init__(f"::error:: {where}: {cause} {fix}")
 
 
-def err(where, cause, fix):
+def err(errors, where, cause, fix):
+    """検査エラーを errors (呼び出し側が所有するリスト) に蓄積する。"""
     errors.append(f"::error:: {where}: {cause} {fix}")
-
-
-def fatal(where, cause, fix):
-    print(f"::error:: {where}: {cause} {fix}")
-    sys.exit(1)
 
 
 def is_int(v):
@@ -68,9 +74,9 @@ def load_json(path, label):
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        fatal(label, f"{path} が見つからない。", "パスを確認するか /harness-init で生成する")
+        raise Fatal(label, f"{path} が見つからない。", "パスを確認するか /harness-init で生成する")
     except json.JSONDecodeError as e:
-        fatal(label, f"JSON として読めない ({e})。", "構文を修正する")
+        raise Fatal(label, f"JSON として読めない ({e})。", "構文を修正する")
 
 
 def resolve_schema_path(target):
@@ -95,8 +101,8 @@ def load_enums(schema_path):
         issue_gh = defs["step"]["properties"]["issue"]["properties"]["githubState"]["enum"]
         pr_gh = defs["step"]["properties"]["pr"]["properties"]["githubState"]["enum"]
     except (KeyError, TypeError) as e:
-        fatal("schema", f"plan-progress.schema.json に期待する定義が無い ({e})。",
-              "templates の原本から複製し直す")
+        raise Fatal("schema", f"plan-progress.schema.json に期待する定義が無い ({e})。",
+                    "templates の原本から複製し直す")
     return issue_status, pr_status, issue_gh, pr_gh
 
 
@@ -117,18 +123,18 @@ def check_literals(issue_status, pr_status, issue_gh, pr_gh):
     ]
     for name, literal, enum, enum_name in checks:
         if literal not in enum:
-            fatal("literal-guard",
-                  f"コードのリテラル {name}={literal!r} が schema の {enum_name} の enum に無い"
-                  " (schema 改名にコードが未追随)。",
-                  "validate-plan-progress.py のリテラルを schema に合わせて更新する")
+            raise Fatal("literal-guard",
+                        f"コードのリテラル {name}={literal!r} が schema の {enum_name} の enum に無い"
+                        " (schema 改名にコードが未追随)。",
+                        "validate-plan-progress.py のリテラルを schema に合わせて更新する")
 
 
 # ---------------------------------------------------------------------------
 # 主張規則 (--schema / --drift 両モード共通)
 # ---------------------------------------------------------------------------
 
-def check_claims(p, where, phase):
-    """フェーズ (issue / pr) の主張規則を検査する。
+def check_claims(errors, p, where, phase):
+    """フェーズ (issue / pr) の主張規則を検査し、違反を errors に蓄積する。
 
     WHY 両モード共通: --drift 単独の手元実行 (schema 検査を併走しない) でも、
     number の型崩れ / githubState:null / 終端 status の不整合が素通しにならないよう、
@@ -140,26 +146,26 @@ def check_claims(p, where, phase):
 
     # number が非 null なら整数型 (型崩れは drift 照合もすり抜けるため主張規則で止める)
     if n is not None and not is_int(n):
-        err(f"{where}.{phase}.number", f"整数か null でない ({n!r})。",
+        err(errors, f"{where}.{phase}.number", f"整数か null でない ({n!r})。",
             "GitHub の番号 (整数) か null にする")
 
     # number を主張するなら githubState も主張する
     # (githubState:null のままだと drift の一方向判定をすり抜けるため)
     if n is not None and p.get("githubState") is None:
         states = "open / closed" if phase == "issue" else "open / merged / closed"
-        err(f"{where}.{phase}.githubState",
+        err(errors, f"{where}.{phase}.githubState",
             f"number ({n!r}) があるのに githubState が null。",
             f"GitHub の実態 ({states}) を写す")
 
     # 終端 status なら githubState も終端でなければならない
     if phase == "pr" and p.get("status") == MERGED_PR_STATUS and p.get("githubState") != GH_STATE_MERGED:
-        err(f"{where}.pr",
+        err(errors, f"{where}.pr",
             f'status が "{MERGED_PR_STATUS}" なのに githubState が'
             f" {p.get('githubState')!r}。",
             f'実際に merge されたなら githubState を "{GH_STATE_MERGED}" にする'
             "。されていないなら status を戻す")
     if phase == "issue" and p.get("status") == CLOSED_ISSUE_STATUS and p.get("githubState") != GH_STATE_CLOSED:
-        err(f"{where}.issue",
+        err(errors, f"{where}.issue",
             f'status が "{CLOSED_ISSUE_STATUS}" なのに githubState が'
             f" {p.get('githubState')!r}。",
             f'実際に close されたなら githubState を "{GH_STATE_CLOSED}" にする'
@@ -170,112 +176,112 @@ def check_claims(p, where, phase):
 # --schema: enum / 型 / 必須キー / 整合規則 / evidence-gate
 # ---------------------------------------------------------------------------
 
-def check_phase(step, where, phase, status_enum, gh_enum):
-    """step の issue / pr フェーズを検査し、フェーズの dict (無効なら None) を返す。"""
+def check_phase(errors, step, where, phase, status_enum, gh_enum):
+    """step の issue / pr フェーズを検査し (違反は errors に蓄積)、フェーズの dict (無効なら None) を返す。"""
     if phase not in step:
-        err(f"{where}.{phase}", "必須キーが無い。",
+        err(errors, f"{where}.{phase}", "必須キーが無い。",
             '{"number": null, "status": null, "githubState": null} を追加する')
         return None
     p = step[phase]
     if not isinstance(p, dict):
-        err(f"{where}.{phase}", "オブジェクトでない。",
+        err(errors, f"{where}.{phase}", "オブジェクトでない。",
             '{"number", "status", "githubState"} を持つオブジェクトにする')
         return None
     for k in ("number", "status", "githubState"):
         if k not in p:
-            err(f"{where}.{phase}.{k}", "必須キーが無い。", "null でよいので明示する")
+            err(errors, f"{where}.{phase}.{k}", "必須キーが無い。", "null でよいので明示する")
     # number の型は主張規則 (check_claims — 両モード共通) 側で検査する
     if "status" in p and p.get("status") not in status_enum:
-        err(f"{where}.{phase}.status", f"enum 外の値 ({p.get('status')!r})。",
+        err(errors, f"{where}.{phase}.status", f"enum 外の値 ({p.get('status')!r})。",
             f"次のいずれかにする: {status_enum}")
     if "githubState" in p and p.get("githubState") not in gh_enum:
-        err(f"{where}.{phase}.githubState", f"enum 外の値 ({p.get('githubState')!r})。",
+        err(errors, f"{where}.{phase}.githubState", f"enum 外の値 ({p.get('githubState')!r})。",
             f"次のいずれかにする: {gh_enum}")
     if "lastReviewedStatus" in p and p.get("lastReviewedStatus") not in status_enum:
-        err(f"{where}.{phase}.lastReviewedStatus",
+        err(errors, f"{where}.{phase}.lastReviewedStatus",
             f"enum 外の値 ({p.get('lastReviewedStatus')!r})。",
             f"次のいずれかにする: {status_enum}")
     if phase == "pr" and "isDraft" in p and not isinstance(p.get("isDraft"), bool):
-        err(f"{where}.pr.isDraft", f"真偽値でない ({p.get('isDraft')!r})。",
+        err(errors, f"{where}.pr.isDraft", f"真偽値でない ({p.get('isDraft')!r})。",
             "true / false にするか削除する")
     return p
 
 
-def check_schema(data, enums):
+def check_schema(errors, data, enums):
     issue_status_enum, pr_status_enum, issue_gh_enum, pr_gh_enum = enums
 
     if not isinstance(data, dict):
-        err("(top-level)", "オブジェクトでない。", "plan-progress.json 全体を {...} にする")
+        err(errors, "(top-level)", "オブジェクトでない。", "plan-progress.json 全体を {...} にする")
         return
 
     for key in ("updatedAt", "evidence", "steps"):
         if key not in data:
-            err(key, "必須キーが無い。", "plan-progress.init.json を参考にキーを追加する")
+            err(errors, key, "必須キーが無い。", "plan-progress.init.json を参考にキーを追加する")
 
     # 再導入防止 (恒久規則): 台帳に statusEnums を置かない — 複製が schema と黙って乖離するため
     if "statusEnums" in data:
-        err("statusEnums", "台帳に statusEnums を置かない (語彙の単一源は schema)。",
+        err(errors, "statusEnums", "台帳に statusEnums を置かない (語彙の単一源は schema)。",
             "statusEnums キーを削除する (enum は plan-progress.schema.json だけが持つ)")
 
     if "updatedAt" in data:
         updated = data["updatedAt"]
         if not isinstance(updated, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", updated):
-            err("updatedAt", f"YYYY-MM-DD 形式の文字列でない ({updated!r})。",
+            err(errors, "updatedAt", f"YYYY-MM-DD 形式の文字列でない ({updated!r})。",
                 "例: 2026-07-06 の形式に修正する")
         else:
             try:
                 datetime.date.fromisoformat(updated)
             except ValueError:
-                err("updatedAt", f"実在しない日付 ({updated!r})。", "正しい日付に修正する")
+                err(errors, "updatedAt", f"実在しない日付 ({updated!r})。", "正しい日付に修正する")
 
     evidence = data.get("evidence")
     if "evidence" in data:
         if not isinstance(evidence, dict):
-            err("evidence", "オブジェクトでない。",
+            err(errors, "evidence", "オブジェクトでない。",
                 '{"build", "test", "lint", "done"} を持つオブジェクトにする')
         else:
             for k in ("build", "test", "lint", "done"):
                 if k not in evidence:
-                    err(f"evidence.{k}", "必須キーが無い。", "コマンド文字列か null を設定する")
+                    err(errors, f"evidence.{k}", "必須キーが無い。", "コマンド文字列か null を設定する")
                 elif evidence[k] is not None and not isinstance(evidence[k], str):
-                    err(f"evidence.{k}", f"文字列か null でない ({evidence[k]!r})。",
+                    err(errors, f"evidence.{k}", f"文字列か null でない ({evidence[k]!r})。",
                         "コマンド文字列か null にする")
 
     ready_exists = False
     if "steps" in data:
         steps = data["steps"]
         if not isinstance(steps, list):
-            err("steps", "配列でない。", "steps を [] にする")
+            err(errors, "steps", "配列でない。", "steps を [] にする")
         else:
             for i, step in enumerate(steps):
                 if not isinstance(step, dict):
-                    err(f"steps[{i}]", "オブジェクトでない。", "step を {...} にする")
+                    err(errors, f"steps[{i}]", "オブジェクトでない。", "step を {...} にする")
                     continue
                 sid = step.get("id")
                 where = f"steps[{sid if isinstance(sid, str) and sid else i}]"
                 if not isinstance(sid, str) or not sid:
-                    err(f"{where}.id", "空でない文字列でない。", "step に一意な id を付ける")
+                    err(errors, f"{where}.id", "空でない文字列でない。", "step に一意な id を付ける")
                 for k in ("kind", "title"):
                     if k in step and not isinstance(step[k], str):
-                        err(f"{where}.{k}", f"文字列でない ({step[k]!r})。",
+                        err(errors, f"{where}.{k}", f"文字列でない ({step[k]!r})。",
                             "文字列にするか削除する")
 
-                issue = check_phase(step, where, "issue", issue_status_enum, issue_gh_enum)
-                pr = check_phase(step, where, "pr", pr_status_enum, pr_gh_enum)
+                issue = check_phase(errors, step, where, "issue", issue_status_enum, issue_gh_enum)
+                pr = check_phase(errors, step, where, "pr", pr_status_enum, pr_gh_enum)
 
                 # 整合規則: number が null なら status は「まだ何も起きていない」側に限る
                 if issue and issue.get("number") is None and issue.get("status") is not None:
-                    err(f"{where}.issue",
+                    err(errors, f"{where}.issue",
                         f"number が null なのに status が {issue.get('status')!r}。",
                         "issue を起票して number を入れるか、status を null に戻す")
                 if pr and pr.get("number") is None and pr.get("status") not in (None, IMPL_READY_PR_STATUS):
-                    err(f"{where}.pr",
+                    err(errors, f"{where}.pr",
                         f"number が null なのに status が {pr.get('status')!r}。",
                         f'PR を作成して number を入れるか、status を null / "{IMPL_READY_PR_STATUS}" に戻す')
 
                 # 主張規則 (number 型 / number⇒githubState / 終端整合) — 両モード共通実装
-                check_claims(issue, where, "issue")
-                check_claims(pr, where, "pr")
+                check_claims(errors, issue, where, "issue")
+                check_claims(errors, pr, where, "pr")
 
                 if issue and issue.get("status") == READY_ISSUE_STATUS:
                     ready_exists = True
@@ -286,7 +292,7 @@ def check_schema(data, enums):
     # (init 忘れ・削除を防ぐ「床」。test が実際に走った保証ではない)
     # 空白のみの文字列は「実行できるコマンド」ではないので null と同等に扱う (素通し防止)
     if ready_exists and (not isinstance(evidence, dict) or is_blank(evidence.get("test"))):
-        err("evidence.test",
+        err(errors, "evidence.test",
             f'"{READY_ISSUE_STATUS}" / "{READY_PR_STATUS}" の step があるのに evidence.test が null'
             " または空白のみ。",
             "test を実行するコマンドを evidence.test に設定する")
@@ -304,19 +310,12 @@ def resolve_repo_root(target):
             ["git", "-C", str(ledger_dir), "rev-parse", "--show-toplevel"],
             capture_output=True, text=True)
     except FileNotFoundError:
-        fatal("drift", "git コマンドが見つからない。", "git をインストールする")
+        raise Fatal("drift", "git コマンドが見つからない。", "git をインストールする")
     if res.returncode != 0 or not res.stdout.strip():
-        fatal("drift",
-              f"台帳 ({target}) のある git repo ルートを解決できない ({res.stderr.strip()})。",
-              "台帳を git repo 内に置く (照合先 repo の固定に必要)")
+        raise Fatal("drift",
+                    f"台帳 ({target}) のある git repo ルートを解決できない ({res.stderr.strip()})。",
+                    "台帳を git repo 内に置く (照合先 repo の固定に必要)")
     return res.stdout.strip()
-
-
-def flush_errors_then_fatal(where, cause, fix):
-    # WHY: drift 検査ループの途中で fatal すると蓄積済みの検出済み drift が消える (診断情報の損失) ため、先に全件出力する
-    for e in errors:
-        print(e)
-    fatal(where, cause, fix)
 
 
 def gh_json(args, where, cwd):
@@ -325,38 +324,40 @@ def gh_json(args, where, cwd):
     返り値は「state (非空文字列) を持つ JSON オブジェクト (dict)」であることまで検証する
     (json.loads は null / 配列 / 文字列も受理するため、形状崩れは照合前にここで止める。
     両呼出元 (issue view / pr view) とも --json state を要求する前提)。
+    失敗は Fatal を送出する (main が蓄積済み errors を先に全件出力するため、
+    drift 検査ループの途中で止まっても検出済みの drift は失われない)。
     """
     try:
         res = subprocess.run(["gh"] + args, capture_output=True, text=True, cwd=cwd)
     except FileNotFoundError:
-        flush_errors_then_fatal(where, "gh コマンドが見つからない (drift 検査は実行できていない)。",
-                                "gh をインストールして認証する")
+        raise Fatal(where, "gh コマンドが見つからない (drift 検査は実行できていない)。",
+                    "gh をインストールして認証する")
     if res.returncode != 0:
-        flush_errors_then_fatal(
+        raise Fatal(
             where, f"gh 呼出に失敗した ({res.stderr.strip()})。drift ではなく実行エラー。",
             "番号の実在と gh の認証 (GH_TOKEN) を確認する")
     try:
         parsed = json.loads(res.stdout)
     except json.JSONDecodeError:
-        flush_errors_then_fatal(
+        raise Fatal(
             where, f"gh の出力を JSON として読めない ({res.stdout.strip()!r})。",
             "gh のバージョンを確認する")
     if not isinstance(parsed, dict):
-        flush_errors_then_fatal(
+        raise Fatal(
             where, f"gh の出力が JSON オブジェクトでない ({res.stdout.strip()!r})。",
             "gh のバージョンを確認する")
     state = parsed.get("state")
     if not isinstance(state, str) or not state.strip():
-        flush_errors_then_fatal(
+        raise Fatal(
             where, f"gh の出力に state (非空文字列) が無い ({res.stdout.strip()!r})。",
             "gh のバージョンと --json state の対応を確認する")
     return parsed
 
 
-def check_drift(data, repo_root):
+def check_drift(errors, data, repo_root):
     steps = data.get("steps") if isinstance(data, dict) else None
     if not isinstance(steps, list):
-        fatal("steps", "配列でない。", "先に --schema 検査を通す")
+        raise Fatal("steps", "配列でない。", "先に --schema 検査を通す")
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
             continue
@@ -364,8 +365,8 @@ def check_drift(data, repo_root):
 
         # 主張規則 (number 型 / number⇒githubState / 終端整合) — 照合前に検査する。
         # --schema を併走しない手元単独実行でも false-pass させない (両モード共通実装)
-        check_claims(step.get("issue"), f"steps[{sid}]", "issue")
-        check_claims(step.get("pr"), f"steps[{sid}]", "pr")
+        check_claims(errors, step.get("issue"), f"steps[{sid}]", "issue")
+        check_claims(errors, step.get("pr"), f"steps[{sid}]", "pr")
 
         issue = step.get("issue")
         if isinstance(issue, dict) and is_int(issue.get("number")):
@@ -375,7 +376,7 @@ def check_drift(data, repo_root):
             actual_state = actual["state"].lower()
             claimed = issue.get("githubState")
             if claimed is not None and claimed != actual_state:
-                err(f"steps[{sid}].issue.githubState",
+                err(errors, f"steps[{sid}].issue.githubState",
                     f"台帳は {claimed!r} だが GitHub (issue #{n}) は {actual_state!r}。",
                     f'githubState を "{actual_state}" に更新する')
 
@@ -387,12 +388,12 @@ def check_drift(data, repo_root):
             actual_state = actual["state"].lower()
             claimed = pr.get("githubState")
             if claimed is not None and claimed != actual_state:
-                err(f"steps[{sid}].pr.githubState",
+                err(errors, f"steps[{sid}].pr.githubState",
                     f"台帳は {claimed!r} だが GitHub (PR #{n}) は {actual_state!r}。",
                     f'githubState を "{actual_state}" に更新する')
             # isDraft はキーがある場合のみ照合 (一方向判定)
             if "isDraft" in pr and pr.get("isDraft") != actual.get("isDraft"):
-                err(f"steps[{sid}].pr.isDraft",
+                err(errors, f"steps[{sid}].pr.isDraft",
                     f"台帳は {pr.get('isDraft')!r} だが GitHub (PR #{n}) は {actual.get('isDraft')!r}。",
                     "isDraft を GitHub に合わせる")
 
@@ -400,22 +401,32 @@ def check_drift(data, repo_root):
 # ---------------------------------------------------------------------------
 
 def main():
+    """薄い入出力の殻: 引数解釈 → 検査呼出 → 蓄積 errors の出力と exit code。"""
     if len(sys.argv) != 3 or sys.argv[1] not in ("--schema", "--drift"):
         print("usage: validate-plan-progress.py (--schema|--drift) <plan-progress.json>",
               file=sys.stderr)
         sys.exit(2)
     mode, target = sys.argv[1], sys.argv[2]
 
-    # 起動時ガード: コードが参照するリテラルを schema の enum と突き合わせる (両モード共通)
-    enums = load_enums(resolve_schema_path(target))
-    check_literals(*enums)
+    errors = []
+    try:
+        # 起動時ガード: コードが参照するリテラルを schema の enum と突き合わせる (両モード共通)
+        enums = load_enums(resolve_schema_path(target))
+        check_literals(*enums)
 
-    data = load_json(target, "plan-progress")
+        data = load_json(target, "plan-progress")
 
-    if mode == "--schema":
-        check_schema(data, enums)
-    else:
-        check_drift(data, resolve_repo_root(target))
+        if mode == "--schema":
+            check_schema(errors, data, enums)
+        else:
+            check_drift(errors, data, resolve_repo_root(target))
+    except Fatal as e:
+        # WHY: 蓄積済みの errors を先に全件出力する — drift 検査ループの途中で止まっても
+        # 検出済みの drift (診断情報) を失わないため
+        for line in errors:
+            print(line)
+        print(e)
+        sys.exit(1)
 
     if errors:
         for e in errors:
