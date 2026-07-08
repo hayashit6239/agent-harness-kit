@@ -173,7 +173,7 @@
       "title": "台帳の git 非依存化 — main push 禁止ポリシー対応 + dashboard リアルタイム参照",
       "issue": {
         "number": 11,
-        "status": "starting review",
+        "status": "completed review",
         "githubState": "open",
         "lastReviewedStatus": "created issue"
       },
