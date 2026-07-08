@@ -9,6 +9,7 @@ import {
   ISSUE_SIGNALS,
   PR_COLUMN_ORDER,
   PR_SIGNALS,
+  statusOwner,
   type KanbanColumn,
 } from './derive';
 
@@ -22,10 +23,19 @@ const issueEnum = schema.definitions.issueStatus.enum;
 const prEnum = schema.definitions.prStatus.enum;
 
 function step(id: string, issueStatus: string | null, prStatus: string | null): Step {
+  // githubState は台帳の整合規則 (終端 status ⇔ closed/merged) と食い違わない値を入れる
   return {
     id,
-    issue: { number: 1, status: issueStatus, githubState: issueStatus === null ? null : 'open' },
-    pr: { number: 2, status: prStatus, githubState: prStatus === null ? null : 'open' },
+    issue: {
+      number: 1,
+      status: issueStatus,
+      githubState: issueStatus === null ? null : issueStatus === 'closed issue' ? 'closed' : 'open',
+    },
+    pr: {
+      number: 2,
+      status: prStatus,
+      githubState: prStatus === null ? null : prStatus === 'merged pr' ? 'merged' : 'open',
+    },
   };
 }
 
@@ -121,7 +131,7 @@ describe('合成規則 1 — pr.status != null の step は PR フェーズの�
     const board = derive(ledgerOf([step('S', 'starting review', 'not-a-status')]));
     expect(board.characters.developer.state).toBe('idle');
     expect(board.characters.reviewer.state).toBe('idle');
-    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'pr', status: 'not-a-status' }]);
+    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'pr', kind: 'unknown-status', status: 'not-a-status' }]);
   });
 
   it('盤面表示は両フェーズとも出す (信号の採否と独立)', () => {
@@ -189,7 +199,7 @@ describe('合成規則 3 — 祝いは舞台全体のフラグでキャラ状態
 describe('fail-soft — 未知 status は信号に数えず警告', () => {
   it('未知の issue status → 警告 + known=false + キャラは idle のまま', () => {
     const board = derive(ledgerOf([step('S', 'brand-new-status', null)]));
-    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'issue', status: 'brand-new-status' }]);
+    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'issue', kind: 'unknown-status', status: 'brand-new-status' }]);
     expect(board.steps[0]!.issue.known).toBe(false);
     expect(board.characters.developer.state).toBe('idle');
     expect(board.characters.reviewer.state).toBe('idle');
@@ -197,7 +207,7 @@ describe('fail-soft — 未知 status は信号に数えず警告', () => {
 
   it('未知の issue status は規則 1 で信号除外される場合も警告される (警告は採否と独立)', () => {
     const board = derive(ledgerOf([step('S', 'weird', 'starting review')]));
-    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'issue', status: 'weird' }]);
+    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'issue', kind: 'unknown-status', status: 'weird' }]);
     expect(board.characters.reviewer.state).toBe('working'); // pr 側の既知信号は生きる
   });
 
@@ -206,6 +216,71 @@ describe('fail-soft — 未知 status は信号に数えず警告', () => {
     expect(board.warnings).toEqual([]);
     expect(board.steps[0]!.issue.known).toBe(true);
     expect(board.steps[0]!.pr.known).toBe(true);
+  });
+});
+
+describe('fail-soft — issue/pr オブジェクト欠落 (台帳の手編集) でも描画を壊さない', () => {
+  /** 型上は必須の issue/pr を欠いた「壊れた」step を作る (手編集された台帳の再現) */
+  function broken(partial: object): Step {
+    return partial as Step;
+  }
+
+  it('pr オブジェクト欠落: 例外なし + missing-phase 警告 + pr.known=false (issue 信号は生きる)', () => {
+    const board = derive(
+      ledgerOf([broken({ id: 'S', issue: { number: 1, status: 'starting review', githubState: 'open' } })]),
+    );
+    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'pr', kind: 'missing-phase', status: null }]);
+    expect(board.steps[0]!.pr).toEqual({ number: null, status: null, githubState: null, known: false });
+    expect(board.characters.reviewer.state).toBe('working'); // issue 側の信号は劣化せず採用
+    expect(board.celebrate).toBe(false);
+  });
+
+  it('issue オブジェクト欠落: 例外なし + missing-phase 警告 + issue.known=false (pr 信号は生きる)', () => {
+    const board = derive(
+      ledgerOf([broken({ id: 'S', pr: { number: 2, status: 'created pr', githubState: 'open' } })]),
+    );
+    expect(board.warnings).toEqual([{ stepId: 'S', phase: 'issue', kind: 'missing-phase', status: null }]);
+    expect(board.steps[0]!.issue).toEqual({ number: null, status: null, githubState: null, known: false });
+    expect(board.characters.reviewer.state).toBe('waiting');
+  });
+
+  it('step がオブジェクトですらない場合も落ちない (両フェーズ missing-phase + id は位置で補完)', () => {
+    const board = derive(ledgerOf([null as unknown as Step, step('B', 'created issue', null)]));
+    expect(board.steps).toHaveLength(2);
+    expect(board.steps[0]!.id).toBe('(steps[0])');
+    expect(board.warnings).toEqual([
+      { stepId: '(steps[0])', phase: 'issue', kind: 'missing-phase', status: null },
+      { stepId: '(steps[0])', phase: 'pr', kind: 'missing-phase', status: null },
+    ]);
+    expect(board.characters.reviewer.state).toBe('waiting'); // 壊れた step 以外は通常どおり
+  });
+
+  it('カンバンでは欠落フェーズのカードは unknown 列に置かれる (「未着手」と偽らない)', () => {
+    const board = derive(
+      ledgerOf([broken({ id: 'S', issue: { number: 1, status: 'created issue', githubState: 'open' } })]),
+    );
+    const view = deriveKanban(board.steps);
+    expect(view.pr.columns.at(-1)!.cards.map((c) => c.stepId)).toEqual(['S']);
+    expect(view.pr.columns.slice(0, -1).every((c) => c.cards.length === 0)).toBe(true);
+    // issue レーン側は既知 status の通常列に入る
+    expect(view.issue.columns.find((c) => c.status === 'created issue')!.cards).toHaveLength(1);
+  });
+});
+
+describe('statusOwner — 列ヘッダの色分け (信号表からの導出)', () => {
+  it('その status のボールを持つロールを返す (信号表と一致)', () => {
+    expect(statusOwner('issue', 'created issue')).toBe('reviewer');
+    expect(statusOwner('issue', 'starting review work')).toBe('developer');
+    expect(statusOwner('pr', 'implementation-ready')).toBe('developer');
+    expect(statusOwner('pr', 'starting review')).toBe('reviewer');
+  });
+
+  it('未着手 / 終端 / ready for merge / 未知語はどのロールでもない (null)', () => {
+    expect(statusOwner('issue', null)).toBeNull();
+    expect(statusOwner('issue', 'closed issue')).toBeNull();
+    expect(statusOwner('pr', 'merged pr')).toBeNull();
+    expect(statusOwner('pr', 'ready for merge')).toBeNull();
+    expect(statusOwner('pr', 'not-a-status')).toBeNull();
   });
 });
 
@@ -332,10 +407,10 @@ describe('カンバン (deriveKanban) — カードの配置', () => {
     const issueUnknown = view.issue.columns.at(-1)!;
     const prUnknown = view.pr.columns.at(-1)!;
     expect(issueUnknown.cards).toEqual([
-      { stepId: 'S', kind: null, title: null, number: 1, status: 'brand-new-status' },
+      { stepId: 'S', kind: null, title: null, number: 1, status: 'brand-new-status', githubState: 'open' },
     ]);
     expect(prUnknown.cards).toEqual([
-      { stepId: 'S', kind: null, title: null, number: 2, status: 'not-a-status' },
+      { stepId: 'S', kind: null, title: null, number: 2, status: 'not-a-status', githubState: 'open' },
     ]);
     // 通常列には現れない (二重配置しない)
     expect(view.issue.columns.slice(0, -1).every((c) => c.cards.length === 0)).toBe(true);
@@ -356,6 +431,29 @@ describe('カンバン (deriveKanban) — カードの配置', () => {
     );
     const view = deriveKanban(board.steps);
     expect(columnOf(view.issue, 'created issue').cards.map((c) => c.stepId)).toEqual(['A', 'B']);
+  });
+
+  it('カードは githubState を写す (カード上の小表示用)', () => {
+    const board = derive(ledgerOf([step('S', 'closed issue', 'merged pr')]));
+    const view = deriveKanban(board.steps);
+    expect(columnOf(view.issue, 'closed issue').cards[0]!.githubState).toBe('closed');
+    expect(columnOf(view.pr, 'merged pr').cards[0]!.githubState).toBe('merged');
+  });
+
+  it('祝いは列の celebrating に集約される (規則 3 の導出値の消費 — UI は再導出しない)', () => {
+    const board = derive(ledgerOf([step('A', 'created issue', 'ready for merge')]));
+    const view = deriveKanban(board.steps);
+    expect(columnOf(view.pr, 'ready for merge').celebrating).toBe(true);
+    // 同じ step のカードが入る issue レーン側の列には立たない
+    expect(view.issue.columns.every((c) => !c.celebrating)).toBe(true);
+  });
+
+  it('祝い step が無ければ全列 celebrating=false', () => {
+    const board = derive(ledgerOf([step('A', null, 'created pr')]));
+    const view = deriveKanban(board.steps);
+    for (const lane of [view.issue, view.pr]) {
+      expect(lane.columns.every((c) => !c.celebrating)).toBe(true);
+    }
   });
 });
 

@@ -14,20 +14,29 @@ const fetchedAt = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
 
 async function poll(): Promise<void> {
+  // 失敗系はバナー表示 + 前回データがあれば表示継続。ポーリングは継続 (劣化動作)。
+  // 接続失敗 (fetch 例外) と JSON 解析失敗 (API 不在で 200/HTML が返る構成) は原因が違うので分けて伝える
+  let res: Response;
   try {
-    const res = await fetch('/api/ledger');
-    const body = (await res.json()) as LedgerApiResponse;
-    if (body.ok) {
-      ledger.value = body.ledger;
-      repoSlug.value = body.repoSlug;
-      fetchedAt.value = body.fetchedAt;
-      errorMessage.value = null;
-    } else {
-      // エラー時: バナー表示 + 前回データがあれば表示継続。ポーリングは継続 (劣化動作)
-      errorMessage.value = `${body.error.code}: ${body.error.message}`;
-    }
+    res = await fetch('/api/ledger');
   } catch {
     errorMessage.value = '台帳 API に接続できません (dev サーバの応答がありません)';
+    return;
+  }
+  let body: LedgerApiResponse;
+  try {
+    body = (await res.json()) as LedgerApiResponse;
+  } catch {
+    errorMessage.value = '台帳 API の応答を JSON として解釈できません (/api/ledger を持たないサーバが応答している可能性)';
+    return;
+  }
+  if (body.ok) {
+    ledger.value = body.ledger;
+    repoSlug.value = body.repoSlug;
+    fetchedAt.value = body.fetchedAt;
+    errorMessage.value = null;
+  } else {
+    errorMessage.value = `${body.error.code}: ${body.error.message}`;
   }
 }
 
@@ -50,16 +59,20 @@ function formatTime(iso: string): string {
 <template>
   <div class="dashboard">
     <header class="header">
+      <p class="eyebrow">AGENT HARNESS — MISSION CONTROL</p>
       <h1>進捗ダッシュボード</h1>
       <p v-if="ledger" class="meta">
-        <strong>{{ ledger.project ?? '(project 名なし)' }}</strong>
-        <span>台帳更新日: {{ ledger.updatedAt }}</span>
-        <span v-if="fetchedAt">最終取得: {{ formatTime(fetchedAt) }}</span>
+        <strong class="project">{{ ledger.project ?? '(project 名なし)' }}</strong>
+        <span class="mono">台帳更新日 {{ ledger.updatedAt }}</span>
+        <span v-if="fetchedAt" class="mono live">
+          <span class="led" :class="errorMessage ? 'led-alert' : 'led-ok'" aria-hidden="true"></span>
+          最終取得 {{ formatTime(fetchedAt) }}
+        </span>
         <span v-if="repoSlug === null" class="degraded">GitHub リンク無効 (repo slug を導出できず)</span>
       </p>
     </header>
 
-    <div v-if="errorMessage" class="banner">
+    <div v-if="errorMessage" class="banner" role="alert">
       ⚠ {{ errorMessage }}
       <span v-if="ledger">— 前回取得分を表示しています (ポーリング継続中)</span>
     </div>
@@ -70,7 +83,7 @@ function formatTime(iso: string): string {
         <CharacterStage :characters="board.characters" :celebrate="board.celebrate" />
       </aside>
     </main>
-    <p v-else-if="!errorMessage" class="loading">台帳を読み込み中…</p>
+    <p v-else-if="!errorMessage" class="loading mono">台帳を読み込み中<span class="cursor">▋</span></p>
   </div>
 </template>
 
@@ -79,14 +92,14 @@ function formatTime(iso: string): string {
   /* カンバン (issue 9 列 + PR 10 列) + 右のキャラ側柱をなるべくスクロールなしで見せるため広めに取る */
   max-width: 1720px;
   margin: 0 auto;
-  padding: 24px 20px 48px;
+  padding: 28px 24px 56px;
 }
 
 /* カンバン (左・可変幅) とキャラ (右・常時見える側柱) の 2 段組 */
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 16px;
+  gap: 18px;
   align-items: start;
 }
 
@@ -105,39 +118,114 @@ function formatTime(iso: string): string {
   }
 }
 
+.eyebrow {
+  margin: 0 0 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  color: var(--text-lo);
+}
+
 .header h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-hi);
 }
 
 .meta {
-  margin: 0 0 16px;
+  margin: 0 0 20px;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 16px;
-  font-size: 13px;
-  color: #57606a;
+  align-items: baseline;
+  gap: 6px 20px;
+  font-size: 12px;
+  color: var(--text-lo);
 }
 
-.meta strong {
-  color: #24292f;
+.project {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-hi);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* ポーリングの生存を示す計器 LED */
+.led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.led-ok {
+  background: var(--ok);
+  box-shadow: 0 0 6px rgba(86, 211, 100, 0.8);
+  animation: led-pulse 2.4s ease-in-out infinite;
+}
+
+.led-alert {
+  background: var(--alert);
+  box-shadow: 0 0 6px rgba(255, 123, 114, 0.8);
+  animation: led-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes led-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .degraded {
-  color: #9a6700;
+  color: var(--dev);
 }
 
 .banner {
-  margin: 0 0 16px;
-  padding: 10px 14px;
-  border: 1px solid #d4a72c;
+  margin: 0 0 18px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255, 123, 114, 0.45);
+  border-left: 3px solid var(--alert);
   border-radius: 8px;
-  background: #fff8c5;
-  color: #4d3800;
-  font-size: 14px;
+  background: var(--alert-dim);
+  color: #ffc9c4;
+  font-size: 13px;
 }
 
 .loading {
-  color: #57606a;
+  color: var(--text-lo);
+  font-size: 13px;
+}
+
+.cursor {
+  margin-left: 2px;
+  color: var(--rev);
+  animation: cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 </style>

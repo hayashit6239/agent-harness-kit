@@ -10,7 +10,7 @@
  *   規則 3 (祝い): ready for merge はキャラ信号ではなく舞台全体の演出フラグ (キャラ状態と直交)
  * 未知 status は unknown として信号に数えず警告を返す (fail-soft)。
  */
-import type { Ledger } from '../types';
+import type { Ledger, Step } from '../types';
 
 export type CharacterId = 'developer' | 'reviewer';
 export type CharacterState = 'working' | 'waiting' | 'idle';
@@ -70,10 +70,17 @@ export interface StepView {
   celebrating: boolean;
 }
 
-export interface UnknownStatusWarning {
+export interface LedgerWarning {
   stepId: string;
   phase: Phase;
-  status: string;
+  /**
+   * 警告の種別 (どちらも fail-soft — 盤面は壊さず警告表示で継続する):
+   *   unknown-status = status が schema 語彙外
+   *   missing-phase  = issue/pr オブジェクト自体が欠落 (台帳の手編集を想定)
+   */
+  kind: 'unknown-status' | 'missing-phase';
+  /** kind='unknown-status' のときの生 status (missing-phase では null) */
+  status: string | null;
 }
 
 export interface CharacterView {
@@ -87,7 +94,7 @@ export interface BoardState {
   characters: Record<CharacterId, CharacterView>;
   /** 規則 3: ready for merge の step が 1 つでもあれば true (キャラ状態と直交) */
   celebrate: boolean;
-  warnings: UnknownStatusWarning[];
+  warnings: LedgerWarning[];
 }
 
 interface Lookup {
@@ -102,8 +109,26 @@ function lookupSignal(phase: Phase, status: string | null): Lookup {
   return { signal: table[status], known: true };
 }
 
+/**
+ * その status のボールを持つロール (列ヘッダとキャラカードの色分け用)。
+ * 信号表 (ISSUE_SIGNALS / PR_SIGNALS) から導出する — 対応表との二重定義を避ける。
+ * null = どのロールでもない (未着手 / 終端 / ready for merge / 未知語)。
+ */
+export function statusOwner(phase: Phase, status: string | null): CharacterId | null {
+  if (status === null) return null;
+  const table = phase === 'issue' ? ISSUE_SIGNALS : PR_SIGNALS;
+  return table[status]?.character ?? null;
+}
+
+/** issue/pr オブジェクト欠落 (missing-phase) 時の代替: 信号なし + known=false (unknown 列行き) */
+const MISSING_PHASE_LOOKUP: Lookup = { signal: null, known: false };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
+}
+
 export function derive(ledger: Ledger): BoardState {
-  const warnings: UnknownStatusWarning[] = [];
+  const warnings: LedgerWarning[] = [];
   const characters: Record<CharacterId, CharacterView> = {
     developer: { state: 'idle', tasks: [] },
     reviewer: { state: 'idle', tasks: [] },
@@ -121,30 +146,49 @@ export function derive(ledger: Ledger): BoardState {
     character.tasks.push(`${stepId} ${phase}: ${status} (${signal.label})`);
   };
 
-  const steps: StepView[] = ledger.steps.map((step) => {
-    const issue = lookupSignal('issue', step.issue.status);
-    const pr = lookupSignal('pr', step.pr.status);
-    // 警告は信号の採否 (規則 1) と独立 — 盤面表示のための fail-soft 通知
-    if (!issue.known) warnings.push({ stepId: step.id, phase: 'issue', status: step.issue.status as string });
-    if (!pr.known) warnings.push({ stepId: step.id, phase: 'pr', status: step.pr.status as string });
+  const steps: StepView[] = ledger.steps.map((step, index) => {
+    // fail-soft: 台帳の手編集で issue/pr オブジェクト (や step 自体) が欠けても
+    // TypeError で盤面全体を壊さず、missing-phase 警告 + known=false (unknown 列行き) に落とす。
+    const rec: Partial<Step> = isRecord(step) ? step : {};
+    const stepId = typeof rec.id === 'string' ? rec.id : `(steps[${index}])`;
+    const rawIssue = isRecord(rec.issue) ? rec.issue : null;
+    const rawPr = isRecord(rec.pr) ? rec.pr : null;
+    const issueStatus = rawIssue?.status ?? null;
+    const prStatus = rawPr?.status ?? null;
 
-    const celebrating = step.pr.status === 'ready for merge';
+    const issue = rawIssue === null ? MISSING_PHASE_LOOKUP : lookupSignal('issue', issueStatus);
+    const pr = rawPr === null ? MISSING_PHASE_LOOKUP : lookupSignal('pr', prStatus);
+
+    // 警告は信号の採否 (規則 1) と独立 — 盤面表示のための fail-soft 通知
+    if (rawIssue === null) {
+      warnings.push({ stepId, phase: 'issue', kind: 'missing-phase', status: null });
+    } else if (!issue.known) {
+      warnings.push({ stepId, phase: 'issue', kind: 'unknown-status', status: issueStatus as string });
+    }
+    if (rawPr === null) {
+      warnings.push({ stepId, phase: 'pr', kind: 'missing-phase', status: null });
+    } else if (!pr.known) {
+      warnings.push({ stepId, phase: 'pr', kind: 'unknown-status', status: prStatus as string });
+    }
+
+    const celebrating = prStatus === 'ready for merge';
     if (celebrating) celebrate = true;
 
     // 規則 1: pr.status != null の step は PR フェーズの信号のみ採用。
     // pr.status が未知語でも「PR フェーズが始まっている」事実は変わらないため issue 信号は採用しない。
-    if (step.pr.status !== null) {
-      if (pr.signal) applySignal(pr.signal, step.id, 'pr', step.pr.status);
-    } else if (issue.signal && step.issue.status !== null) {
-      applySignal(issue.signal, step.id, 'issue', step.issue.status);
+    // pr オブジェクト欠落は「PR フェーズ未開始」と同じ扱い (issue 側の情報が生きていれば使う)。
+    if (prStatus !== null) {
+      if (pr.signal) applySignal(pr.signal, stepId, 'pr', prStatus);
+    } else if (issue.signal && issueStatus !== null) {
+      applySignal(issue.signal, stepId, 'issue', issueStatus);
     }
 
     return {
-      id: step.id,
-      kind: step.kind ?? null,
-      title: step.title ?? null,
-      issue: { number: step.issue.number, status: step.issue.status, githubState: step.issue.githubState, known: issue.known },
-      pr: { number: step.pr.number, status: step.pr.status, githubState: step.pr.githubState, known: pr.known },
+      id: stepId,
+      kind: rec.kind ?? null,
+      title: rec.title ?? null,
+      issue: { number: rawIssue?.number ?? null, status: issueStatus, githubState: rawIssue?.githubState ?? null, known: issue.known },
+      pr: { number: rawPr?.number ?? null, status: prStatus, githubState: rawPr?.githubState ?? null, known: pr.known },
       celebrating,
     };
   });
@@ -157,14 +201,9 @@ export function derive(ledger: Ledger): BoardState {
 /* ------------------------------------------------------------------ */
 
 /**
- * カンバンの列順 (= status の遷移順)。
- * 対応表 (ISSUE_SIGNALS / PR_SIGNALS) のキー宣言順が schema enum の遷移順と一致している
- * ことを derive.test.ts が assert する (語彙の重複定義を避け、キー順を列順の単一源にする)。
- * 先頭の null は「未着手」列。
- */
-/**
  * issue レーンの表示列順 (作者指定のカンバン並び — enum の遷移順とは別)。
  * 語彙の網羅 (schema enum と過不足なし) はテストが集合一致で担保する。
+ * 先頭の null は「未着手」列。
  */
 export const ISSUE_COLUMN_ORDER: ReadonlyArray<string | null> = [
   null, // 未着手
@@ -208,12 +247,19 @@ export interface KanbanCard {
   number: number | null;
   /** この step のレーン上の生 status (unknown 列でどの語だったかを表示するために持つ) */
   status: string | null;
+  /** GitHub の実態 (open / closed / merged)。カードに小さく表示して台帳との対応を見せる */
+  githubState: string | null;
 }
 
 export interface KanbanColumn {
   /** 列を定める status (null = 未着手列。unknown 列も null で kind で区別) */
   status: string | null;
   kind: KanbanColumnKind;
+  /**
+   * 規則 3 の導出値 (StepView.celebrating) の列への集約 — この列に祝い step のカードがあるか。
+   * PR レーンの 'ready for merge' 列でのみ立ちうる。UI はこの値を消費する (再導出しない)。
+   */
+  celebrating: boolean;
   cards: KanbanCard[];
 }
 
@@ -232,9 +278,10 @@ function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: Ste
   const columns: KanbanColumn[] = order.map((status) => ({
     status,
     kind: status !== null && TERMINAL_STATUSES.has(status) ? 'terminal' : 'flow',
+    celebrating: false,
     cards: [],
   }));
-  const unknown: KanbanColumn = { status: null, kind: 'unknown', cards: [] };
+  const unknown: KanbanColumn = { status: null, kind: 'unknown', celebrating: false, cards: [] };
   const byStatus = new Map<string | null, KanbanColumn>(columns.map((c) => [c.status, c]));
 
   for (const step of steps) {
@@ -245,10 +292,14 @@ function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: Ste
       title: step.title,
       number: view.number,
       status: view.status,
+      githubState: view.githubState,
     };
     // 未知 status (known=false) は unknown 列へ。既知なのに列が無いケースも防御的に unknown 行き
     const column = view.known ? byStatus.get(view.status) : undefined;
-    (column ?? unknown).cards.push(card);
+    const target = column ?? unknown;
+    target.cards.push(card);
+    // 祝いは step 側の導出値 (規則 3) を列へ集約するだけ — PR レーンの ready for merge 列で立つ
+    if (phase === 'pr' && step.celebrating) target.celebrating = true;
   }
   return { phase, columns: [...columns, unknown] };
 }

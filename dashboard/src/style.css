@@ -1,17 +1,101 @@
+/*
+ * デザイン基盤: 「管制室 (mission control)」ダーク基調。
+ * - 深いネイビー〜黒 + 計器的アクセント。ロールの色言語 (developer = 琥珀 / reviewer = 青緑)
+ *   を列ヘッダとキャラカードで共有し、「どの列 = 誰の仕事か」を色で読めるようにする。
+ * - 終端は無彩色、ready for merge は祝い時のみ金。
+ * - 文字組: 表示・本文 = Zen Kaku Gothic New / ID・番号・件数 = IBM Plex Mono (tabular-nums)。
+ *   最小フォントは 12px。
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* 奥行き (奥 → 手前) */
+  --bg-0: #05080f; /* 最奥 (ページ外周) */
+  --bg-1: #0a101d; /* ページ */
+  --tray: #0c1322; /* レーン = 盆 (内側に沈む) */
+  --panel: #101a2e; /* 柱・ヘッダ類のパネル */
+  --column: #0f1728; /* カンバン列 */
+  --card: #17233c; /* カード (最前面) */
+
+  /* 線と文字 */
+  --line: rgba(124, 152, 205, 0.16);
+  --line-strong: rgba(124, 152, 205, 0.32);
+  --text-hi: #e9effb;
+  --text: #b6c2d9;
+  --text-lo: #7d8aa3;
+
+  /* ロールの色言語 */
+  --dev: #ffb454; /* developer = 琥珀 */
+  --dev-dim: rgba(255, 180, 84, 0.14);
+  --rev: #43d9c9; /* reviewer = 青緑 */
+  --rev-dim: rgba(67, 217, 201, 0.13);
+
+  /* 計器のその他の信号色 */
+  --gold: #f2c94c; /* ready for merge (祝い) */
+  --gold-dim: rgba(242, 201, 76, 0.14);
+  --alert: #ff7b72; /* unknown / エラー */
+  --alert-dim: rgba(255, 123, 114, 0.12);
+  --ok: #56d364; /* ポーリング正常 LED */
+  --merged: #a371f7; /* GitHub の merged 紫 (githubState 小表示用) */
+
+  /* 文字組 */
+  --font-sans: 'Zen Kaku Gothic New', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: 'Hiragino Sans', 'Noto Sans JP', 'Helvetica Neue', Arial, sans-serif;
-  background: #f4f6f9;
-  color: #24292f;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text);
   line-height: 1.6;
+  background-color: var(--bg-1);
+  /* 奥行き: 上方の淡い青の照明 + 微細な計器グリッド + 外周の落ち込み */
+  background-image:
+    radial-gradient(1200px 480px at 50% -120px, rgba(64, 110, 190, 0.18), transparent 70%),
+    radial-gradient(900px 600px at 88% 110%, rgba(38, 70, 120, 0.12), transparent 70%),
+    repeating-linear-gradient(0deg, rgba(124, 152, 205, 0.035) 0 1px, transparent 1px 44px),
+    repeating-linear-gradient(90deg, rgba(124, 152, 205, 0.035) 0 1px, transparent 1px 44px),
+    linear-gradient(var(--bg-1), var(--bg-0));
+  background-attachment: fixed;
+  min-height: 100vh;
 }
 
 a {
-  color: #0969da;
+  color: var(--rev);
+}
+
+::selection {
+  background: rgba(67, 217, 201, 0.28);
+}
+
+/* スクロールバーも計器の意匠に合わせる (列内スクロールが操作の主役) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 152, 205, 0.35) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(124, 152, 205, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(124, 152, 205, 0.55);
 }
 
 @media (prefers-reduced-motion: reduce) {

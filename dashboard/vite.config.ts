@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig, type Plugin, type PluginOption } from 'vite';
+import { parseRepoSlug } from './src/lib/repo-slug';
 
 /**
  * 起動 I/F (issue #9 決定事項): 環境変数 HARNESS_PROJECT に一本化。
@@ -31,8 +32,7 @@ function resolveProjectRoot(): string {
 
 /**
  * `git -C <project> remote get-url origin` から GitHub の owner/repo を導出する。
- * ssh (git@github.com:owner/repo.git / ssh://git@github.com/owner/repo.git) と
- * https (https://github.com/owner/repo[.git]) の両形式に対応。
+ * URL の解釈は純関数 parseRepoSlug (src/lib/repo-slug.ts, vitest 対象) に委譲。
  * remote 無し・GitHub 以外・git 失敗は null (画面はリンク無効化で継続 = 劣化動作)。
  */
 function detectRepoSlug(projectRoot: string): string | null {
@@ -41,12 +41,13 @@ function detectRepoSlug(projectRoot: string): string | null {
     url = execFileSync('git', ['-C', projectRoot, 'remote', 'get-url', 'origin'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
+    });
+  } catch (e) {
+    // 劣化動作 (リンク無効) 自体は仕様だが、原因を無言にしない (git 未導入 / repo 外 / origin 不在)
+    console.warn(`[dashboard] repo slug を導出できません (git remote get-url origin が失敗): ${(e as Error).message}`);
     return null;
   }
-  const matched = url.match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/);
-  return matched ? matched[1] : null;
+  return parseRepoSlug(url);
 }
 
 /**
@@ -54,8 +55,9 @@ function detectRepoSlug(projectRoot: string): string | null {
  * 応答は常に HTTP 200 (issue #9 決定事項):
  *   成功: {ok: true, ledger, repoSlug, fetchedAt}
  *   失敗: {ok: false, error: {code: 'LEDGER_NOT_FOUND' | 'LEDGER_INVALID', message}}
- * LEDGER_INVALID = JSON.parse 失敗、または parse は通るが steps が配列として存在しない場合。
- * それ以上の構造検証は API 層では行わない (未知 status は derive 側の fail-soft)。
+ * LEDGER_NOT_FOUND = ファイル不存在 (ENOENT) のみ。
+ * LEDGER_INVALID = ENOENT 以外の読取失敗 / JSON.parse 失敗 / steps が配列として存在しない場合。
+ * それ以上の構造検証は API 層では行わない (未知 status や欠落 step は derive 側の fail-soft)。
  */
 function ledgerApiPlugin(projectRoot: string): Plugin {
   const ledgerPath = resolve(projectRoot, '.harness', 'plan-progress.json');
@@ -72,8 +74,15 @@ function ledgerApiPlugin(projectRoot: string): Plugin {
         let raw: string;
         try {
           raw = readFileSync(ledgerPath, 'utf-8');
-        } catch {
-          fail('LEDGER_NOT_FOUND', `台帳ファイルが見つかりません: ${ledgerPath}`);
+        } catch (e) {
+          // LEDGER_NOT_FOUND は「まだ生成されていない」(ENOENT) だけ。
+          // それ以外の読取失敗 (EACCES / EISDIR 等) は台帳側の異常として理由付きで LEDGER_INVALID
+          const code = (e as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT') {
+            fail('LEDGER_NOT_FOUND', `台帳ファイルが見つかりません: ${ledgerPath}`);
+          } else {
+            fail('LEDGER_INVALID', `台帳ファイルを読み取れません (${code ?? String(e)}): ${ledgerPath}`);
+          }
           return;
         }
         let ledger: unknown;

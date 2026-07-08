@@ -29,7 +29,7 @@ const cast = computed(() =>
 
 /** 祝い紙吹雪 (index から決定論的に散らす) */
 function pieceStyle(i: number): Record<string, string> {
-  const colors = ['#f94144', '#f8961e', '#f9c74f', '#90be6d', '#43aa8b', '#577590', '#9b5de5'];
+  const colors = ['#f2c94c', '#ffb454', '#43d9c9', '#56d364', '#a371f7', '#ff7b72', '#e9effb'];
   return {
     left: `${(i * 37) % 100}%`,
     backgroundColor: colors[i % colors.length]!,
@@ -44,6 +44,7 @@ function pieceStyle(i: number): Record<string, string> {
     <div v-if="celebrate" class="confetti" aria-hidden="true">
       <span v-for="i in 28" :key="i" class="piece" :style="pieceStyle(i)"></span>
     </div>
+    <p class="stage-tag">CREW</p>
     <div v-if="celebrate" class="celebrate-banner">🎉 ready for merge — merge は人間の出番です!</div>
 
     <div class="cast">
@@ -81,18 +82,38 @@ function pieceStyle(i: number): Record<string, string> {
 </template>
 
 <style scoped>
+/* キャラ舞台も管制室のダークに統一。キャラカードは盤面の列ヘッダと同じロール色を纏う */
 .stage {
   position: relative;
-  padding: 16px;
-  border: 1px solid #d0d7de;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #ffffff 0%, #f0f4f8 100%);
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background:
+    radial-gradient(360px 160px at 50% -40px, rgba(64, 110, 190, 0.16), transparent 70%),
+    var(--tray);
+  box-shadow: inset 0 2px 12px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
 
 .stage.is-celebrating {
-  border-color: #d4a72c;
-  background: linear-gradient(180deg, #fffdf5 0%, #fff3d1 100%);
+  border-color: rgba(242, 201, 76, 0.55);
+  background:
+    radial-gradient(360px 200px at 50% -40px, rgba(242, 201, 76, 0.16), transparent 70%),
+    var(--tray);
+  box-shadow:
+    inset 0 2px 12px rgba(0, 0, 0, 0.45),
+    0 0 18px rgba(242, 201, 76, 0.18);
+}
+
+.stage-tag {
+  position: relative;
+  z-index: 2;
+  margin: 0 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  color: var(--text-lo);
 }
 
 .celebrate-banner {
@@ -100,17 +121,23 @@ function pieceStyle(i: number): Record<string, string> {
   z-index: 2;
   margin-bottom: 14px;
   padding: 8px 14px;
+  border: 1px solid rgba(242, 201, 76, 0.55);
   border-radius: 8px;
-  background: #ffd867;
-  color: #4d3800;
+  background: var(--gold-dim);
+  color: var(--gold);
   font-weight: 700;
+  font-size: 13px;
   text-align: center;
   animation: banner-pop 0.9s ease-in-out infinite alternate;
 }
 
 @keyframes banner-pop {
-  from { transform: scale(1); }
-  to { transform: scale(1.02); }
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.02);
+  }
 }
 
 .cast {
@@ -122,12 +149,29 @@ function pieceStyle(i: number): Record<string, string> {
   gap: 12px;
 }
 
+/* ロールの色言語: 列ヘッダと同じ色をキャラカードに (developer = 琥珀 / reviewer = 青緑) */
 .character {
-  padding: 16px;
-  border: 1px solid #d8dee4;
+  --role: var(--text-lo);
+  --role-dim: rgba(125, 138, 163, 0.12);
+  padding: 14px 14px 16px;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--role);
   border-radius: 10px;
-  background: #ffffff;
+  background: var(--panel);
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
   text-align: center;
+}
+
+.character[data-character='developer'] {
+  --role: var(--dev);
+  --role-dim: var(--dev-dim);
+}
+
+.character[data-character='reviewer'] {
+  --role: var(--rev);
+  --role-dim: var(--rev-dim);
 }
 
 .scene {
@@ -150,11 +194,15 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes work-bob {
-  from { transform: translateY(0) rotate(-2deg); }
-  to { transform: translateY(-6px) rotate(2deg); }
+  from {
+    transform: translateY(0) rotate(-2deg);
+  }
+  to {
+    transform: translateY(-6px) rotate(2deg);
+  }
 }
 
-/* developer: タイピングの点滅ドット */
+/* developer: タイピングの点滅ドット (ロール色) */
 .typing {
   font-size: 26px;
 }
@@ -162,7 +210,7 @@ function pieceStyle(i: number): Record<string, string> {
 .typing i {
   font-style: normal;
   font-weight: 700;
-  color: #0969da;
+  color: var(--role);
   animation: type-dot 0.9s steps(1) infinite;
 }
 
@@ -175,8 +223,14 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes type-dot {
-  0%, 40% { opacity: 1; }
-  50%, 100% { opacity: 0.15; }
+  0%,
+  40% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.15;
+  }
 }
 
 /* reviewer: 書類の上を虫眼鏡が走査 */
@@ -203,8 +257,12 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes lens-sweep {
-  from { transform: translate(0, 0) rotate(-12deg); }
-  to { transform: translate(28px, 8px) rotate(12deg); }
+  from {
+    transform: translate(0, 0) rotate(-12deg);
+  }
+  to {
+    transform: translate(28px, 8px) rotate(12deg);
+  }
 }
 
 /* --- 待ち仕事あり: 受信箱がぷるぷる --- */
@@ -214,8 +272,13 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes inbox-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.2) rotate(-6deg); }
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2) rotate(-6deg);
+  }
 }
 
 .state-waiting .face {
@@ -223,14 +286,19 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes waiting-breath {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
 }
 
 /* --- idle: グレーアウト + zzz --- */
 .state-idle .face {
   filter: grayscale(0.9);
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
 .zzz {
@@ -239,65 +307,86 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes zzz-float {
-  0% { transform: translateY(4px); opacity: 0.25; }
-  50% { transform: translateY(-4px); opacity: 0.85; }
-  100% { transform: translateY(-10px); opacity: 0; }
+  0% {
+    transform: translateY(4px);
+    opacity: 0.25;
+  }
+  50% {
+    transform: translateY(-4px);
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
 }
 
 .name {
-  margin: 6px 0 4px;
+  margin: 6px 0 6px;
   font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--role);
 }
 
+/* 状態は強度で読む: working = 塗り / waiting = 枠線 / idle = 無彩色 (色相はロール固定) */
 .state-label {
   display: inline-block;
   margin: 0;
   padding: 2px 12px;
+  border: 1px solid transparent;
   border-radius: 12px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .pill-working {
-  background: #ddf4ff;
-  color: #0550ae;
+  background: var(--role-dim);
+  border-color: var(--role);
+  color: var(--role);
 }
 
 .pill-waiting {
-  background: #fff8c5;
-  color: #7d4e00;
+  background: transparent;
+  border-color: var(--role);
+  color: var(--role);
+  opacity: 0.85;
 }
 
 .pill-idle {
-  background: #eaeef2;
-  color: #57606a;
+  background: rgba(125, 138, 163, 0.12);
+  color: var(--text-lo);
 }
 
 .note {
-  margin: 6px 0 0;
+  margin: 8px 0 0;
   font-size: 12px;
-  color: #57606a;
+  color: var(--text-lo);
 }
 
 .tasks {
   margin: 10px 0 0;
   padding: 0;
   list-style: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
-  color: #57606a;
+  line-height: 1.5;
+  color: var(--text);
   text-align: left;
 }
 
 .tasks li {
-  padding: 2px 8px;
-  border-left: 3px solid #d0d7de;
-  margin-bottom: 2px;
+  padding: 3px 8px;
+  border-left: 2px solid var(--role);
+  margin-bottom: 3px;
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .tasks-empty {
   margin: 10px 0 0;
   font-size: 12px;
-  color: #8c959f;
+  color: var(--text-lo);
 }
 
 /* --- 祝い: 紙吹雪 --- */
@@ -321,8 +410,16 @@ function pieceStyle(i: number): Record<string, string> {
 }
 
 @keyframes confetti-fall {
-  0% { transform: translateY(-10%) rotate(0deg); opacity: 0; }
-  10% { opacity: 0.95; }
-  100% { transform: translateY(420px) rotate(680deg); opacity: 0.1; }
+  0% {
+    transform: translateY(-10%) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateY(420px) rotate(680deg);
+    opacity: 0.1;
+  }
 }
 </style>
