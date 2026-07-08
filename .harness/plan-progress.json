@@ -129,7 +129,7 @@
       },
       "pr": {
         "number": 7,
-        "status": "completed review",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
