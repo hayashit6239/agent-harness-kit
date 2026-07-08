@@ -15,8 +15,8 @@
       "title": "Phase 0 scaffold — plugin 骨格 + /harness-init + /harness-review-pr + 雛形一式",
       "issue": {
         "number": 2,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "closed issue",
+        "githubState": "closed"
       },
       "pr": {
         "number": 5,
@@ -31,8 +31,8 @@
       "title": "harness-gate — plan-progress の schema 検証 + GitHub drift 照合",
       "issue": {
         "number": 3,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "closed issue",
+        "githubState": "closed"
       },
       "pr": {
         "number": 5,
@@ -47,8 +47,8 @@
       "title": "dogfood — kit 自身を .harness 台帳 + harness-gate で管理",
       "issue": {
         "number": 4,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "closed issue",
+        "githubState": "closed"
       },
       "pr": {
         "number": 5,
