@@ -131,6 +131,21 @@
         "status": "created pr",
         "githubState": "open"
       }
+    },
+    {
+      "id": "P9",
+      "kind": "docs",
+      "title": "人間の merge 指示に対するエージェント代行挙動 (終端記録含む) を CLAUDE.harness.md 雛形に定義 (follow-up #8)",
+      "issue": {
+        "number": 8,
+        "status": "created issue",
+        "githubState": "open"
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      }
     }
   ]
 }
