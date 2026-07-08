@@ -3,12 +3,10 @@
 #
 # 1. fixture (捨て repo) に templates を複製し、evidence.test を実コマンドで埋めた
 #    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
-# 2. validate --schema が exit 0
+# 2. validate --schema が exit 0 + 検査規則 (check_claims) の import 直接呼出が違反を検出
 # 3. evidence.test の実行が exit 0
-# 4. 失敗パターン群 (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
-#    githubState null / 終端不整合 / literal-guard / isDraft drift / issue 側の整合・終端・drift /
-#    evidence 空白のみ / --drift 単独の主張規則違反) がすべて non-zero で、
-#    かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
+# 4. 失敗パターン群がすべて non-zero + 期待する ::error:: 文言で落ちる
+#    (内訳は FAIL_CASES 表と個別ケース節を参照 — ここに列挙しない。列挙は乖離の温床)
 # 5. drift の正系 (stub gh が台帳と一致) が exit 0 / gh 実行失敗が drift と区別されて fail する /
 #    gh が途中で失敗しても蓄積済みの検出済み drift が全件出力される /
 #    gh が非オブジェクト JSON (null) を返したら実行エラーとして fail し蓄積 drift も失わない
@@ -81,6 +79,26 @@ python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
 echo "[2/8] --schema exit 0"
 
+# validator を import して検査規則を直接呼ぶ (直接テスト可能性の固定化 — 構造の退行検知)
+python3 - "$VALIDATOR" <<'PY_DIRECT'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("vpp", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+errors = []
+m.check_claims(errors, {"number": 1, "status": "created pr", "githubState": None}, "steps[direct].pr", "pr")
+assert errors, "check_claims の直接呼出が主張規則違反 (number⇒githubState) を検出しない"
+# format_error の '::error:: ' prefix 契約を固定する (FAIL_CASES は本文の部分一致のみで、
+# prefix が壊れても緑のまま GitHub Actions の PR アノテーション表示だけが静かに消えるため)
+assert errors[0].startswith("::error:: "), (
+    f"format_error の '::error:: ' prefix 契約が破れている (got: {errors[0]!r})")
+assert "があるのに githubState が null" in errors[0], (
+    f"期待する規則の文言が無い (got: {errors[0]!r})")  # 規則単位の固定化 (FAIL_CASES と同じ流儀)
+PY_DIRECT
+echo "[2/8] 検査規則の直接呼出 (import) OK"
+
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
 ( cd "$REPO" && eval "$TEST_CMD" ) \
@@ -150,30 +168,8 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 }
 
-# (i) enum 逸脱
-make_broken "$TMP/broken-enum.json" enum
-expect_fail_with "(i) enum 逸脱" \
-  "steps[S1].pr.status: enum 外の値" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-enum.json"
-echo "[4/8] (i) enum 逸脱 -> non-zero + 期待文言"
-
-# (ii) 整合規則 (number:null なのに status:"created pr")
-make_broken "$TMP/broken-consistency.json" consistency
-expect_fail_with "(ii) 整合規則違反" \
-  "number が null なのに status が 'created pr'" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-consistency.json"
-echo "[4/8] (ii) 整合規則違反 -> non-zero + 期待文言"
-
-# (iii) evidence-gate (ready 系 status ありで evidence.test:null)
-make_broken "$TMP/broken-evidence.json" evidence
-expect_fail_with "(iii) evidence-gate" \
-  "evidence.test が null" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-evidence.json"
-echo "[4/8] (iii) evidence-gate -> non-zero + 期待文言"
-
-# (iv) drift: PATH 先頭に固定 JSON を返す gh の代役 (stub) を置き、
-#      台帳の githubState (open) と食い違わせる。台帳は git repo 内に置く
-#      (validator が台帳の repo ルートで gh を実行するため)
+# drift 系ケース共通の gh 代役 (stub): PATH 先頭に置くと、台帳と食い違う固定 JSON を返す。
+# drift 系の台帳は git repo 内 ($HARNESS) に置く (validator が台帳の repo ルートで gh を実行するため)
 STUB_MISMATCH="$TMP/stub-mismatch-bin"
 mkdir -p "$STUB_MISMATCH"
 cat > "$STUB_MISMATCH/gh" <<'SH'
@@ -187,35 +183,59 @@ esac
 SH
 chmod +x "$STUB_MISMATCH/gh"
 
-DRIFT_PLAN="$HARNESS/drift-ledger.json"
-make_broken "$DRIFT_PLAN" drift
-expect_fail_with "(iv) drift 食い違い" \
-  "台帳は 'open' だが GitHub (PR #1) は 'merged'" \
-  env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
-echo "[4/8] (iv) drift 食い違い -> non-zero + 期待文言"
+# 表駆動の失敗パターン: 1 行 = 「ラベル|変異モード|検査モード|期待文言」。
+#   検査モード: schema = --schema で検査 / drift = STUB_MISMATCH を PATH 先頭に置いた --drift で検査
+# 標準的な変異ケースの追加手順 (2 箇所だけ): ① make_broken に変異の elif を 1 つ足す
+# ② この表に 1 行足す — 直後のループが make_broken → expect_fail_with → echo を一括で行う
+FAIL_CASES=(
+  "(i) enum 逸脱|enum|schema|steps[S1].pr.status: enum 外の値"
+  "(ii) 整合規則違反|consistency|schema|number が null なのに status が 'created pr'"
+  "(iii) evidence-gate|evidence|schema|evidence.test が null"
+  "(iv) drift 食い違い|drift|drift|台帳は 'open' だが GitHub (PR #1) は 'merged'"
+  "(vi) githubState null|ghstate-null|schema|number (1) があるのに githubState が null"
+  "(vii) 終端不整合|terminal-mismatch|schema|status が \"merged pr\" なのに githubState が 'open'"
+  "(x) issue 整合規則違反|issue-consistency|schema|number が null なのに status が 'created issue'"
+  "(xi) issue 終端不整合|issue-terminal|schema|status が \"closed issue\" なのに githubState が 'open'"
+  "(xii) issue drift 食い違い|issue-drift|drift|台帳は 'open' だが GitHub (issue #1) は 'closed'"
+  "(xiii) evidence-gate 空文字列|evidence-blank|schema|evidence.test が null または空白のみ"
+  "(xiv) --drift 単独の主張規則違反|ghstate-null|drift|number (1) があるのに githubState が null"
+)
 
-# (v) 旧形式の statusEnums 複製が台帳に残っている (再導入防止ガード)
+for row in "${FAIL_CASES[@]}"; do
+  IFS='|' read -r label mode checkmode want <<< "$row"
+  case "$checkmode" in
+    schema)
+      broken="$TMP/broken-$mode.json"
+      make_broken "$broken" "$mode"
+      expect_fail_with "$label" "$want" \
+        python3 "$VALIDATOR" --schema "$broken"
+      ;;
+    drift)
+      broken="$HARNESS/broken-$mode-ledger.json"
+      make_broken "$broken" "$mode"
+      expect_fail_with "$label" "$want" \
+        env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$broken"
+      ;;
+    *)
+      fail "FAIL_CASES の検査モードが不正 ($checkmode): $row"
+      ;;
+  esac
+  echo "[4/8] $label -> non-zero + 期待文言"
+done
+
+# --- 以下は形が特殊で表に入れない個別ケース (無理に畳むと可読性が落ちる)。
+#     番号は据え置きのため、出力順は表 → 個別の順になり通し番号どおりではない ---
+
+# (v) statusEnums 残存 (再導入防止ガード): 変異が step への標準変異でなく
+#     台帳トップレベルへのキー追加のため、表に入れず個別に残す
 make_broken "$TMP/broken-statusenums.json" statusenums
 expect_fail_with "(v) statusEnums 残存" \
   "台帳に statusEnums を置かない" \
   python3 "$VALIDATOR" --schema "$TMP/broken-statusenums.json"
 echo "[4/8] (v) statusEnums 残存 -> non-zero + 期待文言"
 
-# (vi) number があるのに githubState:null
-make_broken "$TMP/broken-ghstate-null.json" ghstate-null
-expect_fail_with "(vi) githubState null" \
-  "number (1) があるのに githubState が null" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-ghstate-null.json"
-echo "[4/8] (vi) githubState null -> non-zero + 期待文言"
-
-# (vii) 終端 status "merged pr" なのに githubState が open
-make_broken "$TMP/broken-terminal.json" terminal-mismatch
-expect_fail_with "(vii) 終端不整合" \
-  'status が "merged pr" なのに githubState が '"'open'" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-terminal.json"
-echo "[4/8] (vii) 終端不整合 -> non-zero + 期待文言"
-
-# (viii) literal-guard: schema 複製から "ready for merge" を取り除いた壊れ schema を
+# (viii) literal-guard: 壊れ schema の配置 (台帳と同じディレクトリ) が必要なため、表に入れず個別に残す。
+#        schema 複製から "ready for merge" を取り除いた壊れ schema を
 #        台帳と同じディレクトリに置いて起動 (validator は台帳側の schema を優先解決する)
 LITDIR="$TMP/literal-guard"
 mkdir -p "$LITDIR"
@@ -236,7 +256,9 @@ expect_fail_with "(viii) literal-guard" \
   python3 "$VALIDATOR" --schema "$LITDIR/plan-progress.json"
 echo "[4/8] (viii) literal-guard -> non-zero + 期待文言"
 
-# (ix) isDraft drift: 台帳は isDraft:false、stub gh は state 一致 (OPEN) だが isDraft:true
+# (ix) isDraft drift: 共通の STUB_MISMATCH では表現できない専用 stub (state は台帳と一致し
+#      isDraft だけ食い違う) が必要なため、表に入れず個別に残す。
+#      台帳は isDraft:false、stub gh は state 一致 (OPEN) だが isDraft:true
 STUB_DRAFT="$TMP/stub-draft-bin"
 mkdir -p "$STUB_DRAFT"
 cat > "$STUB_DRAFT/gh" <<'SH'
@@ -257,46 +279,11 @@ expect_fail_with "(ix) isDraft drift" \
   env PATH="$STUB_DRAFT:$PATH" python3 "$VALIDATOR" --drift "$ISDRAFT_PLAN"
 echo "[4/8] (ix) isDraft drift -> non-zero + 期待文言"
 
-# (x) issue 側の整合規則 (issue.number:null なのに status:"created issue")
-make_broken "$TMP/broken-issue-consistency.json" issue-consistency
-expect_fail_with "(x) issue 整合規則違反" \
-  "number が null なのに status が 'created issue'" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-issue-consistency.json"
-echo "[4/8] (x) issue 整合規則違反 -> non-zero + 期待文言"
-
-# (xi) issue 側の終端不整合 ("closed issue" なのに githubState が open)
-make_broken "$TMP/broken-issue-terminal.json" issue-terminal
-expect_fail_with "(xi) issue 終端不整合" \
-  'status が "closed issue" なのに githubState が '"'open'" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-issue-terminal.json"
-echo "[4/8] (xi) issue 終端不整合 -> non-zero + 期待文言"
-
-# (xii) issue 側の drift: 台帳は open と主張、mismatch 用 stub gh は CLOSED を返す
-ISSUE_DRIFT_PLAN="$HARNESS/issue-drift-ledger.json"
-make_broken "$ISSUE_DRIFT_PLAN" issue-drift
-expect_fail_with "(xii) issue drift 食い違い" \
-  "台帳は 'open' だが GitHub (issue #1) は 'closed'" \
-  env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$ISSUE_DRIFT_PLAN"
-echo "[4/8] (xii) issue drift 食い違い -> non-zero + 期待文言"
-
-# (xiii) evidence-gate: ready 系 status ありで evidence.test が空文字列
-#        (null 素通しの双子経路 — 空白のみ文字列は null と同等に扱われること)
-make_broken "$TMP/broken-evidence-blank.json" evidence-blank
-expect_fail_with "(xiii) evidence-gate 空文字列" \
-  "evidence.test が null または空白のみ" \
-  python3 "$VALIDATOR" --schema "$TMP/broken-evidence-blank.json"
-echo "[4/8] (xiii) evidence-gate 空文字列 -> non-zero + 期待文言"
-
-# (xiv) --drift 単独実行での主張規則違反: number ありで githubState:null は
-#       schema を併走しない手元単独実行でも素通しさせない (gh 自体は成功する状況で fail)
-GHNULL_DRIFT_PLAN="$HARNESS/ghstate-null-drift-ledger.json"
-make_broken "$GHNULL_DRIFT_PLAN" ghstate-null
-expect_fail_with "(xiv) --drift 単独の主張規則違反" \
-  "number (1) があるのに githubState が null" \
-  env PATH="$STUB_MISMATCH:$PATH" python3 "$VALIDATOR" --drift "$GHNULL_DRIFT_PLAN"
-echo "[4/8] (xiv) --drift 単独の主張規則違反 -> non-zero + 期待文言"
-
 # --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
+
+# このセクションで使い回す drift 台帳 (PR #1 を "open" と主張する step を持つ) を用意する
+DRIFT_PLAN="$HARNESS/drift-ledger.json"
+make_broken "$DRIFT_PLAN" drift
 
 # 正系: stub gh が台帳と一致する状態 (OPEN) を返す -> exit 0
 # (fatal や検査ロジックの壊れで「たまたま non-zero」になっていないことの保証)

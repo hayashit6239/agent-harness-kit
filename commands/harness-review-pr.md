@@ -1,5 +1,5 @@
 ---
-description: 対象 repo の .harness/plan-progress.json の PR フェーズ status を選別源に、pr.status が 'created pr' または 'waiting for review' の PR を `reviewing-multi-angle` skill 経由で 3 観点並列レビュー(`/code-review` correctness + `reviewing-pr-architecture` YAGNI/6 観点 + `reviewing-pr-google-method` 命名/規約/テスト品質)し、dedup + 優先度付け済みの統合 findings(max 10 件)を 1 件の PR コメントとして投稿。`has_blocker` は wrapper 側で再集計(全 source の 🔴 に加え arch/google 由来の 🟡 も blocker)し、真偽で pr.status を自動進行(false→'ready for merge'(+ `merge ready` ラベル付与) / true→'completed review'(+ ラベル除去))する reviewer ロール。台帳の状態遷移は main へ直接コミット。別セッションで手動起動 or /loop。
+description: 対象 repo の .harness/plan-progress.json の PR フェーズ status を選別源に、pr.status が 'created pr' または 'waiting for review' の PR を `reviewing-multi-angle` skill 経由で 3 観点並列レビュー(`/code-review` correctness + `reviewing-pr-architecture` YAGNI/6 観点 + `reviewing-pr-google-method` 命名/規約/テスト品質)し、dedup + 優先度付け済みの統合 findings(max 10 件)を 1 件の PR コメントとして投稿。`has_blocker` は wrapper 側で再集計(全 source の 🔴 に加え arch/google 由来の 🟡 も blocker)し、真偽で pr.status を自動進行(false→'ready for merge'(+ `ready for merge` ラベル付与) / true→'completed review'(+ ラベル除去))する reviewer ロール。台帳の状態遷移は main へ直接コミット。別セッションで手動起動 or /loop。
 argument-hint: "[owner/repo] [effort]  省略時: CWD の origin から自動判定 / medium(低い順 low/medium/high/max/ultra)"
 allowed-tools: [Bash, Skill, Read, Write]
 ---
@@ -14,7 +14,7 @@ allowed-tools: [Bash, Skill, Read, Write]
 
 **Why**: 単一観点のレビューは網羅範囲が狭く、単独判定は「判定の丸投げ」(Cognitive Surrender) を招く。本ロールは doer ≠ judge の judge 側として、3 観点並列 + 作者との往復サイクルで観点の網羅と判定の独立を両立する。
 
-- **触る (専権)**: `pr.status` の判定遷移 (`starting review` → `ready for merge` / `completed review`)、`pr.lastReviewedStatus`、`merge ready` ラベル、レビューコメント投稿。
+- **触る (専権)**: `pr.status` の判定遷移 (`starting review` → `ready for merge` / `completed review`)、`pr.lastReviewedStatus`、`ready for merge` ラベル (+ 旧名 `merge ready` ラベルの**除去のみ** — 手順 6 の移行掃除)、レビューコメント投稿。
 - **触らない**: 終端 status (`merged pr` / `closed issue`)・`githubState`・PR 本文編集・close・merge・`issue.*`・他ラベル・コード修正 (`--fix`)。
 - **follow-up の最終判断は reviewer 責務**: 「この指摘は merge 後の対応でよい / もうマージしてよい」を決めるのは作者・対応側ではなく本ロール。対応側は指摘対応後 `waiting for review` に戻すだけ (対応側の規約は `.harness/CLAUDE.harness.md`)。
 
@@ -30,16 +30,16 @@ allowed-tools: [Bash, Skill, Read, Write]
 
 ## status 自動進行と dedup
 
-**本コマンドはレビュー結果に応じて `pr.status` を自動進行する**(本コマンドが触るのは `pr.status` / `pr.lastReviewedStatus` / GitHub の **`merge ready` ラベル**のみ。PR 本文・close・merge・`githubState`・issue 側は触らない):
+**本コマンドはレビュー結果に応じて `pr.status` を自動進行する**(本コマンドが触るのは `pr.status` / `pr.lastReviewedStatus` / GitHub の **`ready for merge` ラベル** + 旧名 `merge ready` ラベルの**除去のみ**。PR 本文・close・merge・`githubState`・issue 側は触らない):
 
-| 再集計 `has_blocker`(harness-kit 定義) | 自動進行先 `pr.status` | `merge ready` ラベル |
+| 再集計 `has_blocker`(harness-kit 定義) | 自動進行先 `pr.status` | `ready for merge` ラベル |
 |---|---|---|
 | false(🔴 なし、かつ arch/google 由来の 🟡 なし) | `ready for merge` | **付与**(冪等。既に付いていれば no-op) |
 | true(🔴 1 件以上、**または** arch/google 由来の 🟡 1 件以上) | `completed review`(分岐点 — 作者が `starting review work` に進める想定) | **除去**(冪等。付いていなければ no-op) |
 
 **has_blocker の再集計(harness-kit 定義・手順 5.5)**: skill 定義の「1 件でも 🔴」より広く blocker を取る(ゴム印対策)。**規則の正は `scripts/reaggregate-has-blocker.py`** — 判定はスクリプト実行で行い、exit 2(入力エラー)なら停止する。
 
-**ラベルの対称運用**: `merge ready` は「マージ可能と判断された」シグナルなので、再レビューで blocker が見つかったらラベルも下ろす(嘘を残さない)。
+**ラベルの対称運用**: `ready for merge` は「マージ可能と判断された」シグナルなので、再レビューで blocker が見つかったらラベルも下ろす(嘘を残さない)。
 
 **dedup**: `pr.status` が自動進行で対象外 status(`ready for merge` / `completed review`)に変わるため、次の tick で自動的に選別から外れる(重複レビュー回避)。**`pr.lastReviewedStatus` は記録目的でレビュー時の status を残す**が、選別ロジックでは参照しない。
 
@@ -53,7 +53,7 @@ allowed-tools: [Bash, Skill, Read, Write]
 2. **review work 後の再レビュー入口**: 作者が `completed review` を見て「修正必要」と判断 → `starting review work` → 修正完了 → `waiting for review` に戻す → wrapper が再選別・再レビュー
 3. **誤 hold の override / 再点検**: wrapper が進めた status を作者が `waiting for review` に巻き戻す → 次回実行で再レビュー(ラベルも自動再評価)
 
-GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らない想定。触ると plan-progress と drift する)。
+GitHub の `ready for merge` ラベルは wrapper が自動管理(作者は触らない想定。触ると plan-progress と drift する)。
 
 ## パラメータ
 
@@ -158,13 +158,16 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
    - `unknown_source_blockers` / `unknown_severity_blockers` が空でなければ、報告に「未知の source / severity 表記を blocker 扱いした(fail-closed)」と 1 行残す
    - skill が返した `has_blocker` と再集計結果が異なる場合は、報告にその旨を 1 行残す(判定の透明性)
 
-6. **レビュー完了マーカー(自動進行 + ラベル管理)** — 手順 5.5 の再集計 `has_blocker` の真偽で `pr.status` を自動進行し、`merge ready` ラベルを同期する:
+6. **レビュー完了マーカー(自動進行 + ラベル管理)** — 手順 5.5 の再集計 `has_blocker` の真偽で `pr.status` を自動進行し、`ready for merge` ラベルを同期する:
    - `has_blocker == false`:
      - `pr.status = "ready for merge"`
-     - `gh pr edit <n> --repo <repo> --add-label "merge ready"`(冪等)
+     - ラベル作成 fallback: `gh label create "ready for merge" --color "0e8a16" --description "reviewer が merge 可能と判定した PR" --force`(冪等。旧版の init で初期化した導入先や手動削除でラベルが無くても、直前に commit した status とラベルが乖離しない — 自己修復。**定義の原本は `/harness-init` の仕上げ節 — 変更時は同文を維持する**。`--force` は既存ラベルの色・説明も上書きするため、片側だけ変えるともう一方の実行のたびに旧定義へ上書きし直されて変更が定着しない)
+     - `gh pr edit <n> --repo <repo> --add-label "ready for merge"`(冪等)
+     - 旧名ラベルの掃除: `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(旧版 kit の付与分。新旧の merge 可シグナルが併存し続けるのを防ぐ — true 分岐と対称。無ければ警告のみで実害なし)
    - `has_blocker == true`:
      - `pr.status = "completed review"`
-     - `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(付いていなければ警告のみで実害なし)
+     - `gh pr edit <n> --repo <repo> --remove-label "ready for merge"`(付いていなければ警告のみで実害なし)
+     - 旧名ラベルの掃除: `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(旧版 kit が付与した旧名。残すと台帳は completed review なのに GitHub 上は merge 可シグナルが立ったままになるため、付与側の作成 fallback と対でこの故障クラスを 1 行で閉じる。無ければ警告のみで実害なし)
    ```
    # NEW=自動進行先
    jq --argjson n <n> --arg new "<NEW>" --arg d "$(date +%F)" \
@@ -174,12 +177,12 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
    ```
    書込後は「台帳書込の規約」(手順 3)に従い main へ直接コミット + push する(例: `chore(harness): P1 pr.status -> ready for merge`)。
 
-7. **触らないものを厳守(doer ≠ judge の固定線)** — `pr.status` / `pr.lastReviewedStatus` / GitHub の `merge ready` ラベル以外は触らない:
+7. **触らないものを厳守(doer ≠ judge の固定線)** — `pr.status` / `pr.lastReviewedStatus` / GitHub の `ready for merge` ラベル以外は触らない:
    - **終端 status(`merged pr` / `closed issue`)は書かない** — **`ready for merge` が reviewer の上限**。その先(実際の merge / close と終端 status の記録)は人間の責務
    - `githubState` は**書かない**(GitHub の実態を写す欄。更新は作者の責務で、乖離は CI の drift 検査が検知する)
    - PR 本文の編集・close・merge は**しない**
    - `issue.status` / `issue.lastReviewedStatus` は**触らない**(作者の責務)
-   - GitHub 上の他のラベル(`bug` / `enhancement` 等)も**触らない**
+   - GitHub 上の他のラベル(`bug` / `enhancement` 等)も**触らない**(唯一の例外: 旧名 `merge ready` の**除去** — 手順 6 の移行掃除。付与は例外にしない)
    - issue へのコメント投稿も**しない**(本コマンドは PR コメントのみ)
    - **自動修正モード(`--fix` 系)は使わない**(findings は作者が検証して採否)
 
@@ -194,7 +197,7 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 
    ### 📊 処理サマリ(N 件)
 
-   | PR | タイトル | レビュー時 status → 自動進行先 | findings | 再集計 has_blocker | merge ready ラベル | コメント |
+   | PR | タイトル | レビュー時 status → 自動進行先 | findings | 再集計 has_blocker | ready for merge ラベル | コメント |
    |---|---|---|---|---|---|---|
    | #N | (PR タイトル) | (lastReviewedStatus) → **(新 status)** | M 新規 / K 既出 | true/false(skill 値と差異あれば注記) | 付与 / 除去(冪等) | [#issuecomment-...](URL) |
 
@@ -257,4 +260,4 @@ GitHub の `merge ready` ラベルは wrapper が自動管理(作者は触らな
 - **`reviewing-multi-angle` のコスト(3x 化)**: 内部で 3 review skill を並列実行するため、単独 `/code-review` 比で約 3x のトークン消費。`/loop` の間隔は **30 分以上推奨**。
 - **PR 本文編集後の再レビュー**: status が `ready for merge` / `completed review` のままなら再発火しない。即時再レビューしたいなら作者が `waiting for review` に巻き戻す。
 - **json の鮮度依存**: 選別精度は台帳の status が最新であることに依存する。「状況が変わるたびに main へ直接コミットで更新」の運用(`.harness/CLAUDE.harness.md`)を前提とする。
-- **ラベル名の固定依存**: `merge ready` ラベルが repo に存在することを前提とする(`/harness-init` が冪等に作成する)。
+- **ラベル名の固定依存**: `ready for merge` ラベルが repo に存在することを前提とする(`/harness-init` が冪等に作成する)。
