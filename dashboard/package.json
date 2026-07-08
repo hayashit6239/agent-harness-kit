@@ -1,0 +1,28 @@
+{
+  "name": "agent-harness-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "agent-harness-kit の進捗台帳 (.harness/plan-progress.json) を可視化するローカルダッシュボード。起動: HARNESS_PROJECT=<対象プロジェクトの絶対パス> npm run dev",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/zen-kaku-gothic-new": "^5.2.7",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.0.0"
+  }
+}
