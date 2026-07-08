@@ -140,9 +140,9 @@
       "title": "人間の merge 指示に対するエージェント代行挙動 (終端記録含む) を CLAUDE.harness.md 雛形に定義 (follow-up #8)",
       "issue": {
         "number": 8,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created issue"
+        "lastReviewedStatus": "waiting for review"
       },
       "pr": {
         "number": null,
@@ -173,9 +173,9 @@
       "title": "台帳の git 非依存化 — main push 禁止ポリシー対応 + dashboard リアルタイム参照",
       "issue": {
         "number": 11,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created issue"
+        "lastReviewedStatus": "waiting for review"
       },
       "pr": {
         "number": null,
