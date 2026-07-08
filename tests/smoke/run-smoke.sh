@@ -90,6 +90,10 @@ spec.loader.exec_module(m)
 errors = []
 m.check_claims(errors, {"number": 1, "status": "created pr", "githubState": None}, "steps[direct].pr", "pr")
 assert errors, "check_claims の直接呼出が主張規則違反 (number⇒githubState) を検出しない"
+# format_error の '::error:: ' prefix 契約を固定する (FAIL_CASES は本文の部分一致のみで、
+# prefix が壊れても緑のまま GitHub Actions の PR アノテーション表示だけが静かに消えるため)
+assert errors[0].startswith("::error:: "), (
+    f"format_error の '::error:: ' prefix 契約が破れている (got: {errors[0]!r})")
 assert "があるのに githubState が null" in errors[0], (
     f"期待する規則の文言が無い (got: {errors[0]!r})")  # 規則単位の固定化 (FAIL_CASES と同じ流儀)
 PY_DIRECT
