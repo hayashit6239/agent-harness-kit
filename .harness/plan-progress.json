@@ -123,8 +123,9 @@
       "title": "smoke の data-driven 化ほか PR #5 レビュー残件 (follow-up)",
       "issue": {
         "number": 6,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": 7,
@@ -139,8 +140,9 @@
       "title": "人間の merge 指示に対するエージェント代行挙動 (終端記録含む) を CLAUDE.harness.md 雛形に定義 (follow-up #8)",
       "issue": {
         "number": 8,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": null,
