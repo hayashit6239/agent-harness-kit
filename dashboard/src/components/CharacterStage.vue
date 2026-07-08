@@ -83,8 +83,7 @@ function pieceStyle(i: number): Record<string, string> {
 <style scoped>
 .stage {
   position: relative;
-  margin-top: 20px;
-  padding: 20px;
+  padding: 16px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
   background: linear-gradient(180deg, #ffffff 0%, #f0f4f8 100%);
@@ -118,8 +117,9 @@ function pieceStyle(i: number): Record<string, string> {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
+  /* 側柱 (右カラム) では縦積み。狭い側柱でも 2 キャラが常に見える */
+  grid-template-columns: 1fr;
+  gap: 12px;
 }
 
 .character {

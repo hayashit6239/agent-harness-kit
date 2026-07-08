@@ -165,7 +165,8 @@ function cardUrl(phase: Phase, card: KanbanCard): string {
   background: #f6f8fa;
   border: 1px solid #eaeef2;
   border-radius: 8px;
-  min-height: 88px;
+  /* レーンの高さは固定 — カードが溢れたら列内の縦スクロールで見る */
+  height: 246px;
 }
 
 .column-head {
@@ -213,6 +214,9 @@ function cardUrl(phase: Phase, card: KanbanCard): string {
   gap: 6px;
   padding: 6px;
   flex: 1;
+  /* 固定高の列から溢れたカードは縦スクロール */
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .card {

@@ -64,9 +64,11 @@ function formatTime(iso: string): string {
       <span v-if="ledger">— 前回取得分を表示しています (ポーリング継続中)</span>
     </div>
 
-    <main v-if="board">
+    <main v-if="board" class="layout">
       <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
-      <CharacterStage :characters="board.characters" :celebrate="board.celebrate" />
+      <aside class="side">
+        <CharacterStage :characters="board.characters" :celebrate="board.celebrate" />
+      </aside>
     </main>
     <p v-else-if="!errorMessage" class="loading">台帳を読み込み中…</p>
   </div>
@@ -74,10 +76,33 @@ function formatTime(iso: string): string {
 
 <style scoped>
 .dashboard {
-  /* カンバン (issue 9 列 + PR 10 列) をなるべくスクロールなしで見せるため広めに取る */
-  max-width: 1440px;
+  /* カンバン (issue 9 列 + PR 10 列) + 右のキャラ側柱をなるべくスクロールなしで見せるため広めに取る */
+  max-width: 1720px;
   margin: 0 auto;
   padding: 24px 20px 48px;
+}
+
+/* カンバン (左・可変幅) とキャラ (右・常時見える側柱) の 2 段組 */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+
+.side {
+  position: sticky;
+  top: 16px;
+}
+
+/* 幅が足りない画面では縦積みに戻す (キャラは下段) */
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .side {
+    position: static;
+  }
 }
 
 .header h1 {
