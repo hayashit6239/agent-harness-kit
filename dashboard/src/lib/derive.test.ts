@@ -233,16 +233,16 @@ describe('台帳に動きなし = 両キャラ idle', () => {
 });
 
 describe('カンバン (deriveKanban) — 列順', () => {
-  it('issue レーンの列順 = 遷移順 8 枚 + 右端に unknown 警告列', () => {
+  it('issue レーンの列順 = 作者指定のカンバン並び 8 枚 + 右端に unknown 警告列', () => {
     const lane = deriveKanban([]).issue;
     expect(lane.columns.map((c) => c.status)).toEqual([
       null, // 未着手
       'created issue',
+      'waiting for review',
       'starting review',
       'completed review',
-      'ready for implementation',
       'starting review work',
-      'waiting for review',
+      'ready for implementation',
       'closed issue',
       null, // unknown 列 (status なし・kind で区別)
     ]);
@@ -266,9 +266,13 @@ describe('カンバン (deriveKanban) — 列順', () => {
     expect(lane.columns.at(-1)!.kind).toBe('unknown');
   });
 
-  it('列順定数は schema enum の順序と一致する (閉ループ: 対応表のキー宣言順 = 遷移順)', () => {
-    expect([...ISSUE_COLUMN_ORDER]).toEqual(issueEnum);
-    expect([...PR_COLUMN_ORDER]).toEqual(prEnum);
+  it('列順定数は schema enum を過不足なく覆う (閉ループ: 表示順は自由、語彙の網羅は必須)', () => {
+    // 表示順は作者指定で enum 順と異なってよいが、語彙の集合は schema と完全一致すること
+    // (enum に値が増えたら列を足すまでこのテストが落ちる)
+    expect([...ISSUE_COLUMN_ORDER].sort()).toEqual([...issueEnum].sort());
+    expect([...PR_COLUMN_ORDER].sort()).toEqual([...prEnum].sort());
+    expect(new Set(ISSUE_COLUMN_ORDER).size).toBe(ISSUE_COLUMN_ORDER.length);
+    expect(new Set(PR_COLUMN_ORDER).size).toBe(PR_COLUMN_ORDER.length);
   });
 
   it('step が無くても全列が空のまま存在する (空の列も表示するため)', () => {

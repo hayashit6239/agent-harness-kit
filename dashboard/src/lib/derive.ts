@@ -162,7 +162,21 @@ export function derive(ledger: Ledger): BoardState {
  * ことを derive.test.ts が assert する (語彙の重複定義を避け、キー順を列順の単一源にする)。
  * 先頭の null は「未着手」列。
  */
-export const ISSUE_COLUMN_ORDER: ReadonlyArray<string | null> = [null, ...Object.keys(ISSUE_SIGNALS)];
+/**
+ * issue レーンの表示列順 (作者指定のカンバン並び — enum の遷移順とは別)。
+ * 語彙の網羅 (schema enum と過不足なし) はテストが集合一致で担保する。
+ */
+export const ISSUE_COLUMN_ORDER: ReadonlyArray<string | null> = [
+  null, // 未着手
+  'created issue',
+  'waiting for review',
+  'starting review',
+  'completed review',
+  'starting review work',
+  'ready for implementation',
+  'closed issue',
+];
+/** PR レーンの表示列順 (現状は対応表のキー宣言順 = 遷移順のまま) */
 export const PR_COLUMN_ORDER: ReadonlyArray<string | null> = [null, ...Object.keys(PR_SIGNALS)];
 
 /** 終端 status (レーン最終列。画面では控えめな見た目にする) */
