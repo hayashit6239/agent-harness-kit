@@ -154,9 +154,9 @@
       "title": "進捗ダッシュボード — 台帳の可視化 + ロールキャラの稼働表示",
       "issue": {
         "number": 9,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
-        "lastReviewedStatus": "created issue"
+        "lastReviewedStatus": "waiting for review"
       },
       "pr": {
         "number": null,
