@@ -1,0 +1,73 @@
+# agent-harness-kit 運用規約
+
+この repo は agent-harness-kit (minimal 構成 = 「1人 + 台帳」) で進捗を管理する。守るものは 3 つ:
+①台帳と GitHub 実態の一致 ②merge 前に証拠 (test) が緑 ③作る人と判定する人の分離。
+
+## 進捗台帳 (`.harness/plan-progress.json`)
+
+- 1 つの作業単位 = `steps[]` の 1 要素。issue フェーズと PR フェーズそれぞれの status を持つ。
+- status は schema (`.harness/plan-progress.schema.json`) の enum にある語だけを使う。一覧は下の status 表。勝手な語を足さない・言い換えない。
+- 状況が変わるたびに status と `updatedAt` (YYYY-MM-DD) を更新する。
+- `githubState` は GitHub の実態を写す欄。願望や予定を書かない (CI の drift 検査が失敗する)。
+- 任意フィールド: `lastReviewedStatus` は reviewer がレビュー時の status を記録用に書く欄 (選別では参照しない・作者は触らない)。`isDraft` は GitHub の draft 実態を写す任意欄 (drift 照合はキーがある場合のみ行われる)。
+- CI (harness-gate) が常時スキーマ検査を、PR 時と日次で GitHub との突き合わせ (drift 検査) を行う。手元では
+  `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` で同じ検査ができる。
+  GitHub との突き合わせは `--drift` (要 gh 認証)。
+
+### status 一覧 (意味と遷移)
+
+issue フェーズ (8 status):
+
+| status | 主体 | 意味 | 次の遷移先 |
+|---|---|---|---|
+| null | — | 未着手 (issue 未起票) | created issue |
+| created issue | 作者 | issue を起票した (初回レビュー待ち) | starting review |
+| starting review | reviewer | reviewer がレビュー実行中 | completed review / ready for implementation |
+| completed review | reviewer | レビュー完了・blocker あり (作者の対応待ち) | starting review work |
+| ready for implementation | reviewer | レビュー完了・blocker なし (実装に着手できる) | — (PR フェーズへ) |
+| starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
+| waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
+| closed issue | 人間 | 実際に close した (終端。githubState=closed) | — |
+
+PR フェーズ (9 status):
+
+| status | 主体 | 意味 | 次の遷移先 |
+|---|---|---|---|
+| null | — | 未着手 (実装前) | implementation-ready / created pr |
+| implementation-ready | 作者 | **実装完了・PR 未作成** (PR を作れば created pr) | created pr |
+| created pr | 作者 | PR を作成した (初回レビュー待ち) | starting review |
+| starting review | reviewer | reviewer がレビュー実行中 | ready for merge / completed review |
+| completed review | reviewer | レビュー完了・blocker あり (作者の対応待ち) | starting review work |
+| ready for merge | reviewer | レビュー完了・blocker なし (merge 可。reviewer の上限) | merged pr (merge は人間) |
+| starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
+| waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
+| merged pr | 人間 | 実際に merge した (終端。githubState=merged) | — |
+
+紛らわしい 3 点:
+- `starting review` = **reviewer** がレビューを実行中 (レビュー開始マーカー)。
+- `starting review work` = **作者** が指摘対応を開始 (レビューではなく対応作業)。
+- `implementation-ready` = **実装完了・PR 未作成**。「実装に着手できる」ではない — それは issue 側の `ready for implementation` で、別物。
+
+## 証拠 (evidence)
+
+- `evidence` の build / test / lint / done は、この repo でそれぞれを実行するコマンド (無いものは null)。
+- status を `ready for implementation` / `ready for merge` に進める前に、`evidence.done` (既定 = test) を実際に実行して exit 0 を確認する。実行と確認は実装者 (main developer) の責務。
+- ready 系 status の step があるのに `evidence.test` が null だと CI が失敗する (消し忘れ・入れ忘れの防止線)。
+
+## 役割の分離 (doer ≠ judge)
+
+- コードを書く人 (main developer = 普段のセッション) と、レビューして判定する人 (reviewer = 別セッションで `/harness-review-pr` を起動) を分ける。別セッションなので reviewer は変更を初見で見る。
+- reviewer が進められる status は `ready for merge` まで。**終端の `merged pr` / `closed issue` は、人間が実際に merge / close した時にだけ書く**。
+- `completed review` になったら、実装者が指摘の採否を判断して修正し、`waiting for review` に戻す。
+- **対応側が `ready for merge` を立てるのは越権 (例外なし)**。指摘が解消不可 (環境依存の実測値が要る等) でも、「merge 後の対応でよい」と作者間で合意した場合でも、対応側は `waiting for review` に戻すだけ。merge 後対応にするか否かの最終判断は reviewer の責務。
+  (実事故の教訓: 対応側が「作者と合意済みの follow-up」を根拠に直接 `ready for merge` へ進め、reviewer の検証を飛ばした)
+
+## 台帳の書込経路
+
+- **状態遷移は main へ直接コミットする**。`.harness/plan-progress.json` だけを含む小さいコミットを作る。
+  - コミットメッセージの規約: `chore(harness): <step id> pr.status -> <新 status>`
+  - 例: `chore(harness): P1 pr.status -> ready for merge`
+- PR は原則コードだけを運ぶ。status の書込を PR ブランチに載せない (merge されるまで main の台帳に現れず、reviewer の選別から漏れ続ける)。
+- 例外: `.harness/` 自体を導入する PR だけは、自分の台帳項目を自分で運んでよい (PR 番号は作成後に追記して push する)。
+- reviewer は開始時に `git pull --ff-only` してから台帳を読む (古い台帳で選別しない)。
+- 同時に main へ push して競合したら、後から push した側が pull してやり直す。

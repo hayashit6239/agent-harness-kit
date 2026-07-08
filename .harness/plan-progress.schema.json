@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "plan-progress.schema.json",
+  "title": "plan-progress",
+  "description": "agent-harness-kit の進捗台帳スキーマ。status の語彙 (enum) はこのファイルが単一源 — validate-plan-progress.py もここから enum を読む。機械強制されるのは enum のみ (validator の literal-guard)。required / 型制約は validator 側の実装が対であり、enum 以外の schema⇔コード乖離は自動検知されない。",
+  "type": "object",
+  "required": ["updatedAt", "evidence", "steps"],
+  "properties": {
+    "project": { "type": "string" },
+    "description": { "type": "string" },
+    "updatedAt": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["build", "test", "lint", "done"],
+      "properties": {
+        "build": { "type": ["string", "null"] },
+        "test": { "type": ["string", "null"] },
+        "lint": { "type": ["string", "null"] },
+        "done": { "type": ["string", "null"] }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/step" }
+    }
+  },
+  "definitions": {
+    "issueStatus": {
+      "enum": [
+        null,
+        "created issue",
+        "starting review",
+        "completed review",
+        "ready for implementation",
+        "starting review work",
+        "waiting for review",
+        "closed issue"
+      ]
+    },
+    "prStatus": {
+      "enum": [
+        null,
+        "implementation-ready",
+        "created pr",
+        "starting review",
+        "completed review",
+        "ready for merge",
+        "starting review work",
+        "waiting for review",
+        "merged pr"
+      ]
+    },
+    "step": {
+      "type": "object",
+      "required": ["id", "issue", "pr"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string", "description": "人間用の分類メモ (feat/ci/chore 等)。機械は読まない" },
+        "title": { "type": "string" },
+        "issue": {
+          "type": "object",
+          "required": ["number", "status", "githubState"],
+          "properties": {
+            "number": { "type": ["integer", "null"] },
+            "status": { "$ref": "#/definitions/issueStatus" },
+            "githubState": { "enum": [null, "open", "closed"] },
+            "lastReviewedStatus": { "$ref": "#/definitions/issueStatus" }
+          }
+        },
+        "pr": {
+          "type": "object",
+          "required": ["number", "status", "githubState"],
+          "properties": {
+            "number": { "type": ["integer", "null"] },
+            "status": { "$ref": "#/definitions/prStatus" },
+            "githubState": { "enum": [null, "open", "merged", "closed"] },
+            "isDraft": { "type": "boolean" },
+            "lastReviewedStatus": { "$ref": "#/definitions/prStatus" }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+name: harness-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main] # schema のみ（merge 直後の台帳の一時的な古さを赤にしない）
+  schedule:
+    - cron: "0 21 * * *" # 日次で main の drift を検査（JST 朝 6 時）
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  # event_name を含めて schedule / push / pull_request が互いに cancel しないようにする
+  group: harness-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # (a) schema + evidence-gate: 常時（ネットワーク不要）
+      - run: python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json
+      # (b) drift 照合: pull_request 時 + 日次 schedule のみ（push:main では回さない）
+      - if: github.event_name != 'push'
+        run: python3 .harness/validate-plan-progress.py --drift .harness/plan-progress.json
+        env:
+          GH_TOKEN: ${{ github.token }}

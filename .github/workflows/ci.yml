@@ -1,0 +1,22 @@
+# kit 専用 CI。run-smoke は kit のテストなので templates として配布しない (harness-gate.yml とは別物)。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # event_name を含めて push / pull_request が互いに cancel しないようにする
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/smoke/run-smoke.sh
