@@ -127,9 +127,9 @@
         "githubState": "open"
       },
       "pr": {
-        "number": null,
-        "status": null,
-        "githubState": null
+        "number": 7,
+        "status": "created pr",
+        "githubState": "open"
       }
     }
   ]
