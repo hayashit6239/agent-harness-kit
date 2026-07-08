@@ -1,7 +1,7 @@
 {
   "project": "agent-harness-kit",
   "description": "kit 自身の進捗台帳 (dogfood)。状態遷移の規約は .harness/CLAUDE.harness.md を参照。",
-  "updatedAt": "2026-07-08",
+  "updatedAt": "2026-07-09",
   "evidence": {
     "build": null,
     "test": "bash tests/smoke/run-smoke.sh",
@@ -173,8 +173,9 @@
       "title": "台帳の git 非依存化 — main push 禁止ポリシー対応 + dashboard リアルタイム参照",
       "issue": {
         "number": 11,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": null,
