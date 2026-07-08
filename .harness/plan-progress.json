@@ -160,8 +160,9 @@
       },
       "pr": {
         "number": 10,
-        "status": "created pr",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created pr"
       }
     }
   ]
