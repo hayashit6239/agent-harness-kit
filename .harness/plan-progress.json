@@ -20,8 +20,8 @@
       },
       "pr": {
         "number": 5,
-        "status": "ready for merge",
-        "githubState": "open",
+        "status": "merged pr",
+        "githubState": "merged",
         "lastReviewedStatus": "waiting for review"
       }
     },
@@ -36,8 +36,8 @@
       },
       "pr": {
         "number": 5,
-        "status": "ready for merge",
-        "githubState": "open",
+        "status": "merged pr",
+        "githubState": "merged",
         "lastReviewedStatus": "waiting for review"
       }
     },
@@ -52,8 +52,8 @@
       },
       "pr": {
         "number": 5,
-        "status": "ready for merge",
-        "githubState": "open",
+        "status": "merged pr",
+        "githubState": "merged",
         "lastReviewedStatus": "waiting for review"
       }
     },
