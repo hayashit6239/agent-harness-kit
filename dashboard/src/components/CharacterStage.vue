@@ -27,9 +27,9 @@ const cast = computed(() =>
   })),
 );
 
-/** 祝い紙吹雪 (index から決定論的に散らす) */
+/** 祝い紙吹雪 (index から決定論的に散らす)。色はデザイントークン (style.css) の参照 — hex の二重定義を避ける */
 function pieceStyle(i: number): Record<string, string> {
-  const colors = ['#f2c94c', '#ffb454', '#43d9c9', '#56d364', '#a371f7', '#ff7b72', '#e9effb'];
+  const colors = ['var(--gold)', 'var(--dev)', 'var(--rev)', 'var(--ok)', 'var(--merged)', 'var(--alert)', 'var(--text-hi)'];
   return {
     left: `${(i * 37) % 100}%`,
     backgroundColor: colors[i % colors.length]!,
@@ -73,7 +73,8 @@ function pieceStyle(i: number): Record<string, string> {
         <p v-if="c.view.state === 'working'" class="note">{{ c.meta.workingNote }}</p>
 
         <ul v-if="c.view.tasks.length" class="tasks">
-          <li v-for="task in c.view.tasks" :key="task">{{ task }}</li>
+          <!-- :key は index 併用 — 重複 id 台帳では同文の task が並びうる (文字列単独だと衝突) -->
+          <li v-for="(task, i) in c.view.tasks" :key="`${i}:${task}`">{{ task }}</li>
         </ul>
         <p v-else class="tasks-empty">割当なし</p>
       </article>

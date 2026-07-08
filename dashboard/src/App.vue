@@ -2,8 +2,9 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import CharacterStage from './components/CharacterStage.vue';
 import KanbanBoard from './components/KanbanBoard.vue';
+import { parseLedgerResponse } from './lib/api';
 import { derive } from './lib/derive';
-import type { Ledger, LedgerApiResponse } from './types';
+import type { Ledger } from './types';
 
 /** ポーリング既定値 5 秒 (issue #9 決定事項。DoD ③「10 秒以内」= 5 秒 × 2 周期分) */
 const POLL_INTERVAL_MS = 5000;
@@ -13,23 +14,37 @@ const repoSlug = ref<string | null>(null);
 const fetchedAt = ref<string | null>(null);
 const errorMessage = ref<string | null>(null);
 
+// WHY (世代トークン): setInterval の各 poll は応答順序が保証されず、遅延した古い応答が
+// 新しい応答の後に届くと盤面が一時的に (最大 1 周期分) 過去へ巻き戻る。発行時に世代を
+// 採番し、await をまたいだ後の状態書込み前に「自分が最新の発行か」を確認して
+// 古い応答 (成功・失敗とも) は黙って破棄する。
+let pollGeneration = 0;
+
 async function poll(): Promise<void> {
+  const generation = ++pollGeneration;
+  const isStale = (): boolean => generation !== pollGeneration;
   // 失敗系はバナー表示 + 前回データがあれば表示継続。ポーリングは継続 (劣化動作)。
   // 接続失敗 (fetch 例外) と JSON 解析失敗 (API 不在で 200/HTML が返る構成) は原因が違うので分けて伝える
   let res: Response;
   try {
     res = await fetch('/api/ledger');
   } catch {
+    if (isStale()) return;
     errorMessage.value = '台帳 API に接続できません (dev サーバの応答がありません)';
     return;
   }
-  let body: LedgerApiResponse;
+  let raw: unknown;
   try {
-    body = (await res.json()) as LedgerApiResponse;
+    raw = await res.json();
   } catch {
+    if (isStale()) return;
     errorMessage.value = '台帳 API の応答を JSON として解釈できません (/api/ledger を持たないサーバが応答している可能性)';
     return;
   }
+  if (isStale()) return;
+  // 封筒形の検証は純関数 parseLedgerResponse に委譲 — 封筒形でない JSON
+  // (プロキシの {"message":"Not Found"} 等) は BAD_RESPONSE の失敗封筒に正規化される
+  const body = parseLedgerResponse(raw);
   if (body.ok) {
     ledger.value = body.ledger;
     repoSlug.value = body.repoSlug;
@@ -47,6 +62,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (timer !== undefined) window.clearInterval(timer);
+  pollGeneration++; // 飛行中の応答も破棄する (unmount 後の状態書込みを防ぐ)
 });
 
 const board = computed(() => (ledger.value ? derive(ledger.value) : null));

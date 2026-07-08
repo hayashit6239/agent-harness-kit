@@ -45,7 +45,11 @@ export interface Ledger {
   steps: Step[];
 }
 
-/** /api/ledger の封筒形 (常に HTTP 200)。 */
+/**
+ * /api/ledger の封筒形 (常に HTTP 200)。サーバ側 (vite.config.ts) が返す契約の記述。
+ * クライアントは応答をこの型と信じて参照せず、src/lib/api.ts の parseLedgerResponse で
+ * 検証・正規化してから使う (封筒形でない JSON が返る構成への防御)。
+ */
 export type LedgerApiResponse =
   | { ok: true; ledger: Ledger; repoSlug: string | null; fetchedAt: string }
   | { ok: false; error: { code: 'LEDGER_NOT_FOUND' | 'LEDGER_INVALID'; message: string } };

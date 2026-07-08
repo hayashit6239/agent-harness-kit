@@ -29,6 +29,20 @@ function columnLabel(col: KanbanColumn): string {
   return col.status ?? '未着手';
 }
 
+/** 警告バナー 1 件分の文言 (kind ごとに原因を言い分ける)。網羅は switch の返り値型で担保 */
+function warningText(w: LedgerWarning): string {
+  switch (w.kind) {
+    case 'duplicate-id':
+      return `id 「${w.stepId}」が複数の step で重複しています (2 枚目以降は表示キーを別に振っています)`;
+    case 'missing-phase':
+      return `${w.stepId} ${w.phase}: オブジェクト欠落 (unknown 列に置いています)`;
+    case 'missing-status':
+      return `${w.stepId} ${w.phase}: status キー欠落 (unknown 列に置いています。未着手 = 明示 null と区別)`;
+    case 'unknown-status':
+      return `${w.stepId} ${w.phase}: 未知の status 「${w.status}」 (unknown 列に置いています)`;
+  }
+}
+
 /** unknown 列は空なら出さない (流れの列ではなく警告列のため)。flow / terminal は空でも表示 */
 function visibleColumns(columns: KanbanColumn[]): KanbanColumn[] {
   return columns.filter((c) => c.kind !== 'unknown' || c.cards.length > 0);
@@ -74,7 +88,8 @@ watch(
     for (const lane of [view.issue, view.pr]) {
       for (const col of lane.columns) {
         const key = columnKey(lane.phase, col);
-        for (const card of col.cards) next.set(`${lane.phase}:${card.stepId}`, key);
+        // card.key で同定 (stepId だと重複 id 台帳で対応表が上書きされ移動検出が欠ける)
+        for (const card of col.cards) next.set(`${lane.phase}:${card.key}`, key);
       }
     }
     if (prevPlacement !== null) {
@@ -108,10 +123,9 @@ watch(
   <section class="kanban">
     <div v-if="warnings.length" class="kanban-warning" role="alert">
       ⚠ 台帳に注意が必要な step があります:
-      <span v-for="w in warnings" :key="`${w.stepId}-${w.phase}-${w.kind}`" class="warning-item">
-        {{ w.stepId }} {{ w.phase }}:
-        {{ w.kind === 'missing-phase' ? 'オブジェクト欠落 (unknown 列に置いています)' : `未知の status 「${w.status}」 (unknown 列に置いています)` }}
-      </span>
+      <!-- :key は index — 重複 id 台帳では stepId+phase+kind の組でも衝突しうる。
+           warnings は毎ポーリングで全再計算される静的リストなので index で十分 -->
+      <span v-for="(w, i) in warnings" :key="i" class="warning-item">{{ warningText(w) }}</span>
     </div>
 
     <p v-if="steps.length === 0" class="empty">台帳に step がありません</p>
@@ -151,7 +165,8 @@ watch(
               <span v-if="col.kind === 'terminal'" class="terminal-mark">終端</span>
             </header>
             <TransitionGroup tag="div" name="card" class="cards">
-              <article v-for="card in col.cards" :key="card.stepId" class="card">
+              <!-- :key は card.key (重複 id 台帳でも一意な導出キー)。stepId 直だと衝突する -->
+              <article v-for="card in col.cards" :key="card.key" class="card">
                 <div class="card-head">
                   <span class="step-id">{{ card.stepId }}</span>
                   <span v-if="card.kind" class="kind-badge">{{ card.kind }}</span>

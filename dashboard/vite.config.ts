@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig, type Plugin, type PluginOption } from 'vite';
-import { parseRepoSlug } from './src/lib/repo-slug';
+import { extractHost, parseRepoSlug } from './src/lib/repo-slug';
 
 /**
  * 起動 I/F (issue #9 決定事項): 環境変数 HARNESS_PROJECT に一本化。
@@ -47,7 +47,15 @@ function detectRepoSlug(projectRoot: string): string | null {
     console.warn(`[dashboard] repo slug を導出できません (git remote get-url origin が失敗): ${(e as Error).message}`);
     return null;
   }
-  return parseRepoSlug(url);
+  const slug = parseRepoSlug(url);
+  if (slug === null) {
+    // git は成功したが GitHub 形式でない remote — この経路も無言にしない。
+    // URL 全体は認証情報 (userinfo) を含みうるため、ログにはホスト名だけを出す (extractHost)
+    console.warn(
+      `[dashboard] origin remote が GitHub 形式ではありません (host: ${extractHost(url) ?? '不明'}) — GitHub リンク無効の劣化動作で継続します`,
+    );
+  }
+  return slug;
 }
 
 /**

@@ -62,6 +62,12 @@ export interface PhaseView {
 
 export interface StepView {
   id: string;
+  /**
+   * 表示 (v-for :key / TransitionGroup) 用の一意キー。台帳の id は重複しうる (schema に
+   * 一意性検査がない手編集台帳) ため、同 id の 2 枚目以降は "id#出現番号" で一意化する。
+   * 重複がない通常時は id と同値 — ポーリング間で安定し、演出の同定を壊さない。
+   */
+  key: string;
   kind: string | null;
   title: string | null;
   issue: PhaseView;
@@ -72,14 +78,17 @@ export interface StepView {
 
 export interface LedgerWarning {
   stepId: string;
-  phase: Phase;
+  /** 警告の対象フェーズ (duplicate-id は step 単位の警告のため null) */
+  phase: Phase | null;
   /**
-   * 警告の種別 (どちらも fail-soft — 盤面は壊さず警告表示で継続する):
+   * 警告の種別 (いずれも fail-soft — 盤面は壊さず警告表示で継続する):
    *   unknown-status = status が schema 語彙外
    *   missing-phase  = issue/pr オブジェクト自体が欠落 (台帳の手編集を想定)
+   *   missing-status = status キー自体が欠落 (明示 null の「未着手」と偽らない)
+   *   duplicate-id   = 同じ step id が複数回出現 (id ごとに 1 件へ集約)
    */
-  kind: 'unknown-status' | 'missing-phase';
-  /** kind='unknown-status' のときの生 status (missing-phase では null) */
+  kind: 'unknown-status' | 'missing-phase' | 'missing-status' | 'duplicate-id';
+  /** kind='unknown-status' のときの生 status (他の kind では null) */
   status: string | null;
 }
 
@@ -105,7 +114,9 @@ interface Lookup {
 function lookupSignal(phase: Phase, status: string | null): Lookup {
   if (status === null) return { signal: null, known: true };
   const table = phase === 'issue' ? ISSUE_SIGNALS : PR_SIGNALS;
-  if (!(status in table)) return { signal: null, known: false }; // 未知 status: 信号に数えない (fail-soft)
+  // Object.hasOwn: 台帳由来の status をキーに使うため、`in` だと prototype 連鎖
+  // ("constructor" / "toString" 等) を既知語と誤認して継承関数を信号扱いし crash する
+  if (!Object.hasOwn(table, status)) return { signal: null, known: false }; // 未知 status: 信号に数えない (fail-soft)
   return { signal: table[status], known: true };
 }
 
@@ -117,14 +128,35 @@ function lookupSignal(phase: Phase, status: string | null): Lookup {
 export function statusOwner(phase: Phase, status: string | null): CharacterId | null {
   if (status === null) return null;
   const table = phase === 'issue' ? ISSUE_SIGNALS : PR_SIGNALS;
+  // lookupSignal と同じ理由で hasOwn ガード (prototype 連鎖の継承プロパティを拾わない)
+  if (!Object.hasOwn(table, status)) return null;
   return table[status]?.character ?? null;
 }
 
-/** issue/pr オブジェクト欠落 (missing-phase) 時の代替: 信号なし + known=false (unknown 列行き) */
-const MISSING_PHASE_LOOKUP: Lookup = { signal: null, known: false };
+/** status を導出できないケース (missing-phase / missing-status) の代替: 信号なし + known=false (unknown 列行き) */
+const NO_STATUS_LOOKUP: Lookup = { signal: null, known: false };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
+}
+
+/** フェーズオブジェクトからの status 読み取り結果 (欠落の種別を warning に写すため区別する) */
+type StatusRead =
+  | { kind: 'missing-phase' } // issue/pr オブジェクト自体が欠落
+  | { kind: 'missing-status' } // status キー自体が欠落 (undefined)
+  | { kind: 'value'; status: string | null }; // 明示 null (未着手) を含む通常値
+
+/**
+ * fail-soft の要: 「キーが無い (undefined)」と「明示 null (未着手)」を区別して読む。
+ * `?? null` で畳むと status キーの消し忘れが警告ゼロで「未着手」に化けるため。
+ * string でも null でもない値 (数値等) は文字列化して unknown-status 側に流す。
+ */
+function readStatus(raw: Record<string, unknown> | null): StatusRead {
+  if (raw === null) return { kind: 'missing-phase' };
+  if (!Object.hasOwn(raw, 'status')) return { kind: 'missing-status' };
+  const value = raw.status;
+  if (value === null) return { kind: 'value', status: null };
+  return { kind: 'value', status: typeof value === 'string' ? value : String(value) };
 }
 
 export function derive(ledger: Ledger): BoardState {
@@ -146,29 +178,44 @@ export function derive(ledger: Ledger): BoardState {
     character.tasks.push(`${stepId} ${phase}: ${status} (${signal.label})`);
   };
 
+  // 重複 id の検出と表示キーの一意化 (:key 衝突で TransitionGroup の同定が壊れるのを防ぐ)
+  const idCounts = new Map<string, number>();
+
   const steps: StepView[] = ledger.steps.map((step, index) => {
     // fail-soft: 台帳の手編集で issue/pr オブジェクト (や step 自体) が欠けても
     // TypeError で盤面全体を壊さず、missing-phase 警告 + known=false (unknown 列行き) に落とす。
     const rec: Partial<Step> = isRecord(step) ? step : {};
     const stepId = typeof rec.id === 'string' ? rec.id : `(steps[${index}])`;
+    // 同 id の 2 枚目以降は "#出現番号" で一意化 (重複がなければ id と同値でポーリング間も安定)。
+    // 警告は出現番号 2 のときだけ push = id ごとに 1 件へ集約 (バナーの :key 衝突も防ぐ)
+    const occurrence = (idCounts.get(stepId) ?? 0) + 1;
+    idCounts.set(stepId, occurrence);
+    const key = occurrence === 1 ? stepId : `${stepId}#${occurrence}`;
+    if (occurrence === 2) {
+      warnings.push({ stepId, phase: null, kind: 'duplicate-id', status: null });
+    }
+
     const rawIssue = isRecord(rec.issue) ? rec.issue : null;
     const rawPr = isRecord(rec.pr) ? rec.pr : null;
-    const issueStatus = rawIssue?.status ?? null;
-    const prStatus = rawPr?.status ?? null;
+    // status キー欠落 (undefined) は明示 null (未着手) と区別して読む (readStatus 参照)
+    const issueRead = readStatus(rawIssue);
+    const prRead = readStatus(rawPr);
+    const issueStatus = issueRead.kind === 'value' ? issueRead.status : null;
+    const prStatus = prRead.kind === 'value' ? prRead.status : null;
 
-    const issue = rawIssue === null ? MISSING_PHASE_LOOKUP : lookupSignal('issue', issueStatus);
-    const pr = rawPr === null ? MISSING_PHASE_LOOKUP : lookupSignal('pr', prStatus);
+    const issue = issueRead.kind === 'value' ? lookupSignal('issue', issueStatus) : NO_STATUS_LOOKUP;
+    const pr = prRead.kind === 'value' ? lookupSignal('pr', prStatus) : NO_STATUS_LOOKUP;
 
     // 警告は信号の採否 (規則 1) と独立 — 盤面表示のための fail-soft 通知
-    if (rawIssue === null) {
-      warnings.push({ stepId, phase: 'issue', kind: 'missing-phase', status: null });
+    if (issueRead.kind !== 'value') {
+      warnings.push({ stepId, phase: 'issue', kind: issueRead.kind, status: null });
     } else if (!issue.known) {
-      warnings.push({ stepId, phase: 'issue', kind: 'unknown-status', status: issueStatus as string });
+      warnings.push({ stepId, phase: 'issue', kind: 'unknown-status', status: issueStatus });
     }
-    if (rawPr === null) {
-      warnings.push({ stepId, phase: 'pr', kind: 'missing-phase', status: null });
+    if (prRead.kind !== 'value') {
+      warnings.push({ stepId, phase: 'pr', kind: prRead.kind, status: null });
     } else if (!pr.known) {
-      warnings.push({ stepId, phase: 'pr', kind: 'unknown-status', status: prStatus as string });
+      warnings.push({ stepId, phase: 'pr', kind: 'unknown-status', status: prStatus });
     }
 
     const celebrating = prStatus === 'ready for merge';
@@ -176,7 +223,7 @@ export function derive(ledger: Ledger): BoardState {
 
     // 規則 1: pr.status != null の step は PR フェーズの信号のみ採用。
     // pr.status が未知語でも「PR フェーズが始まっている」事実は変わらないため issue 信号は採用しない。
-    // pr オブジェクト欠落は「PR フェーズ未開始」と同じ扱い (issue 側の情報が生きていれば使う)。
+    // pr オブジェクト欠落・status キー欠落は「PR フェーズ未開始」と同じ扱い (issue 側の情報が生きていれば使う)。
     if (prStatus !== null) {
       if (pr.signal) applySignal(pr.signal, stepId, 'pr', prStatus);
     } else if (issue.signal && issueStatus !== null) {
@@ -185,6 +232,7 @@ export function derive(ledger: Ledger): BoardState {
 
     return {
       id: stepId,
+      key,
       kind: rec.kind ?? null,
       title: rec.title ?? null,
       issue: { number: rawIssue?.number ?? null, status: issueStatus, githubState: rawIssue?.githubState ?? null, known: issue.known },
@@ -241,6 +289,8 @@ export type KanbanColumnKind = 'flow' | 'terminal' | 'unknown';
 
 export interface KanbanCard {
   stepId: string;
+  /** v-for :key 用の一意キー (StepView.key の写し。重複 id 台帳でも列内で衝突しない) */
+  key: string;
   kind: string | null;
   title: string | null;
   /** このレーンで表示する GitHub 番号 (issue レーン = issue.number / PR レーン = pr.number) */
@@ -288,6 +338,7 @@ function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: Ste
     const view = phase === 'issue' ? step.issue : step.pr;
     const card: KanbanCard = {
       stepId: step.id,
+      key: step.key,
       kind: step.kind,
       title: step.title,
       number: view.number,
