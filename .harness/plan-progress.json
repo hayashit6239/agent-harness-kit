@@ -160,7 +160,7 @@
       },
       "pr": {
         "number": 10,
-        "status": "completed review",
+        "status": "starting review work",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
