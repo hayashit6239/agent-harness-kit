@@ -176,8 +176,18 @@ export const ISSUE_COLUMN_ORDER: ReadonlyArray<string | null> = [
   'ready for implementation',
   'closed issue',
 ];
-/** PR レーンの表示列順 (現状は対応表のキー宣言順 = 遷移順のまま) */
-export const PR_COLUMN_ORDER: ReadonlyArray<string | null> = [null, ...Object.keys(PR_SIGNALS)];
+/** PR レーンの表示列順 (作者指定のカンバン並び。issue レーンと対称) */
+export const PR_COLUMN_ORDER: ReadonlyArray<string | null> = [
+  null, // 未着手
+  'implementation-ready', // 実装完了・PR 未作成 (created pr の前段)
+  'created pr',
+  'waiting for review',
+  'starting review',
+  'completed review',
+  'starting review work',
+  'ready for merge',
+  'merged pr',
+];
 
 /** 終端 status (レーン最終列。画面では控えめな見た目にする) */
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['closed issue', 'merged pr']);

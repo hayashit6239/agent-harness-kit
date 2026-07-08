@@ -249,17 +249,17 @@ describe('カンバン (deriveKanban) — 列順', () => {
     expect(lane.columns.at(-1)!.kind).toBe('unknown');
   });
 
-  it('PR レーンの列順 = 遷移順 9 枚 + 右端に unknown 警告列', () => {
+  it('PR レーンの列順 = 作者指定のカンバン並び 9 枚 + 右端に unknown 警告列', () => {
     const lane = deriveKanban([]).pr;
     expect(lane.columns.map((c) => c.status)).toEqual([
       null, // 未着手
       'implementation-ready',
       'created pr',
+      'waiting for review',
       'starting review',
       'completed review',
-      'ready for merge',
       'starting review work',
-      'waiting for review',
+      'ready for merge',
       'merged pr',
       null, // unknown 列
     ]);
