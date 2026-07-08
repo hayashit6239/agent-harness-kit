@@ -5,7 +5,7 @@
 #    plan-progress.json を組み立てる (drift 検査が repo ルートを解決できるよう git init する)
 # 2. validate --schema が exit 0
 # 3. evidence.test の実行が exit 0
-# 4. 失敗 14 パターン (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
+# 4. 失敗パターン群 (enum 逸脱 / 整合規則 / evidence-gate / drift / statusEnums 残存 /
 #    githubState null / 終端不整合 / literal-guard / isDraft drift / issue 側の整合・終端・drift /
 #    evidence 空白のみ / --drift 単独の主張規則違反) がすべて non-zero で、
 #    かつ期待する ::error:: 文言 (どの検査で落ちたか) を出す
@@ -87,7 +87,7 @@ TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["ev
   || fail "evidence.test ($TEST_CMD) が exit 0 で終わらなかった"
 echo "[3/8] evidence.test ($TEST_CMD) exit 0"
 
-# --- 4. 失敗 9 パターン (すべて non-zero + 期待文言を期待) --------------------
+# --- 4. 失敗パターン群 (すべて non-zero + 期待文言を期待。件数はここに書かない — 乖離の温床) --------------------
 
 # 正常台帳に step を 1 つ足しつつ、モードに応じて壊した variant を作る
 make_broken() { # $1=出力パス $2=変異モード
@@ -472,7 +472,20 @@ assert_reagg "(m) 🟡 sources キー欠損 (fail-closed)" true \
 printf '%s' '[{"severity":"🟡","summary":"no sources key"}]' \
   | python3 "$REAGG" | grep -qF "sources なし" \
   || fail "(m) sources キー欠損が unknown_source_blockers に記録されていない"
-echo "[6/8] reaggregate-has-blocker 判定 13 ケース OK (fail-closed 境界を含む)"
+
+# 実運用形 (dedup 統合で sources が複数混在) と複数 findings の集計
+# — 判定式の any→all 化・条件順序の退行を検知する (単発 sources だけでは全緑のまま通る)
+assert_reagg "(n) 🟡 混在 sources [code-review, arch] (統合形)" true \
+  '[{"severity":"🟡","sources":["code-review","reviewing-pr-architecture"]}]'
+assert_reagg "(o) 🟡 混在 sources [code-review, google] (統合形)" true \
+  '[{"severity":"🟡","sources":["code-review","google"]}]'
+assert_reagg "(p) 複数 findings (blocker と非 blocker の混在)" true \
+  '[{"severity":"🔴","sources":["code-review"]},{"severity":"🟡","sources":["code-review"]},{"severity":"🟢","sources":["google"]}]'
+# (q) 複数 blocker の集計 (blocker_count が件数を数えていること)
+reagg_count="$(printf '%s' '[{"severity":"🔴","sources":["code-review"]},{"severity":"🟡","sources":["arch"]}]' \
+  | python3 "$REAGG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["blocker_count"])')"
+[ "$reagg_count" = "2" ] || fail "(q) blocker_count=2 を期待したが $reagg_count"
+echo "[6/8] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
 
 # --- 7. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)

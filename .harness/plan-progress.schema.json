@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "plan-progress.schema.json",
   "title": "plan-progress",
-  "description": "agent-harness-kit の進捗台帳スキーマ。status の語彙 (enum) はこのファイルが単一源 — validate-plan-progress.py もここから enum を読む。",
+  "description": "agent-harness-kit の進捗台帳スキーマ。status の語彙 (enum) はこのファイルが単一源 — validate-plan-progress.py もここから enum を読む。機械強制されるのは enum のみ (validator の literal-guard)。required / 型制約は validator 側の実装が対であり、enum 以外の schema⇔コード乖離は自動検知されない。",
   "type": "object",
   "required": ["updatedAt", "evidence", "steps"],
   "properties": {
