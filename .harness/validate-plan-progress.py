@@ -45,7 +45,9 @@ GH_STATE_MERGED = "merged"
 GH_STATE_CLOSED = "closed"
 
 def flush_errors(errors):
-    """蓄積した ::error:: 行を全件出力する。出力仕様 (1 行 1 エラー) はここ 1 箇所で管理する。"""
+    """蓄積した ::error:: 行を全件出力する。出力仕様 (1 行 1 エラー) はここ 1 箇所で管理する。
+    名前に反して errors リスト自体は消さない (出力のみ。呼び出し後は必ず exit するため不要)。
+    """
     for line in errors:
         print(line)
 
