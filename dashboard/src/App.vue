@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import CharacterStage from './components/CharacterStage.vue';
-import StepBoard from './components/StepBoard.vue';
+import KanbanBoard from './components/KanbanBoard.vue';
 import { derive } from './lib/derive';
 import type { Ledger, LedgerApiResponse } from './types';
 
@@ -65,7 +65,7 @@ function formatTime(iso: string): string {
     </div>
 
     <main v-if="board">
-      <StepBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
+      <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
       <CharacterStage :characters="board.characters" :celebrate="board.celebrate" />
     </main>
     <p v-else-if="!errorMessage" class="loading">台帳を読み込み中…</p>
@@ -74,7 +74,8 @@ function formatTime(iso: string): string {
 
 <style scoped>
 .dashboard {
-  max-width: 1080px;
+  /* カンバン (issue 9 列 + PR 10 列) をなるべくスクロールなしで見せるため広めに取る */
+  max-width: 1440px;
   margin: 0 auto;
   padding: 24px 20px 48px;
 }

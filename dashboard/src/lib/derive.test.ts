@@ -2,7 +2,15 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { Ledger, Step } from '../types';
-import { derive, ISSUE_SIGNALS, PR_SIGNALS } from './derive';
+import {
+  derive,
+  deriveKanban,
+  ISSUE_COLUMN_ORDER,
+  ISSUE_SIGNALS,
+  PR_COLUMN_ORDER,
+  PR_SIGNALS,
+  type KanbanColumn,
+} from './derive';
 
 // status 語彙の単一源 (.harness/plan-progress.schema.json) を読む —
 // enum が増えたら対応表の網羅 assert が落ちる閉ループ (issue #9 決定事項)
@@ -221,6 +229,129 @@ describe('台帳に動きなし = 両キャラ idle', () => {
     expect(board.steps).toEqual([]);
     expect(board.characters.developer.state).toBe('idle');
     expect(board.characters.reviewer.state).toBe('idle');
+  });
+});
+
+describe('カンバン (deriveKanban) — 列順', () => {
+  it('issue レーンの列順 = 遷移順 8 枚 + 右端に unknown 警告列', () => {
+    const lane = deriveKanban([]).issue;
+    expect(lane.columns.map((c) => c.status)).toEqual([
+      null, // 未着手
+      'created issue',
+      'starting review',
+      'completed review',
+      'ready for implementation',
+      'starting review work',
+      'waiting for review',
+      'closed issue',
+      null, // unknown 列 (status なし・kind で区別)
+    ]);
+    expect(lane.columns.at(-1)!.kind).toBe('unknown');
+  });
+
+  it('PR レーンの列順 = 遷移順 9 枚 + 右端に unknown 警告列', () => {
+    const lane = deriveKanban([]).pr;
+    expect(lane.columns.map((c) => c.status)).toEqual([
+      null, // 未着手
+      'implementation-ready',
+      'created pr',
+      'starting review',
+      'completed review',
+      'ready for merge',
+      'starting review work',
+      'waiting for review',
+      'merged pr',
+      null, // unknown 列
+    ]);
+    expect(lane.columns.at(-1)!.kind).toBe('unknown');
+  });
+
+  it('列順定数は schema enum の順序と一致する (閉ループ: 対応表のキー宣言順 = 遷移順)', () => {
+    expect([...ISSUE_COLUMN_ORDER]).toEqual(issueEnum);
+    expect([...PR_COLUMN_ORDER]).toEqual(prEnum);
+  });
+
+  it('step が無くても全列が空のまま存在する (空の列も表示するため)', () => {
+    const view = deriveKanban([]);
+    for (const lane of [view.issue, view.pr]) {
+      expect(lane.columns.every((c) => c.cards.length === 0)).toBe(true);
+    }
+  });
+});
+
+describe('カンバン (deriveKanban) — カードの配置', () => {
+  /** 指定 status の列を取り出す (flow / terminal のみ。unknown 列は kind で別取得) */
+  function columnOf(lane: { columns: KanbanColumn[] }, status: string | null): KanbanColumn {
+    const col = lane.columns.find((c) => c.kind !== 'unknown' && c.status === status);
+    if (!col) throw new Error(`column not found: ${status}`);
+    return col;
+  }
+
+  it('同じ step が両レーンに 1 枚ずつ現れる (issue レーンは issue.status の列 / PR レーンは pr.status の列)', () => {
+    const board = derive(ledgerOf([step('P8', 'created issue', 'completed review')]));
+    const view = deriveKanban(board.steps);
+    const countCards = (lane: { columns: KanbanColumn[] }) =>
+      lane.columns.reduce((n, c) => n + c.cards.length, 0);
+    expect(countCards(view.issue)).toBe(1);
+    expect(countCards(view.pr)).toBe(1);
+    expect(columnOf(view.issue, 'created issue').cards[0]!.stepId).toBe('P8');
+    expect(columnOf(view.pr, 'completed review').cards[0]!.stepId).toBe('P8');
+  });
+
+  it('status = null の step は両レーンの「未着手」列 (先頭) に入る', () => {
+    const board = derive(ledgerOf([step('S', null, null)]));
+    const view = deriveKanban(board.steps);
+    expect(view.issue.columns[0]!.cards.map((c) => c.stepId)).toEqual(['S']);
+    expect(view.pr.columns[0]!.cards.map((c) => c.stepId)).toEqual(['S']);
+    // unknown 列 (末尾も status=null) には入らない
+    expect(view.issue.columns.at(-1)!.cards).toEqual([]);
+    expect(view.pr.columns.at(-1)!.cards).toEqual([]);
+  });
+
+  it('終端 status は kind=terminal の列に入る (closed issue / merged pr)', () => {
+    const board = derive(ledgerOf([step('S', 'closed issue', 'merged pr')]));
+    const view = deriveKanban(board.steps);
+    const issueTerminal = columnOf(view.issue, 'closed issue');
+    const prTerminal = columnOf(view.pr, 'merged pr');
+    expect(issueTerminal.kind).toBe('terminal');
+    expect(prTerminal.kind).toBe('terminal');
+    expect(issueTerminal.cards.map((c) => c.stepId)).toEqual(['S']);
+    expect(prTerminal.cards.map((c) => c.stepId)).toEqual(['S']);
+    // 終端以外の列は flow
+    expect(columnOf(view.issue, 'created issue').kind).toBe('flow');
+    expect(columnOf(view.pr, 'ready for merge').kind).toBe('flow');
+  });
+
+  it('未知 status のカードはレーン右端の unknown 列に入り、生の status を保持する (fail-soft)', () => {
+    const board = derive(ledgerOf([step('S', 'brand-new-status', 'not-a-status')]));
+    const view = deriveKanban(board.steps);
+    const issueUnknown = view.issue.columns.at(-1)!;
+    const prUnknown = view.pr.columns.at(-1)!;
+    expect(issueUnknown.cards).toEqual([
+      { stepId: 'S', kind: null, title: null, number: 1, status: 'brand-new-status' },
+    ]);
+    expect(prUnknown.cards).toEqual([
+      { stepId: 'S', kind: null, title: null, number: 2, status: 'not-a-status' },
+    ]);
+    // 通常列には現れない (二重配置しない)
+    expect(view.issue.columns.slice(0, -1).every((c) => c.cards.length === 0)).toBe(true);
+    expect(view.pr.columns.slice(0, -1).every((c) => c.cards.length === 0)).toBe(true);
+  });
+
+  it('カードの番号はレーンごとに切り替わる (issue レーン = issue.number / PR レーン = pr.number)', () => {
+    // step() ヘルパは issue.number=1 / pr.number=2 を入れる
+    const board = derive(ledgerOf([step('S', 'created issue', 'created pr')]));
+    const view = deriveKanban(board.steps);
+    expect(columnOf(view.issue, 'created issue').cards[0]!.number).toBe(1);
+    expect(columnOf(view.pr, 'created pr').cards[0]!.number).toBe(2);
+  });
+
+  it('同じ列に複数 step が入ったら台帳の steps 順を保つ', () => {
+    const board = derive(
+      ledgerOf([step('A', 'created issue', null), step('B', 'created issue', null)]),
+    );
+    const view = deriveKanban(board.steps);
+    expect(columnOf(view.issue, 'created issue').cards.map((c) => c.stepId)).toEqual(['A', 'B']);
   });
 });
 

@@ -151,3 +151,92 @@ export function derive(ledger: Ledger): BoardState {
 
   return { steps, characters, celebrate, warnings };
 }
+
+/* ------------------------------------------------------------------ */
+/* カンバン盤面の導出                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * カンバンの列順 (= status の遷移順)。
+ * 対応表 (ISSUE_SIGNALS / PR_SIGNALS) のキー宣言順が schema enum の遷移順と一致している
+ * ことを derive.test.ts が assert する (語彙の重複定義を避け、キー順を列順の単一源にする)。
+ * 先頭の null は「未着手」列。
+ */
+export const ISSUE_COLUMN_ORDER: ReadonlyArray<string | null> = [null, ...Object.keys(ISSUE_SIGNALS)];
+export const PR_COLUMN_ORDER: ReadonlyArray<string | null> = [null, ...Object.keys(PR_SIGNALS)];
+
+/** 終端 status (レーン最終列。画面では控えめな見た目にする) */
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['closed issue', 'merged pr']);
+
+/**
+ * 列の種別:
+ *   flow     = 遷移順の通常列 (空でも表示して流れを見せる)
+ *   terminal = 終端列 (closed issue / merged pr。控えめ表示)
+ *   unknown  = 未知 status の警告列 (レーン右端。fail-soft の可視化)
+ */
+export type KanbanColumnKind = 'flow' | 'terminal' | 'unknown';
+
+export interface KanbanCard {
+  stepId: string;
+  kind: string | null;
+  title: string | null;
+  /** このレーンで表示する GitHub 番号 (issue レーン = issue.number / PR レーン = pr.number) */
+  number: number | null;
+  /** この step のレーン上の生 status (unknown 列でどの語だったかを表示するために持つ) */
+  status: string | null;
+}
+
+export interface KanbanColumn {
+  /** 列を定める status (null = 未着手列。unknown 列も null で kind で区別) */
+  status: string | null;
+  kind: KanbanColumnKind;
+  cards: KanbanCard[];
+}
+
+export interface KanbanLane {
+  phase: Phase;
+  /** 遷移順の列 + 右端の unknown 列 (空でも常に含む。表示の間引きは画面側の裁量) */
+  columns: KanbanColumn[];
+}
+
+export interface KanbanView {
+  issue: KanbanLane;
+  pr: KanbanLane;
+}
+
+function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: StepView[]): KanbanLane {
+  const columns: KanbanColumn[] = order.map((status) => ({
+    status,
+    kind: status !== null && TERMINAL_STATUSES.has(status) ? 'terminal' : 'flow',
+    cards: [],
+  }));
+  const unknown: KanbanColumn = { status: null, kind: 'unknown', cards: [] };
+  const byStatus = new Map<string | null, KanbanColumn>(columns.map((c) => [c.status, c]));
+
+  for (const step of steps) {
+    const view = phase === 'issue' ? step.issue : step.pr;
+    const card: KanbanCard = {
+      stepId: step.id,
+      kind: step.kind,
+      title: step.title,
+      number: view.number,
+      status: view.status,
+    };
+    // 未知 status (known=false) は unknown 列へ。既知なのに列が無いケースも防御的に unknown 行き
+    const column = view.known ? byStatus.get(view.status) : undefined;
+    (column ?? unknown).cards.push(card);
+  }
+  return { phase, columns: [...columns, unknown] };
+}
+
+/**
+ * StepView[] → カンバン 2 レーン (issue フェーズ / PR フェーズ)。
+ * 各 step は両レーンに 1 枚ずつ現れる (issue レーンは issue.status の列、PR レーンは pr.status の列)。
+ * 列内のカード順は台帳の steps 順のまま。
+ */
+export function deriveKanban(steps: StepView[]): KanbanView {
+  return {
+    issue: buildLane('issue', ISSUE_COLUMN_ORDER, steps),
+    pr: buildLane('pr', PR_COLUMN_ORDER, steps),
+  };
+}
