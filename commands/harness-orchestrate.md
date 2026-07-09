@@ -53,6 +53,7 @@ jq -c '[ .steps[]
 
 # 対応役 dispatch 対象
 jq -c '[ .steps[]
+  | select(.pr.number != null and .pr.githubState == "open")
   | select(.pr.status == "completed review")
   | {id, number: .pr.number} ]' "$PLAN"
 
@@ -73,12 +74,26 @@ jq -c '[ .steps[]
 
 > 「対象 issue #<N> の本文(Problem/Context/Alternatives/Implementation Scope/DoD)を `gh issue view <N>` で Read せよ。次に `creating-git-worktrees` skill を Skill ツールで起動し、その手順に従って worktree を作成せよ。issue の Implementation Scope に従って実装せよ。実装後、`creating-gh-prs` skill を Skill ツールで起動し、その手順に従って PR を作成せよ(base は main、`Closes #<N>` を本文に含める)。最後に `{pr_number, proposed_status}`(`proposed_status` は通常 `"created pr"`)を JSON で返せ。台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
-**返答検証**: `pr_number` が実在し `gh pr view` で取得できることを確認したうえで、dispatch 済み worktree で `evidence.done` を実行して exit 0 であることを確認する。
+**返答検証**: subagent の返答が JSON として解釈でき、含まれる `pr_number` が `gh pr view <pr_number> --repo <repo>` で実在確認できることをまず試みる。
 
-- **`pr_number` が返らなかった場合**(実装自体が PR 作成前に失敗): 台帳に一切書込まずスキップする(次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が成立していれば再試行する。暴走しない)。
-- **`pr_number` が返った場合**(PR は実際に作成されている): evidence gate の成否に関わらず **必ず `pr.number = pr_number` / `pr.githubState = "open"` を書き込む**(孤児 PR 化を防ぐ — 書き込まないと次 tick でも `pr.number == null` のままになり、同じ issue に対して developer(実装役)が再 dispatch され、重複した PR が作られ続ける)。`pr.status` は evidence gate の結果で分岐する:
+- **返答が不正、または `pr_number` が確認できない場合**(subagent のクラッシュ・不正な JSON 等): 台帳に書込まず諦める前に、GitHub 側で実際に PR が作られていないか独立して確認する(dispatch prompt で PR 本文に `Closes #<N>` を含めるよう指示済みのため、次のコマンドで拾える):
+  ```
+  gh pr list --repo <repo> --search "Closes #<N> in:body" --state open --json number
+  ```
+  - 該当 PR が見つかった場合: そこで得た番号を `pr_number` として、以下「`pr_number` が確定した場合」と同じ検証・書込ロジックを適用する(subagent は実際には PR を作り終えていたが、返答の伝達だけが失敗したケースを拾う)。
+  - 見つからなかった場合: ここで初めて台帳に一切書込まずスキップする(次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が成立していれば再試行する。暴走しない)。
+- **`pr_number` が確定した場合**(subagent の返答から、または上記フォールバック検索から): まず **必ず `pr.number = pr_number` / `pr.githubState = "open"` を書き込む**(孤児 PR 化を防ぐ — 書き込まないと次 tick でも `pr.number == null` のままになり、同じ issue に対して developer(実装役)が再 dispatch され、重複した PR が作られ続ける)。続けて evidence gate を実行する。**subagent が dispatch 中に作った worktree は削除済みの可能性があり参照できないため、orchestrator 自身が独立して PR の head ブランチを取得し専用の一時 worktree を作って実行する**(`commands/harness-review-pr.md` 手順 4 の per-PR worktree パターンと同じ):
+  ```
+  HEAD_REF=$(gh pr view <pr_number> --repo <repo> --json headRefName --jq .headRefName)
+  git fetch origin "$HEAD_REF" --quiet
+  WORKTREE=".claude/worktrees/orchestrate-pr-<pr_number>"
+  git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"
+  ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
+  git worktree remove --force "$WORKTREE"
+  ```
+  (`$EVIDENCE_DONE` は台帳の `evidence.done`、無ければ `evidence.test` にフォールバック。`git worktree remove` は `EVIDENCE_EXIT` の成否に関わらず必ず実行する — 失敗経路でも後片付けを行い worktree を残さない。)`pr.status` は `EVIDENCE_EXIT` の結果で分岐する:
   - evidence gate 成功(exit 0): `pr.status = "created pr"`
-  - evidence gate 失敗(非 0): `pr.status = "completed review"`(`"created pr"` にはしない)。これにより次 tick は配車テーブルの「`pr.status == "completed review"` → developer(対応役)」の経路に自然に入り、対応役が evidence 失敗を修正して再挑戦する(この経路には既に retry ロジックがある)。
+  - evidence gate 失敗(非 0): `pr.status = "created pr"` を書き込んだうえで、4 節のエスカレーション手段(`needs-human` ラベル付与 + `PushNotification`)を適用する(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、developer(対応役)は finding が無ければ何も直せない。`completed review` 書込は収束もエスカレーションもしない無限ループになる。needs-human ラベル付与後は次 tick から配車テーブルの選別より前で無条件スキップされ、人間が介入するまで安全に停止する)。
 
 ### developer(対応役)
 
@@ -92,7 +107,16 @@ jq -c '[ .steps[]
 >
 > 対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review"}` を JSON で返せ。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
-**返答検証**: `proposed_status` が `"waiting for review"` 以外(特に `"ready for merge"`)を返した場合は**その提案を無視し**、`"waiting for review"` に強制する(対応役の越権を orchestrator 側で機械的に無効化する — `.harness/CLAUDE.harness.md` の「対応側が `ready for merge` を立てるのは越権(例外なし)」を orchestrator が技術的に担保する)。evidence gate(対応後の worktree で `evidence.done` が exit 0)を確認し、失敗時は台帳に書込まずスキップする(次 tick で `pr.status == "completed review"` が成立していれば再試行)。通れば `pr.status = "waiting for review"` を書き込む。
+**返答検証**: `proposed_status` が `"waiting for review"` 以外(特に `"ready for merge"`)を返した場合は**その提案を無視し**、`"waiting for review"` に強制する(対応役の越権を orchestrator 側で機械的に無効化する — `.harness/CLAUDE.harness.md` の「対応側が `ready for merge` を立てるのは越権(例外なし)」を orchestrator が技術的に担保する)。evidence gate は「developer(実装役)」節と同じ方法で、**orchestrator 自身が独立した一時 worktree を用意して**実行する(対象 PR は既に `pr.number` が確定しているため subagent の dispatch 済み worktree の生死に依存しない):
+```
+HEAD_REF=$(gh pr view <n> --repo <repo> --json headRefName --jq .headRefName)
+git fetch origin "$HEAD_REF" --quiet
+WORKTREE=".claude/worktrees/orchestrate-pr-<n>"
+git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"
+( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
+git worktree remove --force "$WORKTREE"
+```
+(`git worktree remove` は `EVIDENCE_EXIT` の成否に関わらず必ず実行する。)失敗時(`EVIDENCE_EXIT` が非 0)は台帳に書込まずスキップする(次 tick で `pr.status == "completed review"` が成立していれば再試行)。通れば `pr.status = "waiting for review"` を書き込む。
 
 ### pr reviewer
 
@@ -117,16 +141,21 @@ jq -c '[ .steps[]
 
 `escalate == true` の場合(pr reviewer dispatch の返答、または単一書込の git status ガードで意図しない変更を検知した場合)、次を行う:
 
-1. `needs-human` ラベルを PR に付与する: `gh pr edit <n> --repo <repo> --add-label "needs-human"`。ラベルが存在しなければ冪等作成する: `gh label create "needs-human" --color "d93f0b" --description "orchestrator が人間の判断を要求した PR" --force`(色・説明は `commands/harness-review-pr.md` 手順 6 の `ready for merge` ラベル作成パターンに倣う)。
+1. `needs-human` ラベルを PR に付与する。**必ず create(fallback・冪等)を先、add を後の順で実行する**(`gh` はラベル未存在の状態で `add-label` するとエラーになるため。同ファイル内「pr reviewer」節の `ready for merge` ラベル操作と同じ順序に揃える):
+   ```
+   gh label create "needs-human" --color "d93f0b" --description "orchestrator が人間の判断を要求した PR" --force
+   gh pr edit <n> --repo <repo> --add-label "needs-human"
+   ```
+   (色・説明は `commands/harness-review-pr.md` 手順 6 の `ready for merge` ラベル作成パターンに倣う)
 2. `PushNotification` ツールで人間に通知する(離席中でも気づけるように。内容は「PR #<n> が停止条件に到達した」または「PR #<n> の dispatch 中に台帳への意図しない変更を検知した」等、理由を明記する)。
 3. `pr.status` は enum を変えず現状(`completed review`)のまま維持する。台帳には `escalate` を一切書かない(needs-human ラベルと PushNotification のみがエスカレーションの記録)。
 4. **ラベル解除は人間が手動で行う想定**(orchestrator 側で自動解除ロジックは持たない)。
 
 ## evidence gate 失敗時の扱い
 
-dispatch 済み worktree で `evidence.done`(台帳 `.harness/plan-progress.json` の `evidence.done`、無ければ `evidence.test` にフォールバック)を実行して非 0 の場合の扱いは、developer の実装役と対応役で非対称(孤児 PR 問題の有無が違うため):
+evidence gate は orchestrator 自身が独立した一時 worktree を用意して `evidence.done`(台帳 `.harness/plan-progress.json` の `evidence.done`、無ければ `evidence.test` にフォールバック)を実行する(具体的な worktree の作り方は「developer(実装役)」節参照)。非 0 の場合の扱いは、developer の実装役と対応役で非対称(孤児 PR 問題の有無が違うため):
 
-- **developer(実装役)**: `pr_number` が返らなかった場合(PR 未作成)のみ台帳に一切書込まずスキップする。`pr_number` が返った場合(PR は実際に作成されている)は evidence gate の成否に関わらず `pr.number` / `pr.githubState` を必ず書き込み、evidence gate 失敗時は `pr.status = "completed review"` を書き込む(`"created pr"` にはしない — 詳細は「developer(実装役)」節)。
+- **developer(実装役)**: `pr_number` が確認できなかった場合(GitHub 側フォールバック検索でも見つからない = PR 未作成)のみ台帳に一切書込まずスキップする。`pr_number` が確定した場合(PR は実際に作成されている)は evidence gate の成否に関わらず `pr.number` / `pr.githubState` を必ず書き込み、evidence gate 失敗時は `pr.status = "created pr"` を書き込んだうえで needs-human エスカレーション(`needs-human` ラベル付与 + `PushNotification`)を適用する(`"completed review"` にはしない — reviewer が一度も走っていない PR に対する対応役 dispatch は非収束ループになるため。詳細は「developer(実装役)」節)。
 - **developer(対応役)**: 対象 PR は既に存在し `pr.number` も書込済みのため、evidence gate 失敗時は**台帳に一切書込まずスキップする**(`pr.status` は現状の `"completed review"` のまま)。次 tick で `pr.status == "completed review"` が成立していれば再試行する(暴走しない)。
 
 ## 書込方式
