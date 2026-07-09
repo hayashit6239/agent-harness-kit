@@ -204,8 +204,9 @@
       "title": "orchestrator walking skeleton — developer / pr reviewer を配車する (Phase 2 P7 の最初の増分)",
       "issue": {
         "number": 13,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "completed review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": null,
