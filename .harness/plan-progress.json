@@ -186,16 +186,17 @@
     {
       "id": "P12",
       "kind": "feat",
-      "title": "harness-review-pr の停止条件 (round 上限 + blocker trend) — 人間引き渡しの機械的シグナル化",
+      "title": "harness-review-pr の停止条件 (round 上限 + blocker trend) — 人間引き渡しの機械的シグナル化 (実装は #13/PR #14 に統合)",
       "issue": {
         "number": 12,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "ready for implementation",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
-        "number": null,
-        "status": null,
-        "githubState": null
+        "number": 14,
+        "status": "created pr",
+        "githubState": "open"
       }
     },
     {
