@@ -195,7 +195,7 @@
       },
       "pr": {
         "number": 14,
-        "status": "starting review",
+        "status": "completed review",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
@@ -212,7 +212,7 @@
       },
       "pr": {
         "number": 14,
-        "status": "starting review",
+        "status": "completed review",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
