@@ -1,7 +1,7 @@
 ---
 description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `commands/harness-review-pr.md`)に委譲し、返答を検証してから台帳へ書き込む。needs-human ラベルによるエスカレーション判断も行う。
 argument-hint: "[owner/repo] [review-mode]  省略時: CWD の origin から自動判定 / code-review(opt-in: multi-angle)"
-allowed-tools: [Bash, Skill, Read, Write]
+allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 ---
 
 # /harness-orchestrate — developer / pr reviewer を配車する orchestrator(v1 walking skeleton)
@@ -73,7 +73,12 @@ jq -c '[ .steps[]
 
 > 「対象 issue #<N> の本文(Problem/Context/Alternatives/Implementation Scope/DoD)を `gh issue view <N>` で Read せよ。次に `creating-git-worktrees` skill を Skill ツールで起動し、その手順に従って worktree を作成せよ。issue の Implementation Scope に従って実装せよ。実装後、`creating-gh-prs` skill を Skill ツールで起動し、その手順に従って PR を作成せよ(base は main、`Closes #<N>` を本文に含める)。最後に `{pr_number, proposed_status}`(`proposed_status` は通常 `"created pr"`)を JSON で返せ。台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
-**返答検証**: `pr_number` が実在し `gh pr view` で取得できること、dispatch 済み worktree で `evidence.done` を実行して exit 0 であることを確認する。**evidence gate 失敗時は台帳に一切書込まずスキップする**(次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が成立していれば再試行する。暴走しない)。両方通れば `pr.number = pr_number` / `pr.status = "created pr"` / `pr.githubState = "open"` を書き込む。
+**返答検証**: `pr_number` が実在し `gh pr view` で取得できることを確認したうえで、dispatch 済み worktree で `evidence.done` を実行して exit 0 であることを確認する。
+
+- **`pr_number` が返らなかった場合**(実装自体が PR 作成前に失敗): 台帳に一切書込まずスキップする(次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が成立していれば再試行する。暴走しない)。
+- **`pr_number` が返った場合**(PR は実際に作成されている): evidence gate の成否に関わらず **必ず `pr.number = pr_number` / `pr.githubState = "open"` を書き込む**(孤児 PR 化を防ぐ — 書き込まないと次 tick でも `pr.number == null` のままになり、同じ issue に対して developer(実装役)が再 dispatch され、重複した PR が作られ続ける)。`pr.status` は evidence gate の結果で分岐する:
+  - evidence gate 成功(exit 0): `pr.status = "created pr"`
+  - evidence gate 失敗(非 0): `pr.status = "completed review"`(`"created pr"` にはしない)。これにより次 tick は配車テーブルの「`pr.status == "completed review"` → developer(対応役)」の経路に自然に入り、対応役が evidence 失敗を修正して再挑戦する(この経路には既に retry ロジックがある)。
 
 ### developer(対応役)
 
@@ -93,11 +98,20 @@ jq -c '[ .steps[]
 
 対象 PR 番号と `$REVIEW_MODE` を渡し、次を Agent ツールで dispatch する(ツール制限は実装役と同じ。**`gh pr comment` 投稿は許可するが台帳・ラベルには触れさせない**):
 
-> 「`commands/harness-review-pr.md` を Read し、そこに書かれた手順 4 〜 5.6(review-mode=`$REVIEW_MODE`、停止条件判定込み)を PR #<N> に対してそのまま実行せよ。手順本体は転写しない — 必ずファイルを Read してから実行すること。判定ロジックは変更しない。手順 6 の台帳書込・ラベル管理・報告(手順 3 のマーカー投稿含む)は行わず、代わりに `{has_blocker, blocker_count, escalate, review_markdown}` を JSON で返せ(`review_markdown` は手順 5 で組み立てたコメント本文。投稿は行ってよい — 投稿そのものは pr reviewer の専権であり本コマンドの触らないものではない)。台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
+> 「`commands/harness-review-pr.md` を Read し、そこに書かれた手順 4 〜 5.6(投稿である手順 5 を含む。5.5/5.6 は投稿より前に計算するが、投稿自体も実行対象に含む。review-mode=`$REVIEW_MODE`、停止条件判定込み)を PR #<N> に対してそのまま実行せよ。手順本体は転写しない — 必ずファイルを Read してから実行すること。判定ロジックは変更しない。手順 6 の台帳書込・ラベル管理・報告(手順 3 のマーカー投稿含む)は行わず、代わりに `{has_blocker, blocker_count, escalate, review_markdown}` を JSON で返せ(`review_markdown` は手順 5 で組み立てたコメント本文。投稿は行ってよい — 投稿そのものは pr reviewer の専権であり本コマンドの触らないものではない)。台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
 **返答検証**: `escalate` を確認する。
 - `escalate == true`: 4 節の手段でエスカレーションする。台帳には一切書込まない(`pr.status` は変更せず、次に人間が対応するまで現状維持)。
-- `escalate == false`: evidence gate は不要(reviewer 役に実装物は無い)。`has_blocker` の真偽で `pr.status` を `ready for merge` / `completed review` に書込み、`ready for merge` ラベルを同期する(`commands/harness-review-pr.md` 手順 6 と同じ jq パターン + ラベル操作)。
+- `escalate == false`: evidence gate は不要(reviewer 役に実装物は無い)。`has_blocker` の真偽で `pr.status` を書込み、`ready for merge` ラベルを同期する。単一書込の設計上(pr reviewer subagent はラベル・台帳に触らせない)、このロジックは orchestrator 側が実コマンドとして持つ(`commands/harness-review-pr.md` 手順 6 の内容と同じ):
+  - `has_blocker == false`:
+    - `pr.status = "ready for merge"`
+    - ラベル作成 fallback(冪等): `gh label create "ready for merge" --color "0e8a16" --description "reviewer が merge 可能と判定した PR" --force`
+    - `gh pr edit <n> --repo <repo> --add-label "ready for merge"`(冪等)
+    - 旧名ラベルの掃除: `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(無ければ警告のみで実害なし)
+  - `has_blocker == true`:
+    - `pr.status = "completed review"`
+    - `gh pr edit <n> --repo <repo> --remove-label "ready for merge"`(付いていなければ警告のみで実害なし)
+    - 旧名ラベルの掃除: `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(無ければ警告のみで実害なし)
 
 ## エスカレーション手段
 
@@ -110,7 +124,10 @@ jq -c '[ .steps[]
 
 ## evidence gate 失敗時の扱い
 
-developer(実装役・対応役)いずれも、dispatch 済み worktree で `evidence.done`(台帳 `.harness/plan-progress.json` の `evidence.done`、無ければ `evidence.test` にフォールバック)を実行して非 0 の場合は、**台帳に一切書込まずスキップする**。次 tick で dispatch 条件が成立していれば再試行する(暴走しない)。
+dispatch 済み worktree で `evidence.done`(台帳 `.harness/plan-progress.json` の `evidence.done`、無ければ `evidence.test` にフォールバック)を実行して非 0 の場合の扱いは、developer の実装役と対応役で非対称(孤児 PR 問題の有無が違うため):
+
+- **developer(実装役)**: `pr_number` が返らなかった場合(PR 未作成)のみ台帳に一切書込まずスキップする。`pr_number` が返った場合(PR は実際に作成されている)は evidence gate の成否に関わらず `pr.number` / `pr.githubState` を必ず書き込み、evidence gate 失敗時は `pr.status = "completed review"` を書き込む(`"created pr"` にはしない — 詳細は「developer(実装役)」節)。
+- **developer(対応役)**: 対象 PR は既に存在し `pr.number` も書込済みのため、evidence gate 失敗時は**台帳に一切書込まずスキップする**(`pr.status` は現状の `"completed review"` のまま)。次 tick で `pr.status == "completed review"` が成立していれば再試行する(暴走しない)。
 
 ## 書込方式
 
@@ -169,3 +186,4 @@ git push origin main
 - **issue サイド(issue reviewer / issue review worker)の自動化は対象外**: v1 は PR ライフサイクルのみ。issue フェーズの配車は別 issue の範囲。
 - **capability 分離の技術的限界**: subagent に `Write` を渡さなくても `Bash` 経由での `.harness/` 編集は完全には防げない。git status ガードはこの限界を補うバックストップであり、hook 等による L3 相当の強制ではない。
 - **dispatch 上限 5 件のトレードオフ**: 1 tick で処理しきれない場合は次 tick へ持ち越される(dedup は各ロールの status 遷移が担う)。
+- **ラベル同期ロジックの複製(drift リスク)**: 本コマンドのラベル同期ロジックは `commands/harness-review-pr.md` 手順 6 の内容を単一書込の都合上複製している。将来どちらかの label 定義(色・説明・名称)を変更する場合は両ファイルを同時に更新すること(自動で同期されない、既知の drift リスク)。
