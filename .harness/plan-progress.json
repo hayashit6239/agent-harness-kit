@@ -209,9 +209,9 @@
         "lastReviewedStatus": "waiting for review"
       },
       "pr": {
-        "number": null,
-        "status": null,
-        "githubState": null
+        "number": 14,
+        "status": "created pr",
+        "githubState": "open"
       }
     }
   ]
