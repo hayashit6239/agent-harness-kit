@@ -146,7 +146,7 @@
       },
       "pr": {
         "number": 18,
-        "status": "starting review",
+        "status": "ready for merge",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
@@ -230,7 +230,7 @@
       },
       "pr": {
         "number": 19,
-        "status": "starting review",
+        "status": "ready for merge",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
