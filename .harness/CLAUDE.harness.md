@@ -71,3 +71,4 @@ PR フェーズ (9 status):
 - 例外: `.harness/` 自体を導入する PR だけは、自分の台帳項目を自分で運んでよい (PR 番号は作成後に追記して push する)。
 - reviewer は開始時に `git pull --ff-only` してから台帳を読む (古い台帳で選別しない)。
 - 同時に main へ push して競合したら、後から push した側が pull してやり直す。
+- orchestrator モードで運用する場合、台帳の書込主体は orchestrator のみとし、同じ台帳に対して手動コマンド (`/harness-review-pr` 等) から直接 commit しない (モードは台帳ごとに択一)。
