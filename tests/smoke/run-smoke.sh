@@ -16,6 +16,7 @@
 #    round<3 短絡 / round_flag+trend_flag 同時成立 / round=3 境界 / 不正入力 exit 2 の境界を含む)
 # 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定が期待通り
 #    (決定表の全 role×outcome 10 行を網羅 = reviewer の invalid 分岐の存在を機械保証 /
+#    網羅ケース数と DECISION_TABLE のエントリ総数を突き合わせる行数ガード /
 #    不正入力 exit 2 の境界を含む)
 # 9. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
@@ -555,11 +556,15 @@ echo "[7/10] evaluate-stop-condition 判定ケース OK (round 上限・trend・
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
 # 決定表の全 (role × outcome) 10 行を網羅検証する — この網羅により、reviewer の "invalid"
 # 分岐 (dispatch 結果失敗 -> sink) が存在し正しく sink に落ちることが機械的に保証される
-# (orchestrator の散文分岐が毎 round どこかずれる問題を構造的に止める)。不正入力 exit 2 も含む。
+# (orchestrator の散文分岐が毎 round どこかずれる問題を構造的に止める)。さらに網羅ケース数と
+# DECISION_TABLE のエントリ総数を突き合わせる行数ガードで「行追加時の assert 書き忘れ」を塞ぐ。
+# 不正入力 exit 2 も含む。
 DECIDE="$ROOT/scripts/decide-orchestrator-route.py"
 
 # $1=ラベル $2=role $3=outcome $4=期待する出力 JSON (キー順・空白を正規化して比較。
 #   full 一致にすることで ledger_write / route / label_action の過不足も 1 度に検出する)
+# 各呼出で ROUTE_CASES を 1 加算し、後段の行数ガードで DECISION_TABLE のエントリ総数と突き合わせる
+ROUTE_CASES=0
 assert_route() {
   local label="$1" role="$2" outcome="$3" want="$4" out got wantc
   out="$(printf '{"role":"%s","outcome":"%s"}' "$role" "$outcome" | python3 "$DECIDE")" \
@@ -569,6 +574,7 @@ assert_route() {
   if [ "$got" != "$wantc" ]; then
     fail "$label: 出力が期待と一致しない (got: $got / want: $wantc)"
   fi
+  ROUTE_CASES=$((ROUTE_CASES + 1))
 }
 
 # implementer (4 outcome)
@@ -596,6 +602,24 @@ assert_route "(i) reviewer/clean_pass" reviewer clean_pass \
   '{"ledger_write":{"pr.status":"ready for merge"},"route":"normal","label_action":"add_ready_for_merge"}'
 assert_route "(j) reviewer/blockers" reviewer blockers \
   '{"ledger_write":{"pr.status":"completed review"},"route":"normal","label_action":"remove_ready_for_merge"}'
+
+# 行数ガード: DECISION_TABLE の全エントリ数 (role×outcome の全組み合わせ) と assert_route で
+# 網羅したケース数 (ROUTE_CASES) が一致することを機械的に確認する。手動列挙は「行削除」は
+# 個別 assert の欠落で捕捉できるが「行追加時の assert 書き忘れ」は緑のまま通る — この突き合わせで
+# 塞ぐ (DECISION_TABLE に (role, outcome) を足したら assert_route も足さないと fail する)。
+TABLE_ENTRIES="$(python3 - "$DECIDE" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("dor", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(sum(len(by_outcome) for by_outcome in m.DECISION_TABLE.values()))
+PY
+)"
+[ "$ROUTE_CASES" -eq "$TABLE_ENTRIES" ] \
+  || fail "decision-table 行数ガード: assert_route で網羅したケース数 ($ROUTE_CASES) が DECISION_TABLE のエントリ総数 ($TABLE_ENTRIES) と一致しない (行追加時の assert 書き忘れ / 行削除の取りこぼし)"
+echo "[8/10] decision-table 行数ガード OK (assert_route ケース数 $ROUTE_CASES == DECISION_TABLE エントリ数 $TABLE_ENTRIES)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — evaluate-stop-condition と同じ流儀)
 # (k) role が enum 外 -> exit 2

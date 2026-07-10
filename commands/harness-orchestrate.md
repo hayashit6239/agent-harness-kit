@@ -41,6 +41,8 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 | 実装役の `pr_number` 復旧検索(`Closes #N`)が複数一致(曖昧) | implementer/`ambiguous` | 書込なし(誤った番号を書かない) |
 | git-status ガードが `.harness/` への意図しない変更を検知 | (判定器の外・単一書込ガード) | 書込なし(提案を破棄する) |
 
+**注**: 上表の「書き込む事実 status」列は decision script の `ledger_write` 出力を人間向けに説明するものであり、status リテラルの唯一の正は decision script。実行時は各ロール節が `$ROUTE.ledger_write` を台帳へ書く(適用手続きは「ルーティング判定」節の **`ledger_write` の適用**参照)。表内の status 文字列は表示・説明用途に留まり、実行される書込は script 出力から来る。**最終行の git-status ガードだけは decision script を通らない**(role/outcome 列が「判定器の外」と示すとおり)— その扱いは「既知の制限・拡張ポイント」節 (c) を参照。
+
 **書き込む事実 status がトリガーごとに異なる**のは、「その時点で GitHub 上に確定している事実」を写すため:
 - **reviewer/`escalate`・reviewer/`invalid`**: reviewer は選別 jq 上 `created pr` / `waiting for review` からしか dispatch されないため、無書込なら status は**その dispatch 元のまま**(reviewer に実装物は無く status を進める根拠が無い)。旧記述の「`completed review` のまま」は誤りだった(reviewer が `completed review` を選別することはない)。
 - **対応役 evidence 失敗**: `completed review` のまま(未解決 blocker が残る事実)。
@@ -84,7 +86,33 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
   script が exit 2(role enum 外 / outcome が role に対応しない / 必須キー欠損)なら、その step の処理を止め状態を報告する(黙って散文判定に切り替えない — `reaggregate-has-blocker.py` の扱いと同じ)。
 
-- **`ledger_write` の適用**: 非 null なら `.harness/plan-progress.json` の当該 step に書く。`"pr.number": true` は「呼出側が確定済みの `pr_number` を書け」というフラグ(script は具体番号を知らない pure decision のため真偽で返す)。他のキー(`"pr.githubState"` / `"pr.status"`)は返ったリテラル値をそのまま書く。書込は「書込方式」節の単一コミットで行う。
+- **`ledger_write` の適用(status リテラルは decision script が唯一の正)**: decision script の出力(`$ROUTE`)から `ledger_write` を取り出し、**非 null ならその中のキーだけを台帳へ書く**(script が返したフィールドのみ・**prose 側で status 文字列をハードコードしない**)。`null` なら台帳書込なし。ロールごとに書くフィールドが異なる(実装役=number+githubState+status / 対応役・reviewer=status のみ)ため、**`ledger_write` のキー集合に応じて書込を動的に組み立てる**。キーの解釈は 2 通りだけ:
+  - `"pr.number": true` → orchestrator が保持する実 `pr_number` を書く(script は番号を知らないので真偽フラグ。この 1 点だけ prose が実値を供給する)
+  - `"pr.githubState"` / `"pr.status"` → script が返したリテラル値をそのまま書く
+
+  抽出と適用は次の 1 手続きで行う(`<step id>` は対象 step、`<pr_number>` は orchestrator が保持する確定番号。`pr.number` を含まない経路では空文字でよい)。`ledger_write` の全キーを 1 回のファイル書込で適用するため原子的(`pr.number` だけ書いて `pr.status` 未書込という中間状態を作らない):
+  ```
+  PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
+  python3 - "$PLAN" "<step id>" "$ROUTE" "<pr_number>" <<'PY'
+  import datetime, json, os, sys
+  plan_path, step_id, route_json, pr_number = sys.argv[1:5]
+  lw = json.loads(route_json)["ledger_write"]  # decision script の出力を消費 (唯一の正)
+  if lw is not None:
+      with open(plan_path, encoding="utf-8") as f:
+          plan = json.load(f)
+      step = next(s for s in plan["steps"] if s["id"] == step_id)
+      for key, val in lw.items():             # script が返したキーだけを書く (動的)
+          section, field = key.split(".", 1)  # "pr.status" -> ("pr","status")
+          if key == "pr.number" and val is True:
+              val = int(pr_number)            # script は真偽フラグ。実値は orchestrator が供給
+          step[section][field] = val          # status 等は script の返値をそのまま (prose で複製しない)
+      plan["updatedAt"] = datetime.date.today().isoformat()
+      with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
+          json.dump(plan, f, ensure_ascii=False, indent=2)
+      os.replace(plan_path + ".tmp", plan_path)  # 原子的な置換
+  PY
+  ```
+  これで**実行される書込は decision script の `ledger_write` から来る**(prose に status リテラルを複製しない)。書込後は「書込方式」節に従い main へ単一コミット + push する。
 
 - **`route` の実行**:
   - **`normal`**: `ledger_write`(あれば)を書いて完了。sink・ラベル以外の副作用なし。
@@ -181,18 +209,9 @@ jq -c '[ .steps[]
    ROUTE=$(printf '{"role":"implementer","outcome":"<解決した outcome>"}' \
      | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py")
    ```
-   - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を**単一コミットで書く**(evidence を書込より前に実行済みなので、`pr.number` だけ書いて `pr.status` 未書込という中間状態を作らない ⇒ 非原子的多段書込を排除)。`"pr.number": true` の位置には確定した `<pr_number>` を埋める:
-     ```
-     jq --argjson n <pr_number> --arg st "created pr" --arg d "$(date +%F)" \
-       '(.steps[] | select(.id == "<step id>") | .pr.number)      = $n
-        | (.steps[] | select(.id == "<step id>") | .pr.githubState) = "open"
-        | (.steps[] | select(.id == "<step id>") | .pr.status)      = $st
-        | .updatedAt = $d' \
-       "$PLAN" > "$PLAN.tmp" && mv "$PLAN.tmp" "$PLAN"
-     ```
-     書込後は「書込方式」節に従い main へ直接コミット + push(1 コミット。例: `chore(harness): <step> pr.status -> created pr`)。
+   - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**単一コミットで書く**(`<pr_number>` に確定番号を渡す。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後は「書込方式」節に従い main へ直接コミット + push(1 コミット。例: `chore(harness): <step> pr.status -> created pr`)。
      - `pr_evidence_pass` → route=normal。上記単一コミットで完了。次 tick で pr reviewer に dispatch される。
-     - `pr_evidence_fail` → route=sink。上記単一コミット(`pr.status="created pr"`)を書き込んだ**うえで**「失敗経路(単一の needs-human sink)」へ。`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い。needs-human ラベル付与後は次 tick から無条件スキップされ安全に停止する。
+     - `pr_evidence_fail` → route=sink。上記単一コミットを書き込んだ**うえで**「失敗経路(単一の needs-human sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。needs-human ラベル付与後は次 tick から無条件スキップされ安全に停止する。
    - `no_pr` → route=skip。書込なし。
    - `ambiguous` → route=sink。書込なし。
 
@@ -229,8 +248,10 @@ jq -c '[ .steps[]
    - **`EVIDENCE_EXIT != 0`** → outcome=**`evidence_fail`**。
 
 5. **判定器を呼び route を実行**(role=responder):
-   - `evidence_pass` → 判定器の `ledger_write`(`pr.status`="waiting for review")を書く・route=normal(次 tick で pr reviewer が再レビュー)。
+   - `evidence_pass` → 判定器の `ledger_write`(`pr.status`="waiting for review")を「ルーティング判定」節の **`ledger_write` の適用**手続きで書く(対応役は `pr.status` のみ・`<pr_number>` は空文字でよい。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)・route=normal(次 tick で pr reviewer が再レビュー)。
    - `evidence_fail` → 書込なし・route=sink。**`pr.status` は `completed review` のまま**(事実: 未解決 blocker が残る)。これで対応役も有界停止になり実装役と対称になる — 「evidence が通らないまま `completed review` 固定で毎 tick 再 dispatch → reviewer が選別せず round カウンタが進まず永久に停止しない」旧・無界ループを根絶する。
+
+**既知の限界(意図的・対応役の無作業検知は escalate backstop に委ねる)**: 対応役は outcome を evidence gate だけで決めるため、dispatch した subagent が **無作業/クラッシュでも test が元々緑なら `evidence_pass` → `waiting for review` へ進む**(偽の前進)。実装役(復旧検索)・reviewer(`invalid` 検知)が dispatch 結果失敗を即座に sink するのに対し、**対応役の無作業だけは即時検知しない**という latency の非対称が残る。ただし finding 未対応なら次 tick で reviewer が同じ blocker を再検出 → `completed review` へ戻す往復が続き、**escalate backstop(round≥5 / blocker trend)が最終的に人間へ surface する**。これは bounded(`has_blocker=true` 維持で `clean_pass`=不正 merge には至らない)であり、walking skeleton では検知機構を足さず backstop に委ねる(作者の意図的判断)。実害(無作業 dispatch が頻発)が観測されたら follow-up で対応役の作業有無(`# PR Review Worker` コメント / commit の有無)検証を足す(「既知の制限・拡張ポイント」節にも同旨を明記)。
 
 ### pr reviewer
 
@@ -247,8 +268,8 @@ jq -c '[ .steps[]
 
 **判定器を呼び route / label_action を実行**(role=reviewer。evidence gate は reviewer 経路では不要 — reviewer 役に実装物は無い):
 - `invalid` / `escalate` → route=sink・書込なし・label_action=null。「失敗経路(単一の needs-human sink)」へ(`invalid` のトリガー: reviewer dispatch の返答不正 / `escalate` のトリガー: 停止条件到達)。台帳には一切書込まない(`pr.status` は dispatch 元の `created pr` / `waiting for review` のまま)。
-- `clean_pass` → 判定器の `ledger_write`(`pr.status`="ready for merge")を書く・route=normal・label_action=`add_ready_for_merge`。
-- `blockers` → 判定器の `ledger_write`(`pr.status`="completed review")を書く・route=normal・label_action=`remove_ready_for_merge`。
+- `clean_pass` → 判定器の `ledger_write`(`pr.status`="ready for merge")を「ルーティング判定」節の **`ledger_write` の適用**手続きで書く(reviewer は `pr.status` のみ・`<pr_number>` は空文字でよい。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)・route=normal・label_action=`add_ready_for_merge`。
+- `blockers` → 判定器の `ledger_write`(`pr.status`="completed review")を同手続きで書く・route=normal・label_action=`remove_ready_for_merge`。
 
 label_action(`ready for merge` ラベル同期)の実コマンドは「ルーティング判定」節の `label_action の実行` を参照する(prose に複製しない)。
 
@@ -321,11 +342,13 @@ git push origin main
 - **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等)の kit 同梱が前提になるため別途対応が必要(現行は個人 skill 依存または `/code-review` 単体のみ)。
 - **issue #11 との既知のリスク**: 上記「既知のリスク」節参照。orchestrator の単一書込は main 直接コミット + push が前提。
 - **issue サイド(issue reviewer / issue review worker)の自動化は対象外**: v1 は PR ライフサイクルのみ。issue フェーズの配車は別 issue の範囲。
-- **git-status ガードの限界(部分的バックストップ・正直な明記)**: 台帳保護には 2 つの限界がある。
+- **git-status ガードの限界と設計境界(部分的バックストップ・正直な明記)**: 台帳保護には次の点がある。
   - **(a) subagent の worktree 編集は捕捉できない**: 実装役 subagent は自前の worktree で作業するため、その `.harness/` 編集は orchestrator 自身の checkout で走る `git status` からは**見えない**。したがってこのガードは **orchestrator 自身の checkout 内の編集しか捕捉できない部分的バックストップ**に過ぎない。**台帳保護の主たる防御は「subagent に `Write` を渡さない」ツール制限**であって、git-status ガードはその補完(検知したら失敗 sink へ)。`Bash` 経由の編集は完全には防げず、hook 等による L3 相当の強制ではない。
-  - **(b) mid-tick 残渣の誤検知を避ける**: orchestrator 自身の書込は `.harness/plan-progress.json` の `mv` 後・commit 前に一時的に dirty になる。この残渣を subagent の変更と**誤検知しない**よう、ガードは **tick 開始時にクリーンだと確認したベースラインと比較**し、orchestrator 自身の既知の書込は除外して評価する(「dirty = subagent の意図しない変更」と短絡しない — 誤検知で無関係 step を spurious に sink 隔離するのを防ぐ)。
+  - **(b) mid-tick 残渣の誤検知を避ける**: orchestrator 自身の書込は `.harness/plan-progress.json` の書換後・commit 前に一時的に dirty になる。この残渣を subagent の変更と**誤検知しない**よう、ガードは **tick 開始時にクリーンだと確認したベースラインと比較**し、orchestrator 自身の既知の書込は除外して評価する(「dirty = subagent の意図しない変更」と短絡しない — 誤検知で無関係 step を spurious に sink 隔離するのを防ぐ)。
+  - **(c) git-status ガードだけが decision script を通らない唯一の失敗経路(設計境界・意図的)**: 他の全失敗面は「ルーティング判定」節の decision script が `route=sink` として決めるが、git-status ガードの drift 検知 → sink だけは script を経由しない。これは意図的である — **git-guard trip は「(role, outcome) に紐づくルーティング判断」ではなく、全ロール横断(cross-cutting)の pre-write 前提チェックであり、その帰結は自明に sink(分岐する判断ロジックが無い)ため decision script の対象外とする**(decision script はルーティング「判断」を集約するものであって、判断の無い自明な guard→sink はその対象ではない、という設計境界)。無理に決定表へ押し込まない。
 - **dispatch 上限 5 件のトレードオフ**: 1 tick で処理しきれない場合は次 tick へ持ち越される(dedup は各ロールの status 遷移が担う)。
 - **ルーティングは tested decision script**: (role, outcome) → (ledger_write, route, label_action) を `scripts/decide-orchestrator-route.py` が決定論的に解決し、`tests/smoke/run-smoke.sh` [8] が全 (role × outcome) 10 行を網羅検証する(reviewer の `invalid` 分岐を含む)。散文分岐の取りこぼしを構造的に防ぐのが目的で、規則は script が正・prose は「outcome への解決」と「route の実行」だけを持つ。
 - **失敗経路は単一 sink に集約(重要)**: 実装役・対応役・reviewer のどの経路でも「前進不能 = needs-human sink 到達」で対称に扱う。reviewer も `escalate`(停止条件)に加え `invalid`(dispatch 結果失敗)を持ち、単一 sink をすり抜けない。個別ロールに独自の失敗処理(片方だけ有界停止・片方は無界ループ)を持たせない。書き込む事実 status だけがトリガーごとに異なる(「失敗経路(単一の needs-human sink)」節の一覧表を参照)。
+- **対応役の無作業検知は escalate backstop に委ねる(意図的な既知の限界)**: 対応役だけは dispatch 結果失敗の即時検知分岐を持たない(最後の非対称)。subagent が **無作業/クラッシュでも test が元々緑なら `evidence_pass` → `waiting for review`** へ進む(偽の前進)。実装役(復旧検索)・reviewer(`invalid` 検知)が dispatch 失敗を即座に sink するのに対し、対応役の無作業だけ検知が **~3 round 遅延する**という latency の非対称が残る。ただし finding 未対応なら reviewer が同じ blocker を再検出 → `completed review` へ戻す往復が続き、**escalate backstop(round≥5 / blocker trend)が最終的に人間へ surface する**。これは bounded(`has_blocker=true` 維持で `clean_pass`=不正 merge には至らない)であり、walking skeleton では検知機構を足さず backstop に委ねる(作者の意図的判断)。実害(無作業 dispatch が頻発)が観測されたら follow-up で対応役の作業有無(`# PR Review Worker` コメント / commit の有無)検証を足す(対応役 flow の該当箇所にも同旨を明記済み)。
 - **sink の出口が人間の意図と未結線(#12/P14 で解消予定)**: reviewer の `escalate` / `invalid` sink は台帳無書込のため、人間が `needs-human` ラベルを外すと status は dispatch 元のままで再 dispatch され、原因未解消なら再 escalate ループに戻る。停止条件到達時に `pr.status` を新 enum `need for human review` へ遷移させる issue #12 の follow-up 要件(台帳 P14 で tracking 済み)で解消予定。本 PR は schema 変更を伴うためスコープ外(#14 merge 後の follow-up)で、新 enum 値は実装しない。
 - **ラベル同期ロジックの複製(drift リスク)**: 本コマンドのラベル同期ロジック(「ルーティング判定」節の `label_action の実行`)は `commands/harness-review-pr.md` 手順 6 の内容を単一書込の都合上複製している。将来どちらかの label 定義(色・説明・名称)を変更する場合は両ファイルを同時に更新すること(自動で同期されない、既知の drift リスク)。
