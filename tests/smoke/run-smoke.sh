@@ -11,10 +11,13 @@
 #    gh が途中で失敗しても蓄積済みの検出済み drift が全件出力される /
 #    gh が非オブジェクト JSON (null) を返したら実行エラーとして fail し蓄積 drift も失わない
 # 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定が期待通り (fail-closed 境界を含む)
-# 7. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
+# 7. evaluate-stop-condition (停止条件 round_flag/trend_flag/escalate) の単体判定が期待通り
+#    (round 上限 / blocker trend / 履歴不足時の fail-open / has_blocker=false 抑止 /
+#    round<3 短絡 / 不正入力 exit 2 の境界を含む)
+# 8. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
 #    カバーされていることも検査)
-# 8. すべて通れば "SMOKE OK" を出して exit 0
+# 9. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -72,12 +75,12 @@ d["evidence"]["done"] = "make test"
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(d, f, ensure_ascii=False, indent=2)
 PY
-echo "[1/8] fixture + .harness/ を組み立てた: $REPO"
+echo "[1/9] fixture + .harness/ を組み立てた: $REPO"
 
 # --- 2. schema 検証: exit 0 を期待 ------------------------------------------
 python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
-echo "[2/8] --schema exit 0"
+echo "[2/9] --schema exit 0"
 
 # validator を import して検査規則を直接呼ぶ (直接テスト可能性の固定化 — 構造の退行検知)
 python3 - "$VALIDATOR" <<'PY_DIRECT'
@@ -97,13 +100,13 @@ assert errors[0].startswith("::error:: "), (
 assert "があるのに githubState が null" in errors[0], (
     f"期待する規則の文言が無い (got: {errors[0]!r})")  # 規則単位の固定化 (FAIL_CASES と同じ流儀)
 PY_DIRECT
-echo "[2/8] 検査規則の直接呼出 (import) OK"
+echo "[2/9] 検査規則の直接呼出 (import) OK"
 
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
 ( cd "$REPO" && eval "$TEST_CMD" ) \
   || fail "evidence.test ($TEST_CMD) が exit 0 で終わらなかった"
-echo "[3/8] evidence.test ($TEST_CMD) exit 0"
+echo "[3/9] evidence.test ($TEST_CMD) exit 0"
 
 # --- 4. 失敗パターン群 (すべて non-zero + 期待文言を期待。件数はここに書かない — 乖離の温床) --------------------
 
@@ -220,7 +223,7 @@ for row in "${FAIL_CASES[@]}"; do
       fail "FAIL_CASES の検査モードが不正 ($checkmode): $row"
       ;;
   esac
-  echo "[4/8] $label -> non-zero + 期待文言"
+  echo "[4/9] $label -> non-zero + 期待文言"
 done
 
 # --- 以下は形が特殊で表に入れない個別ケース (無理に畳むと可読性が落ちる)。
@@ -232,7 +235,7 @@ make_broken "$TMP/broken-statusenums.json" statusenums
 expect_fail_with "(v) statusEnums 残存" \
   "台帳に statusEnums を置かない" \
   python3 "$VALIDATOR" --schema "$TMP/broken-statusenums.json"
-echo "[4/8] (v) statusEnums 残存 -> non-zero + 期待文言"
+echo "[4/9] (v) statusEnums 残存 -> non-zero + 期待文言"
 
 # (viii) literal-guard: 壊れ schema の配置 (台帳と同じディレクトリ) が必要なため、表に入れず個別に残す。
 #        schema 複製から "ready for merge" を取り除いた壊れ schema を
@@ -254,7 +257,7 @@ PY
 expect_fail_with "(viii) literal-guard" \
   "literal-guard" \
   python3 "$VALIDATOR" --schema "$LITDIR/plan-progress.json"
-echo "[4/8] (viii) literal-guard -> non-zero + 期待文言"
+echo "[4/9] (viii) literal-guard -> non-zero + 期待文言"
 
 # (ix) isDraft drift: 共通の STUB_MISMATCH では表現できない専用 stub (state は台帳と一致し
 #      isDraft だけ食い違う) が必要なため、表に入れず個別に残す。
@@ -277,7 +280,7 @@ make_broken "$ISDRAFT_PLAN" isdraft
 expect_fail_with "(ix) isDraft drift" \
   "台帳は False だが GitHub (PR #1) は True" \
   env PATH="$STUB_DRAFT:$PATH" python3 "$VALIDATOR" --drift "$ISDRAFT_PLAN"
-echo "[4/8] (ix) isDraft drift -> non-zero + 期待文言"
+echo "[4/9] (ix) isDraft drift -> non-zero + 期待文言"
 
 # --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
 
@@ -301,7 +304,7 @@ SH
 chmod +x "$STUB_MATCH/gh"
 env PATH="$STUB_MATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN" \
   || fail "drift 正系 (stub gh が台帳と一致) で --drift が失敗した"
-echo "[5/8] drift 正系 -> exit 0"
+echo "[5/9] drift 正系 -> exit 0"
 
 # gh 実行失敗: 壊れた gh (常に exit 1) では「drift 検出」ではなく
 # 「実行エラー」と分かる文言で fail すること (紛れの防止)
@@ -316,7 +319,7 @@ chmod +x "$STUB_BROKEN/gh"
 expect_fail_with "gh 実行失敗の区別" \
   "gh 呼出に失敗した" \
   env PATH="$STUB_BROKEN:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
-echo "[5/8] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
+echo "[5/9] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
 
 # gh 途中失敗: 2 step の台帳で step A (PR #1) は drift を検出し、step B (PR #2) で
 # gh が失敗する。fatal しても蓄積済みの検出済み drift が全件出力されること (診断情報を失わない)
@@ -360,7 +363,7 @@ grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$partial_out
   || fail "gh 途中失敗: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $partial_out)"
 grep -qF "gh 呼出に失敗した" <<< "$partial_out" \
   || fail "gh 途中失敗: gh 失敗エラーが出力に無い (got: $partial_out)"
-echo "[5/8] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
+echo "[5/9] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
 
 # (xv) gh が非オブジェクト JSON (null) を返す: json.loads は null / 配列 / 文字列も受理する
 #      ため、dict 形状検証で実行エラーとして fail し、蓄積済みの検出済み drift (PR #1) も
@@ -386,7 +389,7 @@ grep -qF "JSON オブジェクトでない" <<< "$null_out" \
   || fail "(xv) gh null 出力: dict 形状エラー文言が出力に無い (got: $null_out)"
 grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$null_out" \
   || fail "(xv) gh null 出力: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $null_out)"
-echo "[5/8] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
+echo "[5/9] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
 
 # --- 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定 ----------------
 REAGG="$ROOT/scripts/reaggregate-has-blocker.py"
@@ -472,9 +475,65 @@ assert_reagg "(p) 複数 findings (blocker と非 blocker の混在)" true \
 reagg_count="$(printf '%s' '[{"severity":"🔴","sources":["code-review"]},{"severity":"🟡","sources":["arch"]}]' \
   | python3 "$REAGG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["blocker_count"])')"
 [ "$reagg_count" = "2" ] || fail "(q) blocker_count=2 を期待したが $reagg_count"
-echo "[6/8] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
+echo "[6/9] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
 
-# --- 7. kit 自身の checkout なら複製の一致を検査 ------------------------------
+# --- 7. evaluate-stop-condition (停止条件 round_flag/trend_flag/escalate) の単体判定 ----
+# reaggregate-has-blocker と対の decision script。round 上限 (round_flag) / blocker trend /
+# 履歴不足・マーカー不正時の fail-open / has_blocker=false での抑止 / round<3 の短絡 /
+# 不正入力 exit 2 を境界として固定する (prose の停止条件ロジックが退行しても smoke で拾う)
+ESCALATE="$ROOT/scripts/evaluate-stop-condition.py"
+
+# $1=ラベル $2=期待する escalate (true/false) $3=入力 JSON
+assert_escalate() {
+  local label="$1" want="$2" json="$3" out got
+  out="$(printf '%s' "$json" | python3 "$ESCALATE")" \
+    || fail "$label: evaluate-stop-condition の実行に失敗した"
+  got="$(python3 -c 'import json, sys; print(str(json.loads(sys.argv[1])["escalate"]).lower())' "$out")"
+  if [ "$got" != "$want" ]; then
+    fail "$label: escalate=$got (期待: $want / 出力: $out)"
+  fi
+}
+
+# (a) round < 3 は flags に関わらず escalate false (trend が立つ履歴 + has_blocker でも短絡する)
+assert_escalate "(a) round<3 短絡" false \
+  '{"round":2,"has_blocker":true,"blocker_count":4,"prev_markers":["blocker_count=4","blocker_count=4"]}'
+# (b) round_flag: round=5 かつ has_blocker=true -> escalate true
+assert_escalate "(b) round_flag (round=5)" true \
+  '{"round":5,"has_blocker":true,"blocker_count":3,"prev_markers":[]}'
+# (b) reason に round 上限到達が含まれることも確認する
+printf '%s' '{"round":5,"has_blocker":true,"blocker_count":3,"prev_markers":[]}' \
+  | python3 "$ESCALATE" | grep -qF "round 上限到達(round 5)" \
+  || fail "(b) reason に round 上限到達の文言が無い"
+# (c) trend_flag: blocker_count が 4,4,4 (2 回連続で非改善) -> escalate true
+assert_escalate "(c) trend_flag (4,4,4 非改善)" true \
+  '{"round":4,"has_blocker":true,"blocker_count":4,"prev_markers":["x blocker_count=4 y","x blocker_count=4 y"]}'
+# (c) reason に trend 文言が含まれることも確認する
+printf '%s' '{"round":4,"has_blocker":true,"blocker_count":4,"prev_markers":["x blocker_count=4 y","x blocker_count=4 y"]}' \
+  | python3 "$ESCALATE" | grep -qF "改善していない" \
+  || fail "(c) reason に trend の文言が無い"
+# (d) trend 改善 (c2 -> c1 -> c0 = 5 -> 3 -> 2) -> escalate false
+assert_escalate "(d) trend 改善 (5,3,2)" false \
+  '{"round":4,"has_blocker":true,"blocker_count":2,"prev_markers":["blocker_count=3","blocker_count=5"]}'
+# (e) 履歴不足 (prev_markers < 2 件) -> trend_flag 不成立で escalate false (fail-open)
+assert_escalate "(e) 履歴不足 (1 件・fail-open)" false \
+  '{"round":4,"has_blocker":true,"blocker_count":9,"prev_markers":["blocker_count=1"]}'
+# (f) マーカー不正/パース不能 -> その履歴は欠損扱いで trend_flag 不成立 (fail-open)
+assert_escalate "(f) マーカー不正 (欠損扱い・fail-open)" false \
+  '{"round":4,"has_blocker":true,"blocker_count":9,"prev_markers":["no marker here","also nothing"]}'
+# (g) has_blocker=false は flags が立っても escalate false
+assert_escalate "(g) has_blocker=false 抑止" false \
+  '{"round":5,"has_blocker":false,"blocker_count":4,"prev_markers":["blocker_count=4","blocker_count=4"]}'
+# (h) 不正入力 (配列) -> exit 2 (入力エラーは判定エラーと区別される) + 期待文言
+esc_rc=0
+esc_out="$(printf '%s' '[]' | python3 "$ESCALATE" 2>&1)" || esc_rc=$?
+if [ "$esc_rc" -ne 2 ]; then
+  fail "(h) 配列でない入力で exit 2 を期待したが exit $esc_rc (出力: $esc_out)"
+fi
+grep -qF "入力が判定 JSON オブジェクトでない" <<< "$esc_out" \
+  || fail "(h) 不正入力の期待文言が出力に無い (got: $esc_out)"
+echo "[7/9] evaluate-stop-condition 判定ケース OK (round 上限・trend・fail-open 境界・has_blocker 抑止・round<3 短絡・不正入力 exit 2)"
+
+# --- 8. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
 if [ -d "$ROOT/.harness" ]; then
   COPY_PAIRS=(
@@ -515,11 +574,11 @@ if [ -d "$ROOT/.harness" ]; then
     diff -u "$ROOT/$src" "$ROOT/$dst" \
       || fail "複製が古い: $dst が $src と一致しない。cp で同期せよ (cp $src $dst)"
   done
-  echo "[7/8] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
+  echo "[8/9] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
 else
-  echo "[7/8] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
+  echo "[8/9] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi
 
-# --- 8. 完了 ------------------------------------------------------------------
-echo "[8/8] 全アサーション通過"
+# --- 9. 完了 ------------------------------------------------------------------
+echo "[9/9] 全アサーション通過"
 echo "SMOKE OK"
