@@ -230,8 +230,8 @@
       },
       "pr": {
         "number": 19,
-        "status": "ready for merge",
-        "githubState": "open",
+        "status": "merged pr",
+        "githubState": "merged",
         "lastReviewedStatus": "created pr"
       }
     },
