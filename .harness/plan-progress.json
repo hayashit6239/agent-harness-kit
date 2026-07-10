@@ -145,9 +145,10 @@
         "lastReviewedStatus": "waiting for review"
       },
       "pr": {
-        "number": null,
-        "status": null,
-        "githubState": null
+        "number": 18,
+        "status": "completed review",
+        "githubState": "open",
+        "lastReviewedStatus": "created pr"
       }
     },
     {
@@ -228,9 +229,10 @@
         "lastReviewedStatus": "waiting for review"
       },
       "pr": {
-        "number": null,
-        "status": null,
-        "githubState": null
+        "number": 19,
+        "status": "merged pr",
+        "githubState": "merged",
+        "lastReviewedStatus": "created pr"
       }
     },
     {
@@ -254,8 +256,9 @@
       "title": "台帳の書込方式をローカル台帳(F案)へ移行 — main push 禁止ポリシー対応 (issue #11 の実装 issue)",
       "issue": {
         "number": 17,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "ready for implementation",
+        "githubState": "open",
+        "lastReviewedStatus": "waiting for review"
       },
       "pr": {
         "number": null,

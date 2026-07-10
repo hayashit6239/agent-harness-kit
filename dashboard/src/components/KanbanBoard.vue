@@ -3,8 +3,9 @@
  * カンバンボード: issue フェーズ / PR フェーズの 2 レーン。
  * 列 = 作者指定の並び (deriveKanban の列順定数 ISSUE_COLUMN_ORDER / PR_COLUMN_ORDER が正)。
  * 空の flow 列も細く畳んで表示し、流れと「今どこが熱いか」を密度で見せる。
- * グルーピング・祝い列 (celebrating)・列のロール (statusOwner) は derive 側の
- * 純関数 (vitest 対象) に委ね、ここは表示と動き (列移動の演出) だけを担う。
+ * グルーピング・祝い列 (celebrating)・エスカレーション列 (escalating・issue #12)・
+ * 列のロール (statusOwner) は derive 側の純関数 (vitest 対象) に委ね、
+ * ここは表示と動き (列移動の演出) だけを担う。
  */
 import { computed, ref, watch, TransitionGroup } from 'vue';
 import type { KanbanCard, KanbanColumn, Phase, StepView, LedgerWarning } from '../lib/derive';
@@ -149,7 +150,7 @@ watch(
             :class="[
               `kind-${col.kind}`,
               roleClass(lane.phase, col),
-              { celebrating: col.celebrating, 'is-empty': col.cards.length === 0 },
+              { celebrating: col.celebrating, escalating: col.escalating, 'is-empty': col.cards.length === 0 },
             ]"
             :style="{ '--col-i': i }"
           >
@@ -158,6 +159,7 @@ watch(
             <header class="column-head">
               <span class="column-name" :title="columnLabel(col)">
                 <span v-if="col.kind === 'unknown'" title="schema 語彙にない status">⚠</span>
+                <span v-if="col.escalating">🚨</span>
                 <span v-if="col.celebrating">🎉</span>
                 {{ columnLabel(col) }}
               </span>
@@ -327,6 +329,15 @@ watch(
   --role-dim: var(--gold-dim);
   background: linear-gradient(180deg, rgba(242, 201, 76, 0.1), var(--column) 55%);
   box-shadow: 0 0 14px rgba(242, 201, 76, 0.22);
+}
+
+/* エスカレーションはロール色に優先して警告色 (規則 4 の演出。celebrating より後に定義し
+   両立時は警告側を前面に — 人間判断待ちの方が緊急度が高い・issue #12) */
+.column.escalating {
+  --role: var(--alert);
+  --role-dim: var(--alert-dim);
+  background: linear-gradient(180deg, rgba(255, 123, 114, 0.12), var(--column) 55%);
+  box-shadow: 0 0 14px rgba(255, 123, 114, 0.26);
 }
 
 /* 空列は細いレールに畳む (ラベル縦書き) — 密度で「今どこが熱いか」を見せる */
