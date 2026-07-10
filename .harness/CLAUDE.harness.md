@@ -76,10 +76,11 @@ PR フェーズ (9 status):
 ## 終端の記録と merge 代行
 
 - 終端 status (`merged pr` / `closed issue`) は原則として人間が実際に merge / close した時にだけ書く (「役割の分離」参照)。ただし **人間の明示指示がある場合に限り**、エージェントが merge と終端記録を代行してよい。守るのは判断の所在が人間にあることであって、誰がコマンドを叩くかは守らない。
+- **orchestrator モードの単一書込主体原則との関係**: merge 代行は、人間が明示的に指示した際に別セッションで一回性に行う手動操作であり、orchestrator モードの単一書込主体原則 (orchestrator の自動ループ自身が台帳の唯一の自動書込主体である、という原則) とは矛盾しない。ただし orchestrator ループが稼働中の台帳に対して人間が merge 代行を指示する場合、push タイミングが重なる可能性があるため、既存の競合対処 (`git pull --ff-only` してやり直す) に従う。
 - 代行するときの必須手順:
   1. 事前確認 — `pr.status == "ready for merge"` かつ CI が緑であることを確認する。
   2. merge する。既定方式は merge commit。導入先の branch protection が squash-only / rebase-only を強制する場合はその設定が優先する (本 kit の既定値は「他に制約が無い場合」に適用される)。
-  3. 終端 status (`merged pr` + `githubState: merged`) を main へ直接コミットする (メッセージ規約: `chore(harness): <step> pr.status -> merged pr`)。
+  3. 終端 status (`merged pr` + `githubState: merged`) を main へ直接コミットする。コミットメッセージには**人間の明示指示による代行である旨**を注記する (メッセージ規約: `chore(harness): <step> pr.status -> merged pr (merge代行: 人間の明示指示による)`)。加えて、代行を実施した旨を対象 PR へコメントとして残す (監査証跡)。
   4. `--drift` を検算し、merge で自動 close された issue の終端 (`closed issue` + `githubState: closed`) もここで記録する。
 - **① の事前確認が失敗した場合 (`pr.status != "ready for merge"` または CI 未緑)、エージェントは merge を拒否し、状況を人間へ報告してエスカレーションする。** 人間の明示指示があっても、機械検証可能なゲートを自己判断で上書きしない — doer ≠ judge の精神を merge 代行にも適用する。
 - **merge commit を既定にする根拠**: 各 round のレビュー往復そのものが「経験還元」の記録であり (issue #1 の設計思想)、squash で潰すとこの記録が失われる。
