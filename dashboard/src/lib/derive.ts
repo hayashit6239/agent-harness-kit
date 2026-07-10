@@ -2,12 +2,16 @@
  * 台帳 → 盤面 + キャラ状態の導出 (純関数。vitest の unit test 対象)。
  *
  * 対応表と合成規則は issue #9「レビュー反映 — 決定事項 (2026-07-08)」
- * および「増分レビュー反映 — 決定事項 (2026-07-08 set2)」が正:
+ * および「増分レビュー反映 — 決定事項 (2026-07-08 set2)」、issue #12「実装状況・決定事項
+ * (2026-07-10)」(need for human review status 追加) が正:
  *   規則 1 (step 内): pr.status != null の step は PR フェーズの信号のみ採用する
  *     (PR フェーズが始まった step では PR 側の信号を現在地として優先する —
  *      issue 側の残タスクは盤面で可視。follow-up 型 step の issue 残ボールは意図的除外)
  *   規則 2 (キャラ状態): 全 step の信号を 作業中 > 待ち仕事あり > idle の優先順位で 1 状態に畳む
  *   規則 3 (祝い): ready for merge はキャラ信号ではなく舞台全体の演出フラグ (キャラ状態と直交)
+ *   規則 4 (エスカレーション): need for human review もキャラ信号ではなく舞台全体の警告フラグ
+ *     (キャラ状態・祝いのいずれとも直交。停止条件到達 = 人間の判断待ちで、どちらのキャラの
+ *      仕事でもないため)
  * 未知 status は unknown として信号に数えず警告を返す (fail-soft)。
  */
 import type { Ledger, Step } from '../types';
@@ -38,14 +42,17 @@ export const ISSUE_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = 
 };
 
 /**
- * PR フェーズ (schema prStatus の非 null 全 8 値) → キャラ信号。
+ * PR フェーズ (schema prStatus の非 null 全 9 値) → キャラ信号。
  * 'ready for merge' はキャラ信号なし (merge は人間の専権) — 祝いは舞台フラグで別扱い (規則 3)。
+ * 'need for human review' もキャラ信号なし (続行可否の判断は人間の専権) — エスカレーションは
+ * 舞台フラグで別扱い (規則 4)。
  */
 export const PR_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = {
   'implementation-ready': { character: 'developer', kind: 'waiting', label: 'PR 作成待ち' },
   'created pr': { character: 'reviewer', kind: 'waiting', label: 'レビュー待ち' },
   'starting review': { character: 'reviewer', kind: 'working', label: 'レビュー中' },
   'completed review': { character: 'developer', kind: 'waiting', label: '対応待ち' },
+  'need for human review': null, // エスカレーション演出 (舞台フラグ)
   'ready for merge': null, // 祝い演出 (舞台フラグ)
   'starting review work': { character: 'developer', kind: 'working', label: '指摘対応中' },
   'waiting for review': { character: 'reviewer', kind: 'waiting', label: '再レビュー待ち' },
@@ -74,6 +81,8 @@ export interface StepView {
   pr: PhaseView;
   /** pr.status が 'ready for merge' (祝いフラグの由来 step。行を強調表示) */
   celebrating: boolean;
+  /** pr.status が 'need for human review' (エスカレーションフラグの由来 step。行を強調表示) */
+  escalating: boolean;
 }
 
 export interface LedgerWarning {
@@ -103,6 +112,8 @@ export interface BoardState {
   characters: Record<CharacterId, CharacterView>;
   /** 規則 3: ready for merge の step が 1 つでもあれば true (キャラ状態と直交) */
   celebrate: boolean;
+  /** 規則 4: need for human review の step が 1 つでもあれば true (キャラ状態・celebrate と直交) */
+  escalate: boolean;
   warnings: LedgerWarning[];
 }
 
@@ -123,7 +134,7 @@ function lookupSignal(phase: Phase, status: string | null): Lookup {
 /**
  * その status のボールを持つロール (列ヘッダとキャラカードの色分け用)。
  * 信号表 (ISSUE_SIGNALS / PR_SIGNALS) から導出する — 対応表との二重定義を避ける。
- * null = どのロールでもない (未着手 / 終端 / ready for merge / 未知語)。
+ * null = どのロールでもない (未着手 / 終端 / ready for merge / need for human review / 未知語)。
  */
 export function statusOwner(phase: Phase, status: string | null): CharacterId | null {
   if (status === null) return null;
@@ -166,6 +177,7 @@ export function derive(ledger: Ledger): BoardState {
     reviewer: { state: 'idle', tasks: [] },
   };
   let celebrate = false;
+  let escalate = false;
 
   const applySignal = (signal: Readonly<Signal>, stepId: string, phase: Phase, status: string): void => {
     const character = characters[signal.character];
@@ -220,6 +232,8 @@ export function derive(ledger: Ledger): BoardState {
 
     const celebrating = prStatus === 'ready for merge';
     if (celebrating) celebrate = true;
+    const escalating = prStatus === 'need for human review';
+    if (escalating) escalate = true;
 
     // 規則 1: pr.status != null の step は PR フェーズの信号のみ採用。
     // pr.status が未知語でも「PR フェーズが始まっている」事実は変わらないため issue 信号は採用しない。
@@ -238,10 +252,11 @@ export function derive(ledger: Ledger): BoardState {
       issue: { number: rawIssue?.number ?? null, status: issueStatus, githubState: rawIssue?.githubState ?? null, known: issue.known },
       pr: { number: rawPr?.number ?? null, status: prStatus, githubState: rawPr?.githubState ?? null, known: pr.known },
       celebrating,
+      escalating,
     };
   });
 
-  return { steps, characters, celebrate, warnings };
+  return { steps, characters, celebrate, escalate, warnings };
 }
 
 /* ------------------------------------------------------------------ */
@@ -271,6 +286,7 @@ export const PR_COLUMN_ORDER: ReadonlyArray<string | null> = [
   'waiting for review',
   'starting review',
   'completed review',
+  'need for human review', // 停止条件到達・人間の判断待ち (issue #12)
   'starting review work',
   'ready for merge',
   'merged pr',
@@ -310,6 +326,11 @@ export interface KanbanColumn {
    * PR レーンの 'ready for merge' 列でのみ立ちうる。UI はこの値を消費する (再導出しない)。
    */
   celebrating: boolean;
+  /**
+   * 規則 4 の導出値 (StepView.escalating) の列への集約 — この列にエスカレーション step のカードがあるか。
+   * PR レーンの 'need for human review' 列でのみ立ちうる。UI はこの値を消費する (再導出しない)。
+   */
+  escalating: boolean;
   cards: KanbanCard[];
 }
 
@@ -329,9 +350,10 @@ function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: Ste
     status,
     kind: status !== null && TERMINAL_STATUSES.has(status) ? 'terminal' : 'flow',
     celebrating: false,
+    escalating: false,
     cards: [],
   }));
-  const unknown: KanbanColumn = { status: null, kind: 'unknown', celebrating: false, cards: [] };
+  const unknown: KanbanColumn = { status: null, kind: 'unknown', celebrating: false, escalating: false, cards: [] };
   const byStatus = new Map<string | null, KanbanColumn>(columns.map((c) => [c.status, c]));
 
   for (const step of steps) {
@@ -351,6 +373,8 @@ function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: Ste
     target.cards.push(card);
     // 祝いは step 側の導出値 (規則 3) を列へ集約するだけ — PR レーンの ready for merge 列で立つ
     if (phase === 'pr' && step.celebrating) target.celebrating = true;
+    // エスカレーションは step 側の導出値 (規則 4) を列へ集約するだけ — PR レーンの need for human review 列で立つ
+    if (phase === 'pr' && step.escalating) target.escalating = true;
   }
   return { phase, columns: [...columns, unknown] };
 }

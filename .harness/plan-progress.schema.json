@@ -48,6 +48,7 @@
         "created pr",
         "starting review",
         "completed review",
+        "need for human review",
         "ready for merge",
         "starting review work",
         "waiting for review",

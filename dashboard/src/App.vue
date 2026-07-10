@@ -96,7 +96,7 @@ function formatTime(iso: string): string {
     <main v-if="board" class="layout">
       <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
       <aside class="side">
-        <CharacterStage :characters="board.characters" :celebrate="board.celebrate" />
+        <CharacterStage :characters="board.characters" :celebrate="board.celebrate" :escalate="board.escalate" />
       </aside>
     </main>
     <p v-else-if="!errorMessage" class="loading mono">台帳を読み込み中<span class="cursor">▋</span></p>

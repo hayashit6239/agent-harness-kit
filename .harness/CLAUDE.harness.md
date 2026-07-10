@@ -29,7 +29,7 @@ issue フェーズ (8 status):
 | waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
 | closed issue | 人間 | 実際に close した (終端。githubState=closed) | — |
 
-PR フェーズ (9 status):
+PR フェーズ (10 status):
 
 | status | 主体 | 意味 | 次の遷移先 |
 |---|---|---|---|
@@ -38,6 +38,7 @@ PR フェーズ (9 status):
 | created pr | 作者 | PR を作成した (初回レビュー待ち) | starting review |
 | starting review | reviewer | reviewer がレビュー実行中 | ready for merge / completed review |
 | completed review | reviewer | レビュー完了・blocker あり (作者の対応待ち) | starting review work |
+| need for human review | reviewer | 停止条件到達 (round 上限 / blocker 傾向未改善)・人間が続行可否を判断 | 人間の判断による (継続するなら waiting for review 等へ戻す) |
 | ready for merge | reviewer | レビュー完了・blocker なし (merge 可。reviewer の上限) | merged pr (merge は人間) |
 | starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
 | waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
@@ -57,7 +58,7 @@ PR フェーズ (9 status):
 ## 役割の分離 (doer ≠ judge)
 
 - コードを書く人 (main developer = 普段のセッション) と、レビューして判定する人 (reviewer = 別セッションで `/harness-review-pr` を起動) を分ける。別セッションなので reviewer は変更を初見で見る。
-- reviewer が進められる status は `ready for merge` まで。**終端の `merged pr` / `closed issue` は、人間が実際に merge / close した時にだけ書く**。
+- reviewer が進められる status は `ready for merge` / `need for human review` まで (どちらも reviewer が設定できる終端手前の状態)。**終端の `merged pr` / `closed issue` は、人間が実際に merge / close した時にだけ書く**。
 - `completed review` になったら、実装者が指摘の採否を判断して修正し、`waiting for review` に戻す。
 - **対応側が `ready for merge` を立てるのは越権 (例外なし)**。指摘が解消不可 (環境依存の実測値が要る等) でも、「merge 後の対応でよい」と作者間で合意した場合でも、対応側は `waiting for review` に戻すだけ。merge 後対応にするか否かの最終判断は reviewer の責務。
   (実事故の教訓: 対応側が「作者と合意済みの follow-up」を根拠に直接 `ready for merge` へ進め、reviewer の検証を飛ばした)

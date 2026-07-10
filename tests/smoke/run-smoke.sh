@@ -612,8 +612,8 @@ assert_route "(f) responder/evidence_fail" responder evidence_fail \
 #   sink をすり抜ける — 全網羅で「表に invalid 行が在る」ことを機械保証する)
 assert_route "(g) reviewer/invalid (dispatch 失敗 -> sink)" reviewer invalid \
   '{"ledger_write":null,"route":"sink","label_action":null}'
-assert_route "(h) reviewer/escalate (停止条件 -> sink)" reviewer escalate \
-  '{"ledger_write":null,"route":"sink","label_action":null}'
+assert_route "(h) reviewer/escalate (停止条件 -> need for human review へ書いてから sink)" reviewer escalate \
+  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}'
 assert_route "(i) reviewer/clean_pass" reviewer clean_pass \
   '{"ledger_write":{"pr.status":"ready for merge"},"route":"normal","label_action":"add_ready_for_merge"}'
 assert_route "(j) reviewer/blockers" reviewer blockers \
