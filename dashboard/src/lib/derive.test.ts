@@ -89,19 +89,21 @@ describe('対応表 — issue フェーズ単独 (pr.status = null) のキャラ
 
 describe('対応表 — PR フェーズのキャラ信号', () => {
   it.each([
-    ['implementation-ready', 'waiting', 'idle', false],
-    ['created pr', 'idle', 'waiting', false],
-    ['starting review', 'idle', 'working', false],
-    ['completed review', 'waiting', 'idle', false],
-    ['ready for merge', 'idle', 'idle', true],
-    ['starting review work', 'working', 'idle', false],
-    ['waiting for review', 'idle', 'waiting', false],
-    ['merged pr', 'idle', 'idle', false],
-  ] as const)('pr.status=%s → developer=%s / reviewer=%s / celebrate=%s', (status, developer, reviewer, celebrate) => {
+    ['implementation-ready', 'waiting', 'idle', false, false],
+    ['created pr', 'idle', 'waiting', false, false],
+    ['starting review', 'idle', 'working', false, false],
+    ['completed review', 'waiting', 'idle', false, false],
+    ['need for human review', 'idle', 'idle', false, true],
+    ['ready for merge', 'idle', 'idle', true, false],
+    ['starting review work', 'working', 'idle', false, false],
+    ['waiting for review', 'idle', 'waiting', false, false],
+    ['merged pr', 'idle', 'idle', false, false],
+  ] as const)('pr.status=%s → developer=%s / reviewer=%s / celebrate=%s / escalate=%s', (status, developer, reviewer, celebrate, escalate) => {
     const board = derive(ledgerOf([step('S', null, status)]));
     expect(board.characters.developer.state).toBe(developer);
     expect(board.characters.reviewer.state).toBe(reviewer);
     expect(board.celebrate).toBe(celebrate);
+    expect(board.escalate).toBe(escalate);
     expect(board.warnings).toEqual([]);
   });
 });
@@ -193,6 +195,42 @@ describe('合成規則 3 — 祝いは舞台全体のフラグでキャラ状態
     expect(board.characters.reviewer.state).toBe('idle');
     expect(board.characters.developer.tasks).toEqual([]);
     expect(board.characters.reviewer.tasks).toEqual([]);
+  });
+});
+
+describe('合成規則 4 — エスカレーションも舞台全体のフラグでキャラ状態と直交 (issue #12)', () => {
+  it('need for human review の step が 1 つでもあれば escalate=true、該当 step に escalating が立つ', () => {
+    const board = derive(ledgerOf([step('A', null, 'need for human review'), step('B', null, null)]));
+    expect(board.escalate).toBe(true);
+    expect(board.steps[0]!.escalating).toBe(true);
+    expect(board.steps[1]!.escalating).toBe(false);
+  });
+
+  it('エスカレーションとキャラの作業中は同時に成立する (直交)', () => {
+    const board = derive(
+      ledgerOf([step('A', null, 'need for human review'), step('B', null, 'starting review work')]),
+    );
+    expect(board.escalate).toBe(true);
+    expect(board.characters.developer.state).toBe('working');
+  });
+
+  it('エスカレーションと祝いは独立に成立しうる (別 step なら両方 true)', () => {
+    const board = derive(ledgerOf([step('A', null, 'need for human review'), step('B', null, 'ready for merge')]));
+    expect(board.escalate).toBe(true);
+    expect(board.celebrate).toBe(true);
+  });
+
+  it('need for human review 自体はどのキャラにも信号を出さない (続行可否の判断は人間の専権)', () => {
+    const board = derive(ledgerOf([step('A', null, 'need for human review')]));
+    expect(board.characters.developer.state).toBe('idle');
+    expect(board.characters.reviewer.state).toBe('idle');
+    expect(board.characters.developer.tasks).toEqual([]);
+    expect(board.characters.reviewer.tasks).toEqual([]);
+  });
+
+  it('エスカレーション step が無ければ escalate=false', () => {
+    const board = derive(ledgerOf([step('A', null, 'ready for merge'), step('B', null, null)]));
+    expect(board.escalate).toBe(false);
   });
 });
 
@@ -394,17 +432,18 @@ describe('statusOwner — 列ヘッダの色分け (信号表からの導出)', 
     expect(statusOwner('pr', 'starting review')).toBe('reviewer');
   });
 
-  it('未着手 / 終端 / ready for merge / 未知語はどのロールでもない (null)', () => {
+  it('未着手 / 終端 / ready for merge / need for human review / 未知語はどのロールでもない (null)', () => {
     expect(statusOwner('issue', null)).toBeNull();
     expect(statusOwner('issue', 'closed issue')).toBeNull();
     expect(statusOwner('pr', 'merged pr')).toBeNull();
     expect(statusOwner('pr', 'ready for merge')).toBeNull();
+    expect(statusOwner('pr', 'need for human review')).toBeNull();
     expect(statusOwner('pr', 'not-a-status')).toBeNull();
   });
 });
 
 describe('台帳に動きなし = 両キャラ idle', () => {
-  it('全 step が null または終端 (closed issue / merged pr) なら両キャラ idle・celebrate なし', () => {
+  it('全 step が null または終端 (closed issue / merged pr) なら両キャラ idle・celebrate/escalate なし', () => {
     const board = derive(
       ledgerOf([
         step('A', null, null),
@@ -415,6 +454,7 @@ describe('台帳に動きなし = 両キャラ idle', () => {
     expect(board.characters.developer.state).toBe('idle');
     expect(board.characters.reviewer.state).toBe('idle');
     expect(board.celebrate).toBe(false);
+    expect(board.escalate).toBe(false);
     expect(board.warnings).toEqual([]);
   });
 
@@ -443,7 +483,7 @@ describe('カンバン (deriveKanban) — 列順', () => {
     expect(lane.columns.at(-1)!.kind).toBe('unknown');
   });
 
-  it('PR レーンの列順 = 作者指定のカンバン並び 9 枚 + 右端に unknown 警告列', () => {
+  it('PR レーンの列順 = 作者指定のカンバン並び 10 枚 + 右端に unknown 警告列', () => {
     const lane = deriveKanban([]).pr;
     expect(lane.columns.map((c) => c.status)).toEqual([
       null, // 未着手
@@ -452,6 +492,7 @@ describe('カンバン (deriveKanban) — 列順', () => {
       'waiting for review',
       'starting review',
       'completed review',
+      'need for human review',
       'starting review work',
       'ready for merge',
       'merged pr',
@@ -572,6 +613,22 @@ describe('カンバン (deriveKanban) — カードの配置', () => {
     const view = deriveKanban(board.steps);
     for (const lane of [view.issue, view.pr]) {
       expect(lane.columns.every((c) => !c.celebrating)).toBe(true);
+    }
+  });
+
+  it('エスカレーションは列の escalating に集約される (規則 4 の導出値の消費 — UI は再導出しない・issue #12)', () => {
+    const board = derive(ledgerOf([step('A', 'created issue', 'need for human review')]));
+    const view = deriveKanban(board.steps);
+    expect(columnOf(view.pr, 'need for human review').escalating).toBe(true);
+    // 同じ step のカードが入る issue レーン側の列には立たない
+    expect(view.issue.columns.every((c) => !c.escalating)).toBe(true);
+  });
+
+  it('エスカレーション step が無ければ全列 escalating=false', () => {
+    const board = derive(ledgerOf([step('A', null, 'created pr')]));
+    const view = deriveKanban(board.steps);
+    for (const lane of [view.issue, view.pr]) {
+      expect(lane.columns.every((c) => !c.escalating)).toBe(true);
     }
   });
 });

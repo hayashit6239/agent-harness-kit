@@ -5,6 +5,8 @@ import type { CharacterId, CharacterState, CharacterView } from '../lib/derive';
 const props = defineProps<{
   characters: Record<CharacterId, CharacterView>;
   celebrate: boolean;
+  /** 規則 4 (issue #12): need for human review の step が 1 つでもあれば true */
+  escalate: boolean;
 }>();
 
 /** 画面上の表示名は「main developer / pr reviewer」、コード上の識別子は developer / reviewer (issue #9 決定事項) */
@@ -40,11 +42,12 @@ function pieceStyle(i: number): Record<string, string> {
 </script>
 
 <template>
-  <section class="stage" :class="{ 'is-celebrating': celebrate }">
+  <section class="stage" :class="{ 'is-celebrating': celebrate, 'is-escalating': escalate }">
     <div v-if="celebrate" class="confetti" aria-hidden="true">
       <span v-for="i in 28" :key="i" class="piece" :style="pieceStyle(i)"></span>
     </div>
     <p class="stage-tag">CREW</p>
+    <div v-if="escalate" class="escalate-banner">🚨 need for human review — 停止条件に到達、人間の判断を待っています</div>
     <div v-if="celebrate" class="celebrate-banner">🎉 ready for merge — merge は人間の出番です!</div>
 
     <div class="cast">
@@ -106,6 +109,17 @@ function pieceStyle(i: number): Record<string, string> {
     0 0 18px rgba(242, 201, 76, 0.18);
 }
 
+/* エスカレーションは祝いより優先 (両立時は警告色を前面に — 人間判断待ちの方が緊急度が高い) */
+.stage.is-escalating {
+  border-color: rgba(255, 123, 114, 0.55);
+  background:
+    radial-gradient(360px 200px at 50% -40px, rgba(255, 123, 114, 0.18), transparent 70%),
+    var(--tray);
+  box-shadow:
+    inset 0 2px 12px rgba(0, 0, 0, 0.45),
+    0 0 18px rgba(255, 123, 114, 0.22);
+}
+
 .stage-tag {
   position: relative;
   z-index: 2;
@@ -126,6 +140,21 @@ function pieceStyle(i: number): Record<string, string> {
   border-radius: 8px;
   background: var(--gold-dim);
   color: var(--gold);
+  font-weight: 700;
+  font-size: 13px;
+  text-align: center;
+  animation: banner-pop 0.9s ease-in-out infinite alternate;
+}
+
+.escalate-banner {
+  position: relative;
+  z-index: 2;
+  margin-bottom: 14px;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 123, 114, 0.55);
+  border-radius: 8px;
+  background: var(--alert-dim);
+  color: var(--alert);
   font-weight: 700;
   font-size: 13px;
   text-align: center;
