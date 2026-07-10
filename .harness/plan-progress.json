@@ -232,6 +232,21 @@
         "status": null,
         "githubState": null
       }
+    },
+    {
+      "id": "P15",
+      "kind": "fix",
+      "title": "evidence gate の worktree 残骸・復旧検索のフレーズ一致漏れ・HAS_BLOCKER 抽出コード欠如 (follow-up #16)",
+      "issue": {
+        "number": 16,
+        "status": "created issue",
+        "githubState": "open"
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      }
     }
   ]
 }
