@@ -216,6 +216,22 @@
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
+    },
+    {
+      "id": "P14",
+      "kind": "feat",
+      "title": "停止条件エスカレーションの状態化 — need for human review status + label 追加 (#12 follow-up・#14 merge 後)",
+      "issue": {
+        "number": 12,
+        "status": "ready for implementation",
+        "githubState": "open",
+        "lastReviewedStatus": "waiting for review"
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      }
     }
   ]
 }
