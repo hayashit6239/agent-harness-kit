@@ -256,7 +256,7 @@
       "title": "台帳の書込方式をローカル台帳(F案)へ移行 — main push 禁止ポリシー対応 (issue #11 の実装 issue)",
       "issue": {
         "number": 17,
-        "status": "waiting for review",
+        "status": "starting review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       },
