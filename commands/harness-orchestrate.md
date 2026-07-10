@@ -66,7 +66,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 3. **以後その step は無条件スキップ**: 次 tick 以降、配車テーブルの選別より前で `needs-human` ラベルの有無を確認し、付いていればどのロールにも dispatch しない。**ラベルの解除は人間が手動で行う**(orchestrator 側で自動解除ロジックは持たない)。
 4. **報告への反映(虚偽防止)**: tick 報告の「失敗 sink」列は `LABEL_OK` と通知の成否を**実際に反映する**。付与成功時のみ「🛑 needs-human 付与 + 通知済み」と書き、`add-label` 失敗時は「⚠️ ラベル付与失敗(手動付与が必要)」と正直に書く(無条件に「付与 + 通知済み」と書かない)。
 
-**有界停止の保証**: この sink に入った step は「人間がラベルを外す」以外に配車対象へ戻る経路が無い。したがって、どのロール(実装役・対応役・reviewer)から入っても、evidence が通らない/停止条件に達した/dispatch 結果が失敗した step が無限に再 dispatch され続けることはない(無界ループは残さない)。ただし上記「既知の限界」のとおり、人間がラベルを外した後の再 escalate ループは #12/P14 の follow-up で解消する。
+**有界停止の保証**: この sink に入った step は「人間がラベルを外す」以外に配車対象へ戻る経路が無い。したがって、どのロール(実装役・対応役・reviewer)から入っても、evidence が通らない/停止条件に達した/dispatch 結果が失敗した step が無限に再 dispatch され続けることはない(無界ループは残さない)。**この保証の唯一の(文書化された)例外は実装役の `no_pr`(dispatch 後 PR 未作成 + 復旧検索 0 件)で、これは sink に入らず route=skip で毎 tick 再 dispatch される — v1(人間監視下の `/loop`)では tick 報告で受動追跡され、自動 backstop は #12/P14 follow-up・真の無人化で対応する既知の限界(「既知の制限・拡張ポイント」節参照)**。加えて上記「既知の限界」のとおり、人間がラベルを外した後の再 escalate ループは #12/P14 の follow-up で解消する。
 
 ## ルーティング判定(`scripts/decide-orchestrator-route.py`)
 
@@ -187,7 +187,7 @@ jq -c '[ .steps[]
      ```
      gh pr list --repo <repo> --search "Closes #<N> in:body" --state open --json number
      ```
-     - **0 件** → PR 未作成。outcome=**`no_pr`**(判定器は route=skip を返す。次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が再成立すれば再 dispatch。**副作用が無いので暴走しない**)。
+     - **0 件** → PR 未作成。outcome=**`no_pr`**(判定器は route=skip を返す。次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が再成立すれば再 dispatch。**副作用が無いので暴走しない**。ただし原因が持続的(issue 実装不能 / developer subagent の決定論的クラッシュ)なら人間に surface せず無界に再 dispatch する — この無界再 dispatch は**意図的な既知の限界**として「既知の制限・拡張ポイント」節参照)。
      - **複数件** → 曖昧(同一 issue を Closes する open PR が 2 本以上)。outcome=**`ambiguous`**(判定器は route=sink・書込なし。誤った番号を台帳に書かず人間が正しい PR を確定する)。
      - **1 件** → その番号を `pr_number` として採用し、手順 3 へ。
 
@@ -212,7 +212,7 @@ jq -c '[ .steps[]
    - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**単一コミットで書く**(`<pr_number>` に確定番号を渡す。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後は「書込方式」節に従い main へ直接コミット + push(1 コミット。例: `chore(harness): <step> pr.status -> created pr`)。
      - `pr_evidence_pass` → route=normal。上記単一コミットで完了。次 tick で pr reviewer に dispatch される。
      - `pr_evidence_fail` → route=sink。上記単一コミットを書き込んだ**うえで**「失敗経路(単一の needs-human sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。needs-human ラベル付与後は次 tick から無条件スキップされ安全に停止する。
-   - `no_pr` → route=skip。書込なし。
+   - `no_pr` → route=skip。書込なし(無界再 dispatch の既知の限界は「既知の制限・拡張ポイント」節参照)。
    - `ambiguous` → route=sink。書込なし。
 
 5. **orphan 防止は write-early ではなく復旧検索が担う**: 手順 3〜4 の途中で tick が中断しても、次 tick は `pr.number == null` のままなので手順 2 の復旧検索が既存 PR(`Closes #<N>`)を再発見して self-heal する。だから `pr.number` を先行コミットする必要はなく、書込は手順 4 のとおり原子的にできる(先行コミット → evidence → 本コミット の 2 段書込は取らない)。
@@ -316,7 +316,7 @@ git push origin main
 | P10 | pr reviewer | created pr → invalid(dispatch 失敗)→ **書込なし** | — | ⚠️ ラベル付与失敗(手動付与が必要) |
 | P12 | developer(対応役) | completed review → evidence_fail → **書込なし** | ❌ 非 0 | 🛑 needs-human 付与 + 通知済み |
 
-**失敗 sink 列は無条件に「付与 + 通知済み」と書かない**(報告虚偽の防止 — 実装 C)。sink 共通手続き手順 1 の `LABEL_OK` と通知の成否を**実際に反映**する: 付与成功時のみ「🛑 needs-human 付与 + 通知済み」、`add-label` 失敗時は「⚠️ ラベル付与失敗(手動付与が必要)」と正直に書く(上表 P10 が失敗例)。
+**失敗 sink 列は無条件に「付与 + 通知済み」と書かない**(報告虚偽の防止)。sink 共通手続き手順 1 の `LABEL_OK` と通知の成否を**実際に反映**する: 付与成功時のみ「🛑 needs-human 付与 + 通知済み」、`add-label` 失敗時は「⚠️ ラベル付与失敗(手動付与が必要)」と正直に書く(上表 P10 が失敗例)。
 
 ### ⏭️ スキップ(あれば)
 - #M は `needs-human` ラベル付きのため無条件スキップ
@@ -348,7 +348,8 @@ git push origin main
   - **(c) git-status ガードだけが decision script を通らない唯一の失敗経路(設計境界・意図的)**: 他の全失敗面は「ルーティング判定」節の decision script が `route=sink` として決めるが、git-status ガードの drift 検知 → sink だけは script を経由しない。これは意図的である — **git-guard trip は「(role, outcome) に紐づくルーティング判断」ではなく、全ロール横断(cross-cutting)の pre-write 前提チェックであり、その帰結は自明に sink(分岐する判断ロジックが無い)ため decision script の対象外とする**(decision script はルーティング「判断」を集約するものであって、判断の無い自明な guard→sink はその対象ではない、という設計境界)。無理に決定表へ押し込まない。
 - **dispatch 上限 5 件のトレードオフ**: 1 tick で処理しきれない場合は次 tick へ持ち越される(dedup は各ロールの status 遷移が担う)。
 - **ルーティングは tested decision script**: (role, outcome) → (ledger_write, route, label_action) を `scripts/decide-orchestrator-route.py` が決定論的に解決し、`tests/smoke/run-smoke.sh` [8] が全 (role × outcome) 10 行を網羅検証する(reviewer の `invalid` 分岐を含む)。散文分岐の取りこぼしを構造的に防ぐのが目的で、規則は script が正・prose は「outcome への解決」と「route の実行」だけを持つ。
-- **失敗経路は単一 sink に集約(重要)**: 実装役・対応役・reviewer のどの経路でも「前進不能 = needs-human sink 到達」で対称に扱う。reviewer も `escalate`(停止条件)に加え `invalid`(dispatch 結果失敗)を持ち、単一 sink をすり抜けない。個別ロールに独自の失敗処理(片方だけ有界停止・片方は無界ループ)を持たせない。書き込む事実 status だけがトリガーごとに異なる(「失敗経路(単一の needs-human sink)」節の一覧表を参照)。
+- **失敗経路は単一 sink に集約(重要)**: 実装役・対応役・reviewer のどの経路でも「前進不能 = needs-human sink 到達」で対称に扱う。reviewer も `escalate`(停止条件)に加え `invalid`(dispatch 結果失敗)を持ち、単一 sink をすり抜けない。個別ロールに独自の失敗処理(片方だけ有界停止・片方は無界ループ)を持たせない。書き込む事実 status だけがトリガーごとに異なる(「失敗経路(単一の needs-human sink)」節の一覧表を参照)。**この対称性の唯一の(文書化された)例外は実装役の `no_pr` で、これは sink ではなく route=skip の無界再 dispatch になる — v1 の人間監視 `/loop` では tick 報告で受動追跡され、自動 backstop は #12/P14 follow-up・真の無人化で対応する(下記「実装役の `no_pr` の無界再 dispatch」参照)**。
 - **対応役の無作業検知は escalate backstop に委ねる(意図的な既知の限界)**: 対応役だけは dispatch 結果失敗の即時検知分岐を持たない(最後の非対称)。subagent が **無作業/クラッシュでも test が元々緑なら `evidence_pass` → `waiting for review`** へ進む(偽の前進)。実装役(復旧検索)・reviewer(`invalid` 検知)が dispatch 失敗を即座に sink するのに対し、対応役の無作業だけ検知が **~3 round 遅延する**という latency の非対称が残る。ただし finding 未対応なら reviewer が同じ blocker を再検出 → `completed review` へ戻す往復が続き、**escalate backstop(round≥5 / blocker trend)が最終的に人間へ surface する**。これは bounded(`has_blocker=true` 維持で `clean_pass`=不正 merge には至らない)であり、walking skeleton では検知機構を足さず backstop に委ねる(作者の意図的判断)。実害(無作業 dispatch が頻発)が観測されたら follow-up で対応役の作業有無(`# PR Review Worker` コメント / commit の有無)検証を足す(対応役 flow の該当箇所にも同旨を明記済み)。
+- **実装役の `no_pr` の無界再 dispatch は文書化された既知の限界(意図的)**: 実装役 dispatch 後に PR が未作成(返答不正 + `Closes #N` 復旧検索 0 件)なら outcome=`no_pr` → route=skip で書込・副作用なく次 tick 再 dispatch される。これは **idempotent**(状態破壊・orphan・不正 merge には至らない)だが、原因が持続的(issue が実装不能 / developer subagent が決定論的にクラッシュ)な場合は人間に一切 surface せず**無界に再 dispatch する**。上記「対応役の無作業」が reviewer 往復で round を加算し escalate backstop で自己 surface するのと違い、**`no_pr` は reviewer が絡まず round カウンタも backstop も無い唯一の失敗経路**であり、本コマンドが掲げる「無界ループを残さない / 失敗経路を対称に扱う」不変条件の唯一の(文書化された)例外である(「有界停止の保証」節・「失敗経路は単一 sink に集約」項でも but 付きで明記)。**ただしこのリスクが実際に問題になるのは真の無人化(unattended `/loop`)の場合だけ**: v1 は人間監視下の `/loop`(セッションを開いたまま)が前提で、繰り返す `no_pr` は毎 tick の報告(「スキップ(あれば)」節に `no_pr`・PR 未作成として出る)に現れるため人間が気づける(真に silent ではない)。真の無人化は v1 で明示的にスコープ外(上記「真の無人化はまだできない」参照)。自動 backstop(`no_pr` の issue レベル escalation 等)は、escalation 機構を扱う **issue #12 の follow-up(`need for human review` status/label、台帳 P14 で tracking)および真の無人化の作業と面を共有する**ため、そちらで対応する。本 PR(walking skeleton)では検知機構を足さず、v1 の人間監視モデルで受動追跡する(decision script の `no_pr` は route=skip のまま・挙動は変えない)。
 - **sink の出口が人間の意図と未結線(#12/P14 で解消予定)**: reviewer の `escalate` / `invalid` sink は台帳無書込のため、人間が `needs-human` ラベルを外すと status は dispatch 元のままで再 dispatch され、原因未解消なら再 escalate ループに戻る。停止条件到達時に `pr.status` を新 enum `need for human review` へ遷移させる issue #12 の follow-up 要件(台帳 P14 で tracking 済み)で解消予定。本 PR は schema 変更を伴うためスコープ外(#14 merge 後の follow-up)で、新 enum 値は実装しない。
 - **ラベル同期ロジックの複製(drift リスク)**: 本コマンドのラベル同期ロジック(「ルーティング判定」節の `label_action の実行`)は `commands/harness-review-pr.md` 手順 6 の内容を単一書込の都合上複製している。将来どちらかの label 定義(色・説明・名称)を変更する場合は両ファイルを同時に更新すること(自動で同期されない、既知の drift リスク)。
