@@ -27,7 +27,7 @@ issue フェーズ (8 status):
 | ready for implementation | reviewer | レビュー完了・blocker なし (実装に着手できる) | — (PR フェーズへ) |
 | starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
 | waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
-| closed issue | 人間 | 実際に close した (終端。githubState=closed) | — |
+| closed issue | 人間 (明示指示によるエージェント代行を含む) | 実際に close した (終端。githubState=closed) | — |
 
 PR フェーズ (9 status):
 
@@ -41,7 +41,7 @@ PR フェーズ (9 status):
 | ready for merge | reviewer | レビュー完了・blocker なし (merge 可。reviewer の上限) | merged pr (merge は人間) |
 | starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
 | waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
-| merged pr | 人間 | 実際に merge した (終端。githubState=merged) | — |
+| merged pr | 人間 (明示指示によるエージェント代行を含む) | 実際に merge した (終端。githubState=merged) | — |
 
 紛らわしい 3 点:
 - `starting review` = **reviewer** がレビューを実行中 (レビュー開始マーカー)。
@@ -72,3 +72,14 @@ PR フェーズ (9 status):
 - reviewer は開始時に `git pull --ff-only` してから台帳を読む (古い台帳で選別しない)。
 - 同時に main へ push して競合したら、後から push した側が pull してやり直す。
 - orchestrator モードで運用する場合、台帳の書込主体は orchestrator のみとし、同じ台帳に対して手動コマンド (`/harness-review-pr` 等) から直接 commit しない (モードは台帳ごとに択一)。
+
+## 終端の記録と merge 代行
+
+- 終端 status (`merged pr` / `closed issue`) は原則として人間が実際に merge / close した時にだけ書く (「役割の分離」参照)。ただし **人間の明示指示がある場合に限り**、エージェントが merge と終端記録を代行してよい。守るのは判断の所在が人間にあることであって、誰がコマンドを叩くかは守らない。
+- 代行するときの必須手順:
+  1. 事前確認 — `pr.status == "ready for merge"` かつ CI が緑であることを確認する。
+  2. merge する。既定方式は merge commit。導入先の branch protection が squash-only / rebase-only を強制する場合はその設定が優先する (本 kit の既定値は「他に制約が無い場合」に適用される)。
+  3. 終端 status (`merged pr` + `githubState: merged`) を main へ直接コミットする (メッセージ規約: `chore(harness): <step> pr.status -> merged pr`)。
+  4. `--drift` を検算し、merge で自動 close された issue の終端 (`closed issue` + `githubState: closed`) もここで記録する。
+- **① の事前確認が失敗した場合 (`pr.status != "ready for merge"` または CI 未緑)、エージェントは merge を拒否し、状況を人間へ報告してエスカレーションする。** 人間の明示指示があっても、機械検証可能なゲートを自己判断で上書きしない — doer ≠ judge の精神を merge 代行にも適用する。
+- **merge commit を既定にする根拠**: 各 round のレビュー往復そのものが「経験還元」の記録であり (issue #1 の設計思想)、squash で潰すとこの記録が失われる。
