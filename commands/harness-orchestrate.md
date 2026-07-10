@@ -277,7 +277,7 @@ label_action(`ready for merge` ラベル同期)の実コマンドは「ルーテ
 
 evidence gate は orchestrator 自身が独立した一時 worktree を用意して `evidence.done`(台帳 `.harness/plan-progress.json` の `evidence.done`、無ければ `evidence.test` にフォールバック)を実行する共通機構(具体的な worktree の作り方は「developer(実装役)」節の手順 3 参照)。**実装役・対応役いずれも、evidence gate 失敗時は判定器が `route=sink` を返し、単一の needs-human sink に到達する(対称)**:
 
-- **developer(実装役)**: `pr_number` が確定した(PR は実在する)場合、失敗 outcome=`pr_evidence_fail` → `pr.status="created pr"` を単一コミットで書き込んだうえで sink。PR 未作成(復旧検索 0 件)は outcome=`no_pr` → route=skip で書込まず次 tick 再 dispatch(副作用が無いので暴走しない)。復旧検索が複数一致(曖昧)は outcome=`ambiguous` → route=sink・書込なし。
+- **developer(実装役)**: `pr_number` が確定した(PR は実在する)場合、失敗 outcome=`pr_evidence_fail` → `pr.status="created pr"` を単一コミットで書き込んだうえで sink。PR 未作成(復旧検索 0 件)は outcome=`no_pr` → route=skip で書込まず次 tick 再 dispatch(副作用が無いので暴走しない。**ただし原因が持続的(issue 実装不能 / developer subagent の決定論的クラッシュ)なら人間に surface せず無界に再 dispatch する既知の限界 — 本節が掲げる sink 対称性の唯一の(文書化された)例外で、v1 の人間監視 `/loop` では tick 報告で受動追跡・自動 backstop は #12/P14 follow-up に委ねる。「既知の制限・拡張ポイント」節参照**)。復旧検索が複数一致(曖昧)は outcome=`ambiguous` → route=sink・書込なし。
 - **developer(対応役)**: 対象 PR は既に存在し `pr.number` も書込済み。失敗 outcome=`evidence_fail` → 書込なし(`pr.status="completed review"` のまま = 未解決 blocker が残る事実)で sink。**旧版の「書込まずスキップ + 再試行」は取らない** — `completed review` は reviewer が選別しないため round カウンタが進まず、round≥5 の停止条件に永久に到達しない無界ループになるため。
 
 これで「どのロールの evidence 失敗も needs-human に到達し、無界ループを残さない」という対称性が、判定器の `route=sink` として一元化される(失敗経路の一元化)。

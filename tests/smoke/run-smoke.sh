@@ -12,8 +12,9 @@
 #    gh が非オブジェクト JSON (null) を返したら実行エラーとして fail し蓄積 drift も失わない
 # 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定が期待通り (fail-closed 境界を含む)
 # 7. evaluate-stop-condition (停止条件 round_flag/trend_flag/escalate) の単体判定が期待通り
-#    (round 上限 / blocker trend / 履歴不足時の fail-open / has_blocker=false 抑止 /
-#    round<3 短絡 / round_flag+trend_flag 同時成立 / round=3 境界 / 不正入力 exit 2 の境界を含む)
+#    (round 上限 / blocker trend / trend の and/or 判別 (片側成立) / 履歴不足時の fail-open /
+#    has_blocker=false 抑止 / round<3 短絡 / round_flag+trend_flag 同時成立 / round=3 境界 /
+#    不正入力 exit 2 の境界を含む)
 # 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定が期待通り
 #    (決定表の全 role×outcome 10 行を網羅 = reviewer の invalid 分岐の存在を機械保証 /
 #    網羅ケース数と DECISION_TABLE のエントリ総数を突き合わせる行数ガード /
@@ -518,6 +519,21 @@ printf '%s' '{"round":4,"has_blocker":true,"blocker_count":4,"prev_markers":["x 
 # (d) trend 改善 (c2 -> c1 -> c0 = 5 -> 3 -> 2) -> escalate false
 assert_escalate "(d) trend 改善 (5,3,2)" false \
   '{"round":4,"has_blocker":true,"blocker_count":2,"prev_markers":["blocker_count=3","blocker_count=5"]}'
+# (d2) trend 片側のみ成立 -> trend_flag 不成立で escalate false (`and` セマンティクスの pin)。
+#   時系列 c2 -> c1 -> c0 = 5 -> 1 -> 3 (prev_markers は most-recent-first なので c1=1, c2=5)。
+#   round=4 (<5) で round_flag を無効化し trend_flag を isolate。
+#   (c0>=c1)=(3>=1)=true かつ (c1>=c2)=(1>=5)=false -> `(c0>=c1) and (c1>=c2)` = false。
+#   既存の (c) 4,4,4 (両真) と (d) 5,3,2 (両偽) は and/or どちらでも同結果で判別できない。
+#   この片側成立ケースだけが and/or を判別する: もし将来 trend 判定を `and`->`or` に誤改変すると
+#   (3>=1) or (1>=5) = true -> trend_flag=true -> escalate=true に変わり、この行が赤くなる
+#   (途中で一度改善した PR を「2 連続で非改善」と誤判定して人間へ誤エスカレーションする退行を検知)。
+assert_escalate "(d2) trend 片側成立 (and 判別・c2->c1->c0 = 5->1->3)" false \
+  '{"round":4,"has_blocker":true,"blocker_count":3,"prev_markers":["<!-- x blocker_count=1 -->","<!-- x blocker_count=5 -->"]}'
+# (d2) trend_flag=false も直接 pin する (escalate=false だけでは他要因の false と区別できないため。
+#   `and`->`or` 誤改変時に trend_flag が true へ反転することを直接捕捉する)
+printf '%s' '{"round":4,"has_blocker":true,"blocker_count":3,"prev_markers":["<!-- x blocker_count=1 -->","<!-- x blocker_count=5 -->"]}' \
+  | python3 "$ESCALATE" | grep -qF '"trend_flag": false' \
+  || fail "(d2) trend_flag=false を期待 (and セマンティクスの pin — or 誤改変なら true に反転する)"
 # (e) 履歴不足 (prev_markers < 2 件) -> trend_flag 不成立で escalate false (fail-open)
 assert_escalate "(e) 履歴不足 (1 件・fail-open)" false \
   '{"round":4,"has_blocker":true,"blocker_count":9,"prev_markers":["blocker_count=1"]}'
@@ -550,7 +566,7 @@ grep -qF "、" <<< "$same_reason" \
 #     (4,4,4 で trend 成立 -> escalate true。round=2 の (a) が false なのと対をなす境界)
 assert_escalate "(j) round=3 境界 (判定開始の最小 round・trend 成立)" true \
   '{"round":3,"has_blocker":true,"blocker_count":4,"prev_markers":["blocker_count=4","blocker_count=4"]}'
-echo "[7/10] evaluate-stop-condition 判定ケース OK (round 上限・trend・fail-open 境界・has_blocker 抑止・round<3 短絡・同時成立・round=3 境界・不正入力 exit 2)"
+echo "[7/10] evaluate-stop-condition 判定ケース OK (round 上限・trend・trend の and/or 判別・fail-open 境界・has_blocker 抑止・round<3 短絡・同時成立・round=3 境界・不正入力 exit 2)"
 
 # --- 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定 ----
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
