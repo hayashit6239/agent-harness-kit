@@ -140,14 +140,14 @@
       "title": "人間の merge 指示に対するエージェント代行挙動 (終端記録含む) を CLAUDE.harness.md 雛形に定義 (follow-up #8)",
       "issue": {
         "number": 8,
-        "status": "ready for implementation",
-        "githubState": "open",
+        "status": "closed issue",
+        "githubState": "closed",
         "lastReviewedStatus": "waiting for review"
       },
       "pr": {
         "number": 18,
-        "status": "ready for merge",
-        "githubState": "open",
+        "status": "merged pr",
+        "githubState": "merged",
         "lastReviewedStatus": "waiting for review"
       }
     },
