@@ -265,6 +265,21 @@
         "status": null,
         "githubState": null
       }
+    },
+    {
+      "id": "P17",
+      "kind": "docs",
+      "title": "Phase 1/2 の用語同期 — README.md / harness-orchestrate.md を issue #1 の再定義に追従",
+      "issue": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      },
+      "pr": {
+        "number": 20,
+        "status": "created pr",
+        "githubState": "open"
+      }
     }
   ]
 }
