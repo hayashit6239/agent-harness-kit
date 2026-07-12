@@ -312,6 +312,21 @@
         "status": null,
         "githubState": null
       }
+    },
+    {
+      "id": "P20",
+      "kind": "feat",
+      "title": "進捗ダッシュボードを「せなおAIオフィス」方向へ進化 — ピクセルキャラ刷新・台帳レポート駆動の作業フィード・コマンド送信枠 (epic #23 子)",
+      "issue": {
+        "number": 25,
+        "status": "created issue",
+        "githubState": "open"
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      }
     }
   ]
 }
