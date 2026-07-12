@@ -287,8 +287,9 @@
       "title": "停止条件ロジック (round_flag/trend_flag/escalate) を tested script に切り出す",
       "issue": {
         "number": 15,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": null,
