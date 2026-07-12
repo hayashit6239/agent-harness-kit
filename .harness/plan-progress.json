@@ -146,7 +146,7 @@
       },
       "pr": {
         "number": 18,
-        "status": "starting review",
+        "status": "ready for merge",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       }
