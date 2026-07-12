@@ -6,7 +6,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 # /harness-orchestrate — developer / pr reviewer を配車する orchestrator(v1 walking skeleton)
 
-これは **運用(policy)** の層であり、minimal 構成の上に乗る **orchestrator ロール**(Phase 2 の中核機構の最初の増分)。対象は **developer(実装役・対応役)と pr reviewer の 2 ロール、PR ライフサイクルのみ**(issue reviewer 側の自動化は対象外)。
+これは **運用(policy)** の層であり、minimal 構成の上に乗る **orchestrator ロール**(Phase 1 の中核機構の最初の増分)。対象は **developer(実装役・対応役)と pr reviewer の 2 ロール、PR ライフサイクルのみ**(issue reviewer 側の自動化は対象外)。
 
 ## orchestrator の性質(判断を持たない調整層)
 
