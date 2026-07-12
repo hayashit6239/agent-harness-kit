@@ -262,7 +262,7 @@
       },
       "pr": {
         "number": 22,
-        "status": "starting review",
+        "status": "created pr",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
@@ -319,8 +319,9 @@
       "title": "進捗ダッシュボードを「せなおAIオフィス」方向へ進化 — ピクセルキャラ刷新・台帳レポート駆動の作業フィード・コマンド送信枠 (epic #23 子)",
       "issue": {
         "number": 25,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": null,
