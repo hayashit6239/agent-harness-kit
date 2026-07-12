@@ -1,7 +1,7 @@
 {
   "project": "agent-harness-kit",
   "description": "kit 自身の進捗台帳 (dogfood)。状態遷移の規約は .harness/CLAUDE.harness.md を参照。",
-  "updatedAt": "2026-07-12",
+  "updatedAt": "2026-07-13",
   "evidence": {
     "build": null,
     "test": "bash tests/smoke/run-smoke.sh",
@@ -279,6 +279,21 @@
         "number": 20,
         "status": "merged pr",
         "githubState": "merged"
+      }
+    },
+    {
+      "id": "P18",
+      "kind": "feat",
+      "title": "停止条件ロジック (round_flag/trend_flag/escalate) を tested script に切り出す",
+      "issue": {
+        "number": 15,
+        "status": "created issue",
+        "githubState": "open"
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
       }
     }
   ]
