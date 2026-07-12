@@ -142,6 +142,8 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 | `pr.status == "ready for merge"` | なし | dispatch しない(終端は人間の専権) |
 | `pr.status in ("merged pr")` / issue 終端(`closed issue`) | なし | 何もしない |
 
+**注**: 終端は人間の専権だが、人間の明示指示がある場合のエージェントによる代行は例外として認められる — 詳細は `.harness/CLAUDE.harness.md`『終端の記録と merge 代行』節を参照。
+
 issue サイドの走査は台帳の `issue.status` を読むだけ(追加の GitHub ポーリングは実装しない)。
 
 ### 選別(jq)
