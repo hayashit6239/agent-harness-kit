@@ -1,7 +1,7 @@
 {
   "name": "agent-harness-kit",
   "version": "0.1.0",
-  "description": "Minimal harness kit for Claude Code: install a plan-progress ledger, evidence anchor, reviewer command, and CI drift gate into any repo via /harness-init.",
+  "description": "Minimal harness kit for Claude Code: install a plan-progress ledger, evidence anchor, and reviewer command into any repo via /harness-init. The ledger is a local (uncommitted) file, machine-verified by a local validator self-reported to the GitHub Statuses API.",
   "author": { "name": "hayashi" },
   "keywords": ["harness", "plan-progress", "reviewer", "ci-gate", "claude-code-plugin"],
   "license": "MIT"

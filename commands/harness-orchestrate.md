@@ -24,7 +24,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 - **実装手段**: `Agent` ツールで subagent を起動する際、渡すツールを `Read, Skill, Bash, Grep, Glob` に絞り、**`Write` を渡さない**(subagent が台帳ファイルを直接 Write できないようにする)。
 - **限界を正直に明記する**: `Bash` を渡す以上(`gh` コマンド実行・`reaggregate-has-blocker.py` 実行に必要)、subagent が `Bash` 経由で `.harness/plan-progress.json` を編集すること自体は**技術的に完全には防げない**(この repo の他の「触らないものを厳守」規約と同様、L1 policy 相当の制約であり L3 hook 相当の強制ではない)。
-- **技術的バックストップ(git status ガード)**: dispatch から subagent の返答を受け取った後、**台帳へ書き込む前に必ず** `git status --short -- .harness/` を実行し、**tick 開始時にクリーンだと確認したベースラインと比較する**(orchestrator 自身の書込は `mv` 後・commit 前に一時的に dirty になりうるため、この既知の書込を除外して評価し、mid-tick 残渣を subagent の変更と**誤検知しない**)。ベースラインから外れる変更があれば(= subagent が dispatch 中に orchestrator の checkout 内の `.harness/` へ意図しない変更を加えた形跡)、その提案を採用せず、当該 step を下記「失敗経路(単一の need for human review sink)」へルーティングする(`git checkout -- .harness/` 等の破壊的な巻き戻しは行わず、状態を報告して人間の判断を待つ)。**このガードの限界(subagent の worktree 編集は見えない=部分的バックストップに過ぎず、主たる防御は「Write を渡さない」ツール制限であること)は「既知の制限・拡張ポイント」節に正直に明記する**。
+- **技術的バックストップ(git status ガード)**: dispatch から subagent の返答を受け取った後、**台帳へ書き込む前に必ず** `.harness/` の変更を検査する。**ローカル編集方式(F案)では台帳(`.harness/plan-progress.json`)を commit しないため、これは常に `git status` 上「変更あり」になる** — したがって「dirty か否か」では subagent の変更と区別できない。ベースラインは 2 本立てで持つ: (i) `.harness/plan-progress.json` は **orchestrator が最後に書いた内容のスナップショット**(tick 開始時、または orchestrator 自身の直前の書込直後に控える `sha256sum` 等)と照合し、そこからの逸脱を subagent の変更と判定する。orchestrator は自身の各書込の直後にこのスナップショットを更新する。(ii) `.harness/` の**それ以外のファイル**(schema / validator / 規約断片)は orchestrator が触らないので、`git status --short -- .harness/` が `plan-progress.json` 以外の変更を示したら subagent の変更と判定する。いずれかで逸脱を検知したら(= subagent が dispatch 中に orchestrator の checkout 内の `.harness/` へ意図しない変更を加えた形跡)、その提案を採用せず、当該 step を下記「失敗経路(単一の need for human review sink)」へルーティングする(`git checkout -- .harness/` 等の破壊的な巻き戻しは行わず、状態を報告して人間の判断を待つ)。**このガードの限界(subagent の worktree 編集は見えない=部分的バックストップに過ぎず、主たる防御は「Write を渡さない」ツール制限であること)は「既知の制限・拡張ポイント」節に正直に明記する**。
 
 ## 失敗経路(単一の need for human review sink)
 
@@ -34,9 +34,9 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 | トリガー(状況) | role/outcome(判定器トークン) | この sink で書き込む事実 status |
 |---|---|---|
-| reviewer dispatch が `escalate=true` を返した(round/trend 停止条件) | reviewer/`escalate` | `pr.status="need for human review"`(停止条件到達の事実。単一コミット後に sink) |
+| reviewer dispatch が `escalate=true` を返した(round/trend 停止条件) | reviewer/`escalate` | `pr.status="need for human review"`(停止条件到達の事実。1 回のローカル書込後に sink) |
 | reviewer dispatch の返答が JSON でない / `escalate` を読めない(dispatch 結果失敗) | reviewer/`invalid` | 書込なし(dispatch 失敗のため状態を変えない。`pr.status` は dispatch 元のまま) |
-| 実装役 dispatch 後の evidence gate 失敗 | implementer/`pr_evidence_fail` | `pr.number` + `pr.githubState="open"` + `pr.status="created pr"`(PR は実在するという事実。単一コミット後に sink) |
+| 実装役 dispatch 後の evidence gate 失敗 | implementer/`pr_evidence_fail` | `pr.number` + `pr.githubState="open"` + `pr.status="created pr"`(PR は実在するという事実。1 回のローカル書込後に sink) |
 | 対応役 dispatch 後の evidence gate 失敗 | responder/`evidence_fail` | 書込なし(`pr.status` は `completed review` のまま。未解決の review blocker が残っているという事実) |
 | 実装役の `pr_number` 復旧検索(`Closes #N`)が複数一致(曖昧) | implementer/`ambiguous` | 書込なし(誤った番号を書かない) |
 | git-status ガードが `.harness/` への意図しない変更を検知 | (判定器の外・単一書込ガード) | 書込なし(提案を破棄する) |
@@ -113,7 +113,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
       os.replace(plan_path + ".tmp", plan_path)  # 原子的な置換
   PY
   ```
-  これで**実行される書込は decision script の `ledger_write` から来る**(prose に status リテラルを複製しない)。書込後は「書込方式」節に従い main へ単一コミット + push する。
+  これで**実行される書込は decision script の `ledger_write` から来る**(prose に status リテラルを複製しない)。書込後は「書込方式」節に従いローカルファイル編集のみで完結させ(commit/push しない)、続けて Statuses API 自己申告を行う。
 
 - **`route` の実行**:
   - **`normal`**: `ledger_write`(あれば)を書いて完了。sink・ラベル以外の副作用なし。
@@ -212,13 +212,13 @@ jq -c '[ .steps[]
    ROUTE=$(printf '{"role":"implementer","outcome":"<解決した outcome>"}' \
      | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py")
    ```
-   - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**単一コミットで書く**(`<pr_number>` に確定番号を渡す。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後は「書込方式」節に従い main へ直接コミット + push(1 コミット。例: `chore(harness): <step> pr.status -> created pr`)。
-     - `pr_evidence_pass` → route=normal。上記単一コミットで完了。次 tick で pr reviewer に dispatch される。
-     - `pr_evidence_fail` → route=sink。上記単一コミットを書き込んだ**うえで**「失敗経路(単一の need for human review sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。need for human review ラベル付与後は次 tick から無条件スキップされ安全に停止する。
+   - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**1 回のローカルファイル書込で書く**(`<pr_number>` に確定番号を渡す。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後は「書込方式」節に従いローカルファイル編集のみで完結させ(commit/push しない)、Statuses API 自己申告を行う。
+     - `pr_evidence_pass` → route=normal。上記のローカル書込で完了。次 tick で pr reviewer に dispatch される。
+     - `pr_evidence_fail` → route=sink。上記のローカル書込を行った**うえで**「失敗経路(単一の need for human review sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。need for human review ラベル付与後は次 tick から無条件スキップされ安全に停止する。
    - `no_pr` → route=skip。書込なし(無界再 dispatch の既知の限界は「既知の制限・拡張ポイント」節参照)。
    - `ambiguous` → route=sink。書込なし。
 
-5. **orphan 防止は write-early ではなく復旧検索が担う**: 手順 3〜4 の途中で tick が中断しても、次 tick は `pr.number == null` のままなので手順 2 の復旧検索が既存 PR(`Closes #<N>`)を再発見して self-heal する。だから `pr.number` を先行コミットする必要はなく、書込は手順 4 のとおり原子的にできる(先行コミット → evidence → 本コミット の 2 段書込は取らない)。
+5. **orphan 防止は write-early ではなく復旧検索が担う**: 手順 3〜4 の途中で tick が中断しても、次 tick は `pr.number == null` のままなので手順 2 の復旧検索が既存 PR(`Closes #<N>`)を再発見して self-heal する。だから `pr.number` を先行して書き込む必要はなく、書込は手順 4 のとおり原子的にできる(先行書込 → evidence → 本書込 の 2 段書込は取らない)。
 
 ### developer(対応役)
 
@@ -281,24 +281,33 @@ label_action(`ready for merge` ラベル同期)の実コマンドは「ルーテ
 
 evidence gate は orchestrator 自身が独立した一時 worktree を用意して `evidence.done`(台帳 `.harness/plan-progress.json` の `evidence.done`、無ければ `evidence.test` にフォールバック)を実行する共通機構(具体的な worktree の作り方は「developer(実装役)」節の手順 3 参照)。**実装役・対応役いずれも、evidence gate 失敗時は判定器が `route=sink` を返し、単一の need for human review sink に到達する(対称)**:
 
-- **developer(実装役)**: `pr_number` が確定した(PR は実在する)場合、失敗 outcome=`pr_evidence_fail` → `pr.status="created pr"` を単一コミットで書き込んだうえで sink。PR 未作成(復旧検索 0 件)は outcome=`no_pr` → route=skip で書込まず次 tick 再 dispatch(副作用が無いので暴走しない。**ただし原因が持続的(issue 実装不能 / developer subagent の決定論的クラッシュ)なら人間に surface せず無界に再 dispatch する既知の限界 — 本節が掲げる sink 対称性の唯一の(文書化された)例外で、v1 の人間監視 `/loop` では tick 報告で受動追跡・自動 backstop は本 PR(#12/P14)のスコープ外の別 follow-up に委ねる。「既知の制限・拡張ポイント」節参照**)。復旧検索が複数一致(曖昧)は outcome=`ambiguous` → route=sink・書込なし。
+- **developer(実装役)**: `pr_number` が確定した(PR は実在する)場合、失敗 outcome=`pr_evidence_fail` → `pr.status="created pr"` を 1 回のローカル書込で書き込んだうえで sink。PR 未作成(復旧検索 0 件)は outcome=`no_pr` → route=skip で書込まず次 tick 再 dispatch(副作用が無いので暴走しない。**ただし原因が持続的(issue 実装不能 / developer subagent の決定論的クラッシュ)なら人間に surface せず無界に再 dispatch する既知の限界 — 本節が掲げる sink 対称性の唯一の(文書化された)例外で、v1 の人間監視 `/loop` では tick 報告で受動追跡・自動 backstop は本 PR(#12/P14)のスコープ外の別 follow-up に委ねる。「既知の制限・拡張ポイント」節参照**)。復旧検索が複数一致(曖昧)は outcome=`ambiguous` → route=sink・書込なし。
 - **developer(対応役)**: 対象 PR は既に存在し `pr.number` も書込済み。失敗 outcome=`evidence_fail` → 書込なし(`pr.status="completed review"` のまま = 未解決 blocker が残る事実)で sink。**旧版の「書込まずスキップ + 再試行」は取らない** — `completed review` は reviewer が選別しないため round カウンタが進まず、round≥5 の停止条件に永久に到達しない無界ループになるため。
 
 これで「どのロールの evidence 失敗も need for human review に到達し、無界ループを残さない」という対称性が、判定器の `route=sink` として一元化される(失敗経路の一元化)。
 
 ## 書込方式
 
-`commands/harness-review-pr.md` の手順 3/6 と同じ jq パターンを踏襲する: main 上で `.harness/plan-progress.json` だけを含む小コミットを作り push する。push が拒否された場合(doer と同時書込)は `git pull --ff-only` してからやり直す。コミットメッセージ規約は `chore(harness): <step id> <issue|pr>.status -> <新 status>`(例: `chore(harness): P8 pr.status -> created pr`)。
+`commands/harness-review-pr.md` の手順 3/6 と同じく、台帳 (`.harness/plan-progress.json`) は git にコミットしないローカル台帳として扱う(issue #11 F案)。状態遷移は「`ledger_write` の適用」手続きによる **ローカルファイル編集だけで完結させ、`git add` / `git commit` / `git push` は行わない**(main への直接 push を禁止するポリシーのリポジトリでもそのまま動く)。作業ツリー上で台帳が「変更あり」になるのは正常。
+
+**台帳検証の自己申告(Statuses API)**: 状態遷移をローカルに書いたら、ローカル validator の実行結果を **対象 PR の head SHA** に対して Statuses API で報告する(「commit されない台帳」の機械検証の代わり。GitHub ホスト CI は commit されない台帳を検証できないため)。branch protection の required check はこの context(`harness-gate`)を指定する。Check Run 作成(Checks API)は GitHub App 認証専用で個人 `gh auth`(PAT/OAuth)では作れないため使わず、必ず **Statuses API**(`POST /repos/{owner}/{repo}/statuses/{sha}`)を使う。
 
 ```
-git add .harness/plan-progress.json
-git commit -m "chore(harness): <step> <issue|pr>.status -> <new>"
-git push origin main
+PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
+if python3 .harness/validate-plan-progress.py --schema "$PLAN" \
+   && python3 .harness/validate-plan-progress.py --drift "$PLAN"; then
+  STATE=success; DESC="ローカル台帳 schema/drift OK"
+else
+  STATE=failure; DESC="ローカル台帳 schema/drift NG"
+fi
+# <head_sha> は対象 PR の head SHA (gh pr view <n> --repo <repo> --json headRefOid --jq .headRefOid)
+gh api "repos/<repo>/statuses/<head_sha>" \
+  -f state="$STATE" -f context=harness-gate -f description="$DESC" >/dev/null
 ```
 
 ## 既知のリスク(明示)
 
-**orchestrator の単一書込は現行方式(main 直接コミット + push)を前提にしている。** issue #11(台帳の git 非依存化・main push 禁止ポリシー)が実装されると、この前提が崩れる。皮肉なことに、issue #11 自体が本 orchestrator 最初の実仕事の対象(配車テーブル該当 step)であり、orchestrator 自身がこの変更を実装した後、orchestrator の書込ロジックへの追従修正が別途必要になる。v1 ではこれを解消せず、既知の負債として明示するに留める。
+**issue #11(台帳の git 非依存化・main push 禁止ポリシー)の F案は実装済み**(本節が旧 v1 で「既知の負債」として予見していた自己無効化)。orchestrator の単一書込は、旧方式(main 直接コミット + push)から **ローカルファイル編集 + Statuses API 自己申告**(上記「書込方式」節)へ追従済み。台帳が commit されなくなったことに伴い、git-status ガードは「clean 比較」ではなくスナップショット比較へ調整済み(「単一書込」節・「既知の制限・拡張ポイント」節 (b))。
 
 ## 報告
 
@@ -330,7 +339,7 @@ git push origin main
 - #N: 理由(`escalate` 停止条件: round 上限到達 / blocker 傾向未改善 / reviewer dispatch 失敗(`invalid`・不正応答)/ 実装役 evidence 失敗(`pr_evidence_fail`)/ 対応役 evidence 失敗(`evidence_fail`)/ git status ガード検知 / `Closes #N` 復旧検索が複数一致(`ambiguous`))
 
 ### ↩️ 誤判定の巻き戻し方
-台帳の書込は main への直接コミットのため、誤りがあれば手動で `pr.status` / `issue.status` を巻き戻し、`need for human review` ラベルを外して、次 tick で再評価させる。
+台帳の書込はローカルファイル編集のため、誤りがあれば手動で `pr.status` / `issue.status` を巻き戻し、`need for human review` ラベルを外して、次 tick で再評価させる。
 ````
 
 0 件 tick の場合は「dispatch 対象なし」の 1 行報告に簡略化する。
@@ -344,11 +353,11 @@ git push origin main
 ## 既知の制限・拡張ポイント
 
 - **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等)の kit 同梱が前提になるため別途対応が必要(現行は個人 skill 依存または `/code-review` 単体のみ)。
-- **issue #11 との既知のリスク**: 上記「既知のリスク」節参照。orchestrator の単一書込は main 直接コミット + push が前提。
+- **issue #11 の F案は実装済み**: 上記「既知のリスク」節参照。orchestrator の単一書込は ローカルファイル編集 + Statuses API 自己申告へ追従済み(main への直接 commit/push はしない)。
 - **issue サイド(issue reviewer / issue review worker)の自動化は対象外**: v1 は PR ライフサイクルのみ。issue フェーズの配車は別 issue の範囲。
 - **git-status ガードの限界と設計境界(部分的バックストップ・正直な明記)**: 台帳保護には次の点がある。
   - **(a) subagent の worktree 編集は捕捉できない**: 実装役 subagent は自前の worktree で作業するため、その `.harness/` 編集は orchestrator 自身の checkout で走る `git status` からは**見えない**。したがってこのガードは **orchestrator 自身の checkout 内の編集しか捕捉できない部分的バックストップ**に過ぎない。**台帳保護の主たる防御は「subagent に `Write` を渡さない」ツール制限**であって、git-status ガードはその補完(検知したら失敗 sink へ)。`Bash` 経由の編集は完全には防げず、hook 等による L3 相当の強制ではない。
-  - **(b) mid-tick 残渣の誤検知を避ける**: orchestrator 自身の書込は `.harness/plan-progress.json` の書換後・commit 前に一時的に dirty になる。この残渣を subagent の変更と**誤検知しない**よう、ガードは **tick 開始時にクリーンだと確認したベースラインと比較**し、orchestrator 自身の既知の書込は除外して評価する(「dirty = subagent の意図しない変更」と短絡しない — 誤検知で無関係 step を spurious に sink 隔離するのを防ぐ)。
+  - **(b) 自身の書込の誤検知を避ける(ローカル編集方式)**: ローカル編集方式(F案)では orchestrator 自身の書込は commit されず作業ツリーに残り続ける(`.harness/plan-progress.json` は常に dirty)。この自分の書込を subagent の変更と**誤検知しない**よう、ガードは `git status` の dirty 判定ではなく、`plan-progress.json` については **orchestrator が最後に書いた内容のスナップショットと照合**し、`.harness/` のそれ以外のファイルのみ `git status` で HEAD 一致を確認する。orchestrator は自身の各書込の直後にスナップショットを更新する(「dirty = subagent の意図しない変更」と短絡しない — 誤検知で無関係 step を spurious に sink 隔離するのを防ぐ)。
   - **(c) git-status ガードだけが decision script を通らない唯一の失敗経路(設計境界・意図的)**: 他の全失敗面は「ルーティング判定」節の decision script が `route=sink` として決めるが、git-status ガードの drift 検知 → sink だけは script を経由しない。これは意図的である — **git-guard trip は「(role, outcome) に紐づくルーティング判断」ではなく、全ロール横断(cross-cutting)の pre-write 前提チェックであり、その帰結は自明に sink(分岐する判断ロジックが無い)ため decision script の対象外とする**(decision script はルーティング「判断」を集約するものであって、判断の無い自明な guard→sink はその対象ではない、という設計境界)。無理に決定表へ押し込まない。
 - **dispatch 上限 5 件のトレードオフ**: 1 tick で処理しきれない場合は次 tick へ持ち越される(dedup は各ロールの status 遷移が担う)。
 - **ルーティングは tested decision script**: (role, outcome) → (ledger_write, route, label_action) を `scripts/decide-orchestrator-route.py` が決定論的に解決し、`tests/smoke/run-smoke.sh` [8] が全 (role × outcome) 10 行を網羅検証する(reviewer の `invalid` 分岐を含む)。散文分岐の取りこぼしを構造的に防ぐのが目的で、規則は script が正・prose は「outcome への解決」と「route の実行」だけを持つ。

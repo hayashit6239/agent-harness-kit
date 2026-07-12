@@ -657,13 +657,12 @@ printf '%s' '["not","an","object"]' | python3 "$DECIDE" >/dev/null 2>&1 || route
 echo "[8/10] decide-orchestrator-route 判定ケース OK (全 role×outcome 10 行を網羅 + 不正入力 exit 2 境界)"
 
 # --- 9. kit 自身の checkout なら複製の一致を検査 ------------------------------
-# (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
+# (fixture への複製検証とは別。templates が原本、.harness/ は複製)
 if [ -d "$ROOT/.harness" ]; then
   COPY_PAIRS=(
     "templates/validate-plan-progress.py:.harness/validate-plan-progress.py"
     "templates/plan-progress.schema.json:.harness/plan-progress.schema.json"
     "templates/CLAUDE.harness.md:.harness/CLAUDE.harness.md"
-    "templates/harness-gate.yml:.github/workflows/harness-gate.yml"
   )
   # 複製対象外の既知除外 (init.json は導入先で書き換わる雛形なので複製一致を求めない)
   COPY_EXCLUDED=(
