@@ -277,8 +277,8 @@
       },
       "pr": {
         "number": 20,
-        "status": "created pr",
-        "githubState": "open"
+        "status": "merged pr",
+        "githubState": "merged"
       }
     }
   ]
