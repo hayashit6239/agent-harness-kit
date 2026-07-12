@@ -105,11 +105,11 @@
     {
       "id": "P7",
       "kind": "feat",
-      "title": "Phase 2 — orchestrator loop + Automations (discover→enqueue) + heartbeat",
+      "title": "Phase 2 — Automations (discover→enqueue) + scheduled heartbeat による完全無人化 (真の無人化・issue #1 再定義後)",
       "issue": {
-        "number": null,
-        "status": null,
-        "githubState": null
+        "number": 21,
+        "status": "created issue",
+        "githubState": "open"
       },
       "pr": {
         "number": null,
