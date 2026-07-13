@@ -298,6 +298,17 @@ watch(
 .column {
   --role: var(--text-lo);
   --role-dim: rgba(125, 138, 163, 0.12);
+  /*
+   * 列の高さは画面いっぱいに追従する (issue #24 項目 3・決定事項):
+   *   画面いっぱい = ビューポート高 − (ヘッダ + レーンタグ + 上下 padding)
+   * KanbanBoard.vue はこのコンポーネント単体で完結させる方針のため、App.vue 側の
+   * 高さ 100% 伝播 (flexbox 案) ではなく calc(100vh - Npx) 案を採る (issue 側で両案は
+   * 同格の選択肢として許容されている)。236px は App のヘッダ・レーン頭・余白の概算値で
+   * 厳密な実測値ではない (手動確認で微調整可能な 1 箇所にまとめてある)。
+   * 下限は旧固定値 264px を min-height として維持し、上限は設けない。
+   * リサイズは 100vh の再評価だけで追従するため JS 再計算は不要。
+   */
+  --column-fill-height: calc(100vh - 236px);
   position: relative;
   flex: 0 0 158px;
   width: 158px;
@@ -307,8 +318,9 @@ watch(
   border: 1px solid var(--line);
   border-top: 2px solid var(--role);
   border-radius: 10px;
-  /* レーンの高さは固定 — カードが溢れたら列内の縦スクロールで見る */
-  height: 264px;
+  /* カードが溢れたら列内の縦スクロールで見る (元の設計方針は変わらず、高さの基準だけ変更) */
+  height: var(--column-fill-height);
+  min-height: 264px;
   transition: flex-basis 0.35s ease, width 0.35s ease;
   /* 初回ロードの時差表示 (1 回だけ。以後は要素が保持されるので再発火しない) */
   animation: col-intro 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -358,7 +370,11 @@ watch(
   box-shadow: 0 0 14px rgba(255, 123, 114, 0.26);
 }
 
-/* 空列は細いレールに畳む (ラベル縦書き) — 密度で「今どこが熱いか」を見せる */
+/*
+ * 空列は細いレールに畳む (ラベル縦書き) — 密度で「今どこが熱いか」を見せる。
+ * 畳むのは幅のみ (issue #24 項目 3・決定事項): 高さは .column の height を上書きしないため
+ * 画面いっぱいのまま伸びる。幅の畳みと高さの伸長は独立した挙動とする。
+ */
 .column.is-empty {
   flex-basis: 46px;
   width: 46px;
