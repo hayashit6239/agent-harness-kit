@@ -24,7 +24,21 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 - **実装手段**: `Agent` ツールで subagent を起動する際、渡すツールを `Read, Skill, Bash, Grep, Glob` に絞り、**`Write` を渡さない**(subagent が台帳ファイルを直接 Write できないようにする)。
 - **限界を正直に明記する**: `Bash` を渡す以上(`gh` コマンド実行・`reaggregate-has-blocker.py` 実行に必要)、subagent が `Bash` 経由で `.harness/plan-progress.json` を編集すること自体は**技術的に完全には防げない**(この repo の他の「触らないものを厳守」規約と同様、L1 policy 相当の制約であり L3 hook 相当の強制ではない)。
-- **技術的バックストップ(git status ガード)**: dispatch から subagent の返答を受け取った後、**台帳へ書き込む前に必ず** `.harness/` の変更を検査する。**ローカル編集方式(F案)では台帳(`.harness/plan-progress.json`)を commit しないため、これは常に `git status` 上「変更あり」になる** — したがって「dirty か否か」では subagent の変更と区別できない。ベースラインは 2 本立てで持つ: (i) `.harness/plan-progress.json` は **orchestrator が最後に書いた内容のスナップショット**(tick 開始時、または orchestrator 自身の直前の書込直後に控える `sha256sum` 等)と照合し、そこからの逸脱を subagent の変更と判定する。orchestrator は自身の各書込の直後にこのスナップショットを更新する。(ii) `.harness/` の**それ以外のファイル**(schema / validator / 規約断片)は orchestrator が触らないので、`git status --short -- .harness/` が `plan-progress.json` 以外の変更を示したら subagent の変更と判定する。いずれかで逸脱を検知したら(= subagent が dispatch 中に orchestrator の checkout 内の `.harness/` へ意図しない変更を加えた形跡)、その提案を採用せず、当該 step を下記「失敗経路(単一の need for human review sink)」へルーティングする(`git checkout -- .harness/` 等の破壊的な巻き戻しは行わず、状態を報告して人間の判断を待つ)。**このガードの限界(subagent の worktree 編集は見えない=部分的バックストップに過ぎず、主たる防御は「Write を渡さない」ツール制限であること)は「既知の制限・拡張ポイント」節に正直に明記する**。
+- **技術的バックストップ(git status ガード)**: dispatch から subagent の返答を受け取った後、**台帳へ書き込む前に必ず** `.harness/` の変更を検査する。**ローカル編集方式(F案)では台帳(`.harness/plan-progress.json`)を commit しないため、これは常に `git status` 上「変更あり」になる** — したがって「dirty か否か」では subagent の変更と区別できない。ベースラインは 2 本立てで持つ: (i) `.harness/plan-progress.json` は **orchestrator が最後に書いた内容のスナップショット**(tick 開始時、または orchestrator 自身の直前の書込直後に控える `sha256sum` 等)と照合し、そこからの逸脱を subagent の変更と判定する。orchestrator は自身の各書込の直後にこのスナップショットを更新する。(ii) `.harness/` の**それ以外のファイル**(schema / validator / 規約断片)は orchestrator が触らないので、`git status --short -- .harness/` が `plan-progress.json` 以外の変更を示したら subagent の変更と判定する。この 2 本立ての照合を具体的には次のように行う(パスは絶対化する。`$PLAN` は `git rev-parse` 基準で解決するので CWD が repo ルート以外でも失敗しない):
+
+  ```
+  PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
+  # (i) 台帳スナップショット照合: dispatch 前(または orchestrator 自身の直前の書込直後)に控える
+  PRE=$(sha256sum "$PLAN" | cut -d' ' -f1)
+  # ... subagent を dispatch し、返答を受け取る ...
+  # dispatch 後・orchestrator 自身の書込前に再計算して照合する
+  POST=$(sha256sum "$PLAN" | cut -d' ' -f1)
+  # PRE != POST なら subagent が台帳を触った形跡 → その提案を破棄し need for human review sink へ
+  # (ii) それ以外の .harness/ ファイルは HEAD 一致で検査(plan-progress.json 以外の変更が出たら同様に sink へ):
+  #   git status --short -- .harness/ | grep -v plan-progress.json
+  ```
+
+  いずれかで逸脱を検知したら(= subagent が dispatch 中に orchestrator の checkout 内の `.harness/` へ意図しない変更を加えた形跡)、その提案を採用せず、当該 step を下記「失敗経路(単一の need for human review sink)」へルーティングする(`git checkout -- .harness/` 等の破壊的な巻き戻しは行わず、状態を報告して人間の判断を待つ)。**このガードの限界(subagent の worktree 編集は見えない=部分的バックストップに過ぎず、主たる防御は「Write を渡さない」ツール制限であること)は「既知の制限・拡張ポイント」節に正直に明記する**。
 
 ## 失敗経路(単一の need for human review sink)
 
@@ -290,19 +304,15 @@ evidence gate は orchestrator 自身が独立した一時 worktree を用意し
 
 `commands/harness-review-pr.md` の手順 3/6 と同じく、台帳 (`.harness/plan-progress.json`) は git にコミットしないローカル台帳として扱う(issue #11 F案)。状態遷移は「`ledger_write` の適用」手続きによる **ローカルファイル編集だけで完結させ、`git add` / `git commit` / `git push` は行わない**(main への直接 push を禁止するポリシーのリポジトリでもそのまま動く)。作業ツリー上で台帳が「変更あり」になるのは正常。
 
-**台帳検証の自己申告(Statuses API)**: 状態遷移をローカルに書いたら、ローカル validator の実行結果を **対象 PR の head SHA** に対して Statuses API で報告する(「commit されない台帳」の機械検証の代わり。GitHub ホスト CI は commit されない台帳を検証できないため)。branch protection の required check はこの context(`harness-gate`)を指定する。Check Run 作成(Checks API)は GitHub App 認証専用で個人 `gh auth`(PAT/OAuth)では作れないため使わず、必ず **Statuses API**(`POST /repos/{owner}/{repo}/statuses/{sha}`)を使う。
+**台帳検証の自己申告(Statuses API)**: 状態遷移をローカルに書いたら、ローカル validator の実行結果を **対象 PR の head SHA** に対して Statuses API で報告する(「commit されない台帳」の機械検証の代わり。GitHub ホスト CI は commit されない台帳を検証できないため)。branch protection の required check はこの context(`harness-gate`)を指定する。Check Run 作成(Checks API)は GitHub App 認証専用で個人 `gh auth`(PAT/OAuth)では作れないため使わず、必ず **Statuses API**(`POST /repos/{owner}/{repo}/statuses/{sha}`)を使う。**この自己申告は独立検証ゲートではなく便宜シグナル(convenience signal)である**(spoof 可能・独立ランナー不在の受容コスト。詳細と限界は `.harness/CLAUDE.harness.md`「台帳の書込経路」節)。
+
+schema/drift のローカル実行 → Statuses API への post は **`scripts/report-ledger-status.sh` に抽出済み**(`commands/harness-review-pr.md` 手順 3/6 と共有する単一の実体。報告ロジックを散文に複製しない — `scripts/*.py` と同じ「規則は script が正」の境界)。スクリプト内で `ROOT="$(git rev-parse --show-toplevel)"` から `PLAN` / validator を**すべて絶対パス**で解決するため、CWD が repo ルート以外でも失敗しない:
 
 ```
-PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
-if python3 .harness/validate-plan-progress.py --schema "$PLAN" \
-   && python3 .harness/validate-plan-progress.py --drift "$PLAN"; then
-  STATE=success; DESC="ローカル台帳 schema/drift OK"
-else
-  STATE=failure; DESC="ローカル台帳 schema/drift NG"
-fi
 # <head_sha> は対象 PR の head SHA (gh pr view <n> --repo <repo> --json headRefOid --jq .headRefOid)
-gh api "repos/<repo>/statuses/<head_sha>" \
-  -f state="$STATE" -f context=harness-gate -f description="$DESC" >/dev/null
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha>"
+# 引数: $1=<owner/repo> $2=<head_sha> [$3=context(省略時 harness-gate)]
+# schema/drift をローカル実行し、結果(success/failure)を対象 SHA へ Statuses API で post する
 ```
 
 ## 既知のリスク(明示)

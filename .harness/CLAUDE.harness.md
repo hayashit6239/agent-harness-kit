@@ -71,11 +71,14 @@ PR フェーズ (10 status):
   - `.harness/plan-progress.json` は git 追跡対象のままだが、状態遷移によるローカル編集分はコミットしない (作業ツリー上は常に「変更あり」の状態になる — これは F案の正常な状態)。
   - 新規 step の追加など構造的な変更も同様にローカル編集のみで完結させる (コミットしない)。単一マシンへの依存によるバックアップ・災害復旧はスコープ外 (#11 Decision で履歴喪失は受容済み)。
 - PR は原則コードだけを運ぶ。台帳 (状態遷移) を PR ブランチに載せない。
-- **機械検証は「ローカル validator の実行結果を Statuses API で自己申告する」方式**で維持する (台帳が commit されないため、GitHub ホストの CI が committed な台帳を検証する方式は成立しない):
+- **機械検証は「ローカル validator の実行結果を Statuses API で自己申告する」方式**で維持する (台帳が commit されないため、GitHub ホストの CI が committed な台帳を検証する方式は成立しない)。**この機械検証 (schema/drift) は、F案では台帳がローカル (非コミット) であり独立ランナー (旧 harness-gate.yml) から見えないため、状態遷移を書いた本人セッションによる自己申告に必然的に縮退する。これは main-push 禁止ポリシー (台帳ローカル化) が生む受容コストである。台帳に対する ③ (作る人 ≠ 判定する人) の実質は、(a) 別セッションで起動する PR reviewer が実際の diff/状態を初見で読むこと、(b) 台帳の git history、が担う。自己申告は独立検証の代替ではなく便宜シグナル (convenience signal) である**:
   - 状態遷移を書くたびに、ローカルで `python3 .harness/validate-plan-progress.py --schema` と `--drift` を実行し、その結果を **対象 PR の head SHA** に対して Statuses API で報告する:
     `gh api repos/<owner>/<repo>/statuses/<head_sha> -f state=<success|failure> -f context=harness-gate -f description="..."`
+    (この schema/drift 実行 → Statuses post は `scripts/report-ledger-status.sh` に抽出済み。`ROOT="$(git rev-parse --show-toplevel)"` から `PLAN` / validator を全て**絶対パス**で解決するので CWD が repo ルート以外でも失敗しない。`commands/harness-orchestrate.md` と `commands/harness-review-pr.md` 手順 3/6 が共有する単一の実体で、報告ロジックを散文に複製しない。)
   - 報告対象は常に「その時点で処理対象になっている PR の head SHA」、報告内容は「その処理の瞬間にローカル台帳が schema 妥当・drift 無しであった」という attestation。PR のライフサイクル中、状態遷移のたびに最新化される。
-  - branch protection の required check はこの Statuses API の context (`harness-gate`) を指定する。**Statuses API** (`POST /repos/{owner}/{repo}/statuses/{sha}`) を使うのは、個人アカウントの `gh auth` (PAT/OAuth) で書き込めるため — Check Run 作成 (Checks API) は GitHub App 認証専用で個人 `gh auth` では作れないので使わない。日次 schedule による drift 検査 (旧 harness-gate ワークフロー) は廃止し、この PR 単位の自己申告へ統合した。
+  - branch protection の required check はこの Statuses API の context (`harness-gate`) を指定する — ただし**便宜シグナルとしての required check (spoof 可能性を承知の上)** である。**Statuses API** (`POST /repos/{owner}/{repo}/statuses/{sha}`) を使うのは、個人アカウントの `gh auth` (PAT/OAuth) で書き込めるため — Check Run 作成 (Checks API) は GitHub App 認証が必須 (このリポジトリの個人 `gh auth` では不可能) なので使わない (issue #17 round 2 決定)。**この選定の帰結として、Statuses API は書込権限を持つ主体が validator を実行せず直接 `state=success` を打てる (spoof 可能) — Checks API より弱い。したがって自己申告は security boundary ではなく、真の検証は上記 PR reviewer の別セッション読み取りが担う。**
+  - **日次 cron drift 検査は「統合」ではなく廃止した**: 旧 harness-gate.yml の日次 schedule による drift 検査は**廃止**した (issue #17 round 2 で deprecate 決定)。F案ではローカル台帳を自動で定期検証する手段が原理的に無いため、**drift は状態遷移時の自己申告 + reviewer の台帳読み取り時にのみ検知される**。遷移が無い間 (例: `waiting for review` 放置中) の GitHub 側乖離は次遷移まで見逃されうる — これは F案の**受容された帰結**である。
+  - **`--drift` の呼出頻度増 (受容コスト + follow-up)**: 状態遷移のたびに `--drift` (実台帳で 1 回あたり O(N)・約 23 回の gh 呼出) が走るため、旧方式 (日次 1 回) より gh API 呼出頻度が大幅に増える。これは F案の受容コストとして許容する。**対象 PR の head SHA に紐づく step のみへ drift を絞る (full O(N) を避ける) 最適化は follow-up** とする (本 PR ではコード最適化はせず文書化のみ)。
 - orchestrator モードで運用する場合、台帳の書込主体は orchestrator のみとし、同じ台帳に対して手動コマンド (`/harness-review-pr` 等) から直接編集しない (モードは台帳ごとに択一)。
 - developer / reviewer は同一マシンの同一ローカル台帳ファイルを共有する。書込主体をモードごとに単一に保つことで、ローカルファイルへの競合書込を避ける (別セッションでも同じファイルを読む)。
 
