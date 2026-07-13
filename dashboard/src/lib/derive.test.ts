@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import type { Ledger, Step } from '../types';
+import type { Ledger, Report, Step } from '../types';
 import {
   derive,
+  deriveFeed,
   deriveKanban,
   ISSUE_COLUMN_ORDER,
   ISSUE_SIGNALS,
@@ -653,5 +654,170 @@ describe('盤面 (StepView) への写像', () => {
       celebrating: false,
     });
     expect(board.steps[1]).toMatchObject({ id: 'P2', kind: null, title: null });
+  });
+});
+
+describe('作業フィード (deriveFeed) — reports の step 横断集約 (issue #25 レイヤ 2)', () => {
+  /** reports 付きの step を作る (unknown を混ぜる敵対ケースは as で流し込む) */
+  function reported(id: string, reports: unknown): Step {
+    return { ...step(id, 'created issue', null), reports: reports as Report[] };
+  }
+
+  function report(partial: Partial<Report>): Report {
+    return {
+      author: 'main developer',
+      role: 'developer',
+      timestamp: '2026-07-13T10:00:00+09:00',
+      body: '実装した',
+      ...partial,
+    };
+  }
+
+  it('reports キーの無い台帳 (既存形) では空フィード (後方互換)', () => {
+    expect(deriveFeed(ledgerOf([step('A', 'created issue', null)]))).toEqual([]);
+  });
+
+  it('reports: [] の step だけでも空フィード', () => {
+    expect(deriveFeed(ledgerOf([reported('A', [])]))).toEqual([]);
+  });
+
+  it('steps が空でも壊れない', () => {
+    expect(deriveFeed(ledgerOf([]))).toEqual([]);
+  });
+
+  it('複数 step の reports を timestamp 降順 (新しい順) に束ねる', () => {
+    const feed = deriveFeed(
+      ledgerOf([
+        reported('A', [
+          report({ body: '古い', timestamp: '2026-07-13T09:00:00+09:00' }),
+          report({ body: '最新', timestamp: '2026-07-13T12:00:00+09:00' }),
+        ]),
+        reported('B', [report({ body: '中間', timestamp: '2026-07-13T10:30:00+09:00', role: 'reviewer' })]),
+      ]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['最新', '中間', '古い']);
+    expect(feed.map((f) => f.stepId)).toEqual(['A', 'B', 'A']);
+  });
+
+  it('同時刻は台帳の出現順を保つ (安定ソート)', () => {
+    const t = '2026-07-13T10:00:00+09:00';
+    const feed = deriveFeed(
+      ledgerOf([
+        reported('A', [report({ body: '1', timestamp: t }), report({ body: '2', timestamp: t })]),
+        reported('B', [report({ body: '3', timestamp: t })]),
+      ]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['1', '2', '3']);
+  });
+
+  it('timestamp のタイムゾーンを跨いで比較する (+09:00 と Z の混在)', () => {
+    const feed = deriveFeed(
+      ledgerOf([
+        reported('A', [report({ body: 'JST 朝9時', timestamp: '2026-07-13T09:00:00+09:00' })]),
+        // UTC 01:00 = JST 10:00 — 表記上は 01:00 だがこちらが新しい
+        reported('B', [report({ body: 'UTC 1時', timestamp: '2026-07-13T01:00:00Z' })]),
+      ]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['UTC 1時', 'JST 朝9時']);
+  });
+
+  it('timestamp 欠落 (キーなし) は time=null で末尾へ回る (本文は失わない)', () => {
+    const noTs = { author: 'x', role: 'developer', body: '時刻なし' };
+    const feed = deriveFeed(
+      ledgerOf([reported('A', [noTs, report({ body: '時刻あり', timestamp: '2026-07-13T10:00:00+09:00' })])]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['時刻あり', '時刻なし']);
+    expect(feed[1]!.timestamp).toBeNull();
+    expect(feed[1]!.time).toBeNull();
+  });
+
+  it('timestamp が解釈不能な文字列でも落ちず末尾へ (生の文字列は保持)', () => {
+    const feed = deriveFeed(
+      ledgerOf([
+        reported('A', [
+          report({ body: '壊れ時刻', timestamp: 'not-a-timestamp' }),
+          report({ body: '正常', timestamp: '2026-07-13T10:00:00+09:00' }),
+        ]),
+      ]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['正常', '壊れ時刻']);
+    expect(feed[1]!.timestamp).toBe('not-a-timestamp');
+    expect(feed[1]!.time).toBeNull();
+  });
+
+  it('timestamp が非文字列 (数値) は欠落と同じ扱い (epoch と誤解釈しない)', () => {
+    const numeric = { author: 'x', role: 'developer', timestamp: 1752368400000, body: '数値時刻' };
+    const feed = deriveFeed(ledgerOf([reported('A', [numeric])]));
+    expect(feed).toHaveLength(1);
+    expect(feed[0]!.timestamp).toBeNull();
+    expect(feed[0]!.time).toBeNull();
+  });
+
+  it('time=null 同士は台帳の出現順を保つ', () => {
+    const feed = deriveFeed(
+      ledgerOf([
+        reported('A', [{ body: '先' }, { body: '後' }]),
+        reported('B', [{ body: '末' }]),
+      ]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['先', '後', '末']);
+  });
+
+  it('report 要素が非オブジェクト (null / 文字列) なら読み飛ばす (他の要素は生かす)', () => {
+    const feed = deriveFeed(
+      ledgerOf([reported('A', [null, 'ただの文字列', report({ body: '生き残り' })])]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['生き残り']);
+  });
+
+  it('reports が配列でない (オブジェクト) なら その step はレポートなし扱い', () => {
+    const feed = deriveFeed(
+      ledgerOf([reported('A', { not: 'an array' }), reported('B', [report({ body: 'B の報' })])]),
+    );
+    expect(feed.map((f) => f.body)).toEqual(['B の報']);
+  });
+
+  it('author / role / body の欠落は表示用の代替値に落ちる (crash しない)', () => {
+    const feed = deriveFeed(ledgerOf([reported('A', [{ timestamp: '2026-07-13T10:00:00+09:00' }])]));
+    expect(feed).toEqual([
+      {
+        stepId: 'A',
+        stepTitle: null,
+        author: '(作者不明)',
+        role: '(ロール不明)',
+        timestamp: '2026-07-13T10:00:00+09:00',
+        time: Date.parse('2026-07-13T10:00:00+09:00'),
+        body: '',
+        key: 'steps[0]:reports[0]',
+      },
+    ]);
+  });
+
+  it('step の title を写す (フィード行の文脈表示用)', () => {
+    const titled: Step = { ...reported('A', [report({})]), title: 'ダッシュボード進化' };
+    const feed = deriveFeed(ledgerOf([titled]));
+    expect(feed[0]!.stepTitle).toBe('ダッシュボード進化');
+  });
+
+  it('key は steps 添字 + reports 添字で一意 (重複 step id でも衝突しない)', () => {
+    const feed = deriveFeed(
+      ledgerOf([reported('P1', [report({ body: 'a' })]), reported('P1', [report({ body: 'b' })])]),
+    );
+    expect(feed.map((f) => f.key).sort()).toEqual(['steps[0]:reports[0]', 'steps[1]:reports[0]']);
+    expect(new Set(feed.map((f) => f.key)).size).toBe(2);
+  });
+
+  it('step 自体が壊れていても (非オブジェクト) 落ちない', () => {
+    const feed = deriveFeed(ledgerOf([null as unknown as Step, reported('B', [report({ body: 'B' })])]));
+    expect(feed.map((f) => f.body)).toEqual(['B']);
+  });
+
+  it('既存の derive / deriveKanban は reports の有無で変化しない (退行防止)', () => {
+    const bare = step('A', 'created issue', 'completed review');
+    const withReports: Step = { ...bare, reports: [report({})] };
+    const boardBare = derive(ledgerOf([bare]));
+    const boardReported = derive(ledgerOf([withReports]));
+    expect(boardReported).toEqual(boardBare);
+    expect(deriveKanban(boardReported.steps)).toEqual(deriveKanban(boardBare.steps));
   });
 });

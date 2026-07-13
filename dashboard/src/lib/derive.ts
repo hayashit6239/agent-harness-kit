@@ -390,3 +390,76 @@ export function deriveKanban(steps: StepView[]): KanbanView {
     pr: buildLane('pr', PR_COLUMN_ORDER, steps),
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* 作業フィードの導出 (issue #25 レイヤ 2)                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * フィード 1 行分のビュー。step 横断で reports (schema definitions.report) を束ねた結果。
+ * 相対時刻はここでは算出しない — ポーリングごとに再計算する必要があるため、
+ * ビュー側 (WorkFeed.vue) が time (epoch ms) から毎回導出する。
+ */
+export interface FeedItem {
+  /** 由来 step の id (表示用。重複 id 台帳では同名がありうる — 一意性は key が担う) */
+  stepId: string;
+  /** 由来 step の title (無ければ null) */
+  stepTitle: string | null;
+  author: string;
+  role: string;
+  /** 台帳の生 timestamp (欠落・非文字列は null) */
+  timestamp: string | null;
+  /** timestamp を epoch ms に解釈した値 (欠落・解釈不能は null = フィード末尾へ回る) */
+  time: number | null;
+  body: string;
+  /** v-for :key 用の一意キー (steps 添字 + reports 添字 — 重複 step id 台帳でも衝突しない) */
+  key: string;
+}
+
+/**
+ * 台帳の全 step から reports を集約し、timestamp 降順 (新しい順) のフィードビューへ落とす純関数。
+ * 既存の derive / deriveKanban (status→信号・カンバン導出) には一切影響しない — reports は
+ * 表示専用の任意フィールドで、信号の採否とは独立 (issue #25 決定事項 A案)。
+ *
+ * fail-soft の流儀は derive と同じ: 手編集で壊れた要素 (非オブジェクト) は読み飛ばし、
+ * 欠落フィールドは表示用の代替値に落とす。timestamp が欠落・解釈不能の項目は捨てずに
+ * 末尾へ回す (レポート本文は残す — 時刻の壊れで物語を失わない)。
+ */
+export function deriveFeed(ledger: Ledger): FeedItem[] {
+  const items: FeedItem[] = [];
+  const steps: unknown = ledger.steps;
+  if (!Array.isArray(steps)) return items;
+
+  steps.forEach((step, index) => {
+    const rec: Partial<Step> = isRecord(step) ? (step as Partial<Step>) : {};
+    const stepId = typeof rec.id === 'string' ? rec.id : `(steps[${index}])`;
+    const stepTitle = typeof rec.title === 'string' ? rec.title : null;
+    const reports: unknown = rec.reports;
+    if (!Array.isArray(reports)) return; // 欠落・非配列 = レポートなし (後方互換)
+
+    reports.forEach((raw: unknown, i: number) => {
+      if (!isRecord(raw)) return; // 壊れた要素は読み飛ばす (他の要素は生かす)
+      const timestamp = typeof raw.timestamp === 'string' ? raw.timestamp : null;
+      const parsed = timestamp === null ? Number.NaN : Date.parse(timestamp);
+      items.push({
+        stepId,
+        stepTitle,
+        author: typeof raw.author === 'string' ? raw.author : '(作者不明)',
+        role: typeof raw.role === 'string' ? raw.role : '(ロール不明)',
+        timestamp,
+        time: Number.isNaN(parsed) ? null : parsed,
+        body: typeof raw.body === 'string' ? raw.body : '',
+        key: `steps[${index}]:reports[${i}]`,
+      });
+    });
+  });
+
+  // timestamp 降順 (新しい順)。time=null (欠落・解釈不能) は末尾へ。
+  // Array.prototype.sort は安定 (ES2019+) — 同時刻・null 同士は台帳の出現順を保つ
+  return items.sort((a, b) => {
+    if (a.time === null && b.time === null) return 0;
+    if (a.time === null) return 1;
+    if (b.time === null) return -1;
+    return b.time - a.time;
+  });
+}

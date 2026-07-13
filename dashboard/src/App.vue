@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import CharacterStage from './components/CharacterStage.vue';
+import CommandPanel from './components/CommandPanel.vue';
 import KanbanBoard from './components/KanbanBoard.vue';
+import WorkFeed from './components/WorkFeed.vue';
 import { parseLedgerResponse } from './lib/api';
-import { derive } from './lib/derive';
+import { derive, deriveFeed } from './lib/derive';
 import type { Ledger } from './types';
 
 /** ポーリング既定値 5 秒 (issue #9 決定事項。DoD ③「10 秒以内」= 5 秒 × 2 周期分) */
@@ -67,6 +69,9 @@ onUnmounted(() => {
 
 const board = computed(() => (ledger.value ? derive(ledger.value) : null));
 
+/** 作業フィード (issue #25 レイヤ5)。fetchedAt をポーリングごとに渡し相対時刻を再計算させる */
+const feed = computed(() => (ledger.value ? deriveFeed(ledger.value) : []));
+
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ja-JP');
 }
@@ -94,9 +99,12 @@ function formatTime(iso: string): string {
     </div>
 
     <main v-if="board" class="layout">
+      <!-- 左: コマンド送信パネル (枠 + 開閉のみ — issue #25 レイヤ6。実送信は別 issue) -->
+      <CommandPanel class="command" />
       <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
       <aside class="side">
         <CharacterStage :characters="board.characters" :celebrate="board.celebrate" :escalate="board.escalate" />
+        <WorkFeed :items="feed" :now="fetchedAt" />
       </aside>
     </main>
     <p v-else-if="!errorMessage" class="loading mono">台帳を読み込み中<span class="cursor">▋</span></p>
@@ -111,17 +119,27 @@ function formatTime(iso: string): string {
   padding: 28px 24px 56px;
 }
 
-/* カンバン (左・可変幅) とキャラ (右・常時見える側柱) の 2 段組 */
+/* 左パネル (auto = 開閉で伸縮) + カンバン (可変幅) + 右側柱 (ステージ + フィード) の 3 段組 */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: auto minmax(0, 1fr) 360px;
   gap: 18px;
   align-items: start;
+}
+
+.command {
+  position: sticky;
+  top: 16px;
 }
 
 .side {
   position: sticky;
   top: 16px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 /* 幅が足りない画面では縦積みに戻す (キャラは下段) */
@@ -129,8 +147,13 @@ function formatTime(iso: string): string {
   .layout {
     grid-template-columns: minmax(0, 1fr);
   }
-  .side {
+  .side,
+  .command {
     position: static;
+  }
+  .side {
+    max-height: none;
+    overflow-y: visible;
   }
 }
 

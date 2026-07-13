@@ -29,12 +29,29 @@ export interface PrPhase {
   lastReviewedStatus?: string | null;
 }
 
+/**
+ * 作業レポート 1 件 (schema definitions.report / issue #25)。
+ * 「最後に作業したエージェントが何をしたか」を人間可読で残す任意データで、
+ * ダッシュボードは deriveFeed (src/lib/derive.ts) で step 横断のフィードに束ねて表示する。
+ * step あたり最新 10 件上限 (FIFO) は schema の maxItems: 10 が単一源。
+ */
+export interface Report {
+  author: string;
+  /** developer / reviewer 等 */
+  role: string;
+  /** ISO 8601 秒精度 (例: 2026-07-13T12:34:56+09:00) */
+  timestamp: string;
+  body: string;
+}
+
 export interface Step {
   id: string;
   kind?: string;
   title?: string;
   issue: IssuePhase;
   pr: PrPhase;
+  /** 任意・後方互換 (issue #25)。欠落 = レポートなし */
+  reports?: Report[];
 }
 
 export interface Ledger {
