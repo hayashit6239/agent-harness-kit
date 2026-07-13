@@ -329,6 +329,21 @@
         "status": null,
         "githubState": null
       }
+    },
+    {
+      "id": "P21",
+      "kind": "feat",
+      "title": "orchestrator dispatch の liveness/監督 — 締切+schema契約+有界リトライ+可視化 (no_pr 無界再dispatch の follow-up)",
+      "issue": {
+        "number": 26,
+        "status": "created issue",
+        "githubState": "open"
+      },
+      "pr": {
+        "number": null,
+        "status": null,
+        "githubState": null
+      }
     }
   ]
 }
