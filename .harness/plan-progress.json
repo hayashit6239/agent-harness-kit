@@ -310,7 +310,7 @@
       },
       "pr": {
         "number": 27,
-        "status": "starting review",
+        "status": "completed review",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
