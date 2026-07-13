@@ -200,26 +200,58 @@ jq -c '[ .steps[]
 
 2. **`pr_number` の確定と outcome 解決**:
    - 返答が JSON として解釈でき、`pr_number` が `gh pr view <pr_number> --repo <repo>` で実在確認できた → その番号を採用し、手順 3 の evidence gate へ。
-   - **`pr_number` が取得できない/不正**(subagent のクラッシュ・不正 JSON・実在確認失敗): 諦める前に、GitHub 側で実際に PR が作られていないか**復旧検索**する(dispatch prompt で PR 本文に `Closes #<N>` を含めるよう指示済みのため拾える)。**復旧検索の全 3 分岐を必ず定義する**:
+   - **`pr_number` が取得できない/不正**(subagent のクラッシュ・不正 JSON・実在確認失敗): 諦める前に、GitHub 側で実際に PR が作られていないか**復旧検索**する(dispatch prompt で PR 本文に `Closes #<N>` を含めるよう指示済みのため拾える)。**復旧検索の全 3 分岐を必ず定義する**。検索は **`Closes #<N>` のフレーズ厳密一致**で行う — 引用符が無いと GitHub 検索は語ごとの AND 一致になり、別 PR の「Closes #45. See also #<N> for context」のように `closes` と `#<N>` を偶然両方含む本文を誤検出しうる。フレーズ引用符は **GitHub 検索クエリ文字列側に埋め込む**(shell の外側引用符ではフレーズ化されない — GitHub へ渡る文字列自体に `"..."` を含める):
      ```
-     gh pr list --repo <repo> --search "Closes #<N> in:body" --state open --json number
+     # GitHub 検索クエリに埋め込んだ二重引用符でフレーズ一致を狙う(shell は外側を single quote で囲み、
+     # 内側の二重引用符をそのまま GitHub へ渡す)。
+     CANDIDATES=$(gh pr list --repo <repo> --search '"Closes #<N>" in:body' --state open --json number,body)
+     # フォールバック再照合(効き目の保険): GitHub 検索はトークン化で `#` を落とし、フレーズ引用しても
+     # `Closes #<N>` の厳密一致にならない可能性がある(効き目は手動 API 確認に回す。DoD 節)。効かなくても
+     # 誤検出を除けるよう、取得した各候補の本文を `Closes #<N>`(大小無視・# 直後が対象番号ちょうど。
+     # (?![0-9]) で #<N>0 のような部分一致を除外)の正規表現で再照合し、真に該当する PR だけを残す。
+     MATCHED=$(printf '%s' "$CANDIDATES" | jq -c --arg n "<N>" \
+       '[ .[] | select(.body | test("closes\\s+#" + $n + "(?![0-9])"; "i")) | {number} ]')
      ```
+     再照合後の `MATCHED` の件数で分岐する(全 3 分岐を必ず定義する):
      - **0 件** → PR 未作成。outcome=**`no_pr`**(判定器は route=skip を返す。次 tick で `issue.status == "ready for implementation"` かつ `pr.number == null` が再成立すれば再 dispatch。**副作用が無いので暴走しない**。ただし原因が持続的(issue 実装不能 / developer subagent の決定論的クラッシュ)なら人間に surface せず無界に再 dispatch する — この無界再 dispatch は**意図的な既知の限界**として「既知の制限・拡張ポイント」節参照)。
      - **複数件** → 曖昧(同一 issue を Closes する open PR が 2 本以上)。outcome=**`ambiguous`**(判定器は route=sink・書込なし。誤った番号を台帳に書かず人間が正しい PR を確定する)。
      - **1 件** → その番号を `pr_number` として採用し、手順 3 へ。
 
-3. **evidence gate**(`pr_number` 確定後・書込より前に実行)。**subagent が dispatch 中に作った worktree は削除済みの可能性があり参照できないため、orchestrator 自身が独立して PR の head ブランチを取得し専用の一時 worktree を作って実行する**(`commands/harness-review-pr.md` 手順 4 の per-PR worktree パターンと同じ)。**worktree は `EVIDENCE_EXIT` の成否に関わらず必ず `git worktree remove --force` する**(失敗経路でも後片付けを行い worktree を残さない):
+3. **evidence gate**(`pr_number` 確定後・書込より前に実行)。**subagent が dispatch 中に作った worktree は削除済みの可能性があり参照できないため、orchestrator 自身が独立して PR の head ブランチを取得し専用の一時 worktree を作って実行する**(`commands/harness-review-pr.md` 手順 4 の per-PR worktree パターンと同じ)。**`git worktree add` の exit code を必ず確認する** — 直前 tick が `git worktree remove` の前に中断していると同一パスに古い worktree が残り、`add` が exit 128(`... already exists`)になる。exit code を見ずに進むと残骸(古いコード)に対して evidence gate が走り、現在の PR head を黙って検証しなくなる。**worktree は成否に関わらず必ず後始末する**(`EVIDENCE_EXIT` の成否に関わらず末尾で `git worktree remove --force` し、worktree を残さない):
    ```
    HEAD_REF=$(gh pr view <pr_number> --repo <repo> --json headRefName --jq .headRefName)
    git fetch origin "$HEAD_REF" --quiet
    WORKTREE=".claude/worktrees/orchestrate-pr-<pr_number>"
-   git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"
-   ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
-   git worktree remove --force "$WORKTREE"
+
+   # 残骸掃除つき add。直前 tick が remove 前に中断すると同一パスに古い worktree が残り add が失敗する。
+   # 失敗系の期待挙動(閉じた集合):
+   #   (a) 既存が同一 head でも「再利用せず」常に最新 origin/<head> で作り直す(未 fetch の古いコミット・
+   #       dirty な working tree で誤検証しないため、決定論的に「今の head を検証」を保証する)。
+   #   (b) locked/dirty で remove --force 自体が失敗したら掃除不能 → evidence を実行せず fail 扱い(sink)。
+   #   (c) admin record だけ残る(作業ディレクトリが消えている)場合は prune で解消してから再 add。
+   CLEANUP_FAILED=0
+   if ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
+     git worktree remove --force "$WORKTREE"; REMOVE_EXIT=$?   # 残骸削除
+     git worktree prune                                        # (c) admin record 除去
+     if [ "$REMOVE_EXIT" -ne 0 ]; then
+       CLEANUP_FAILED=1                                        # (b) locked/dirty で remove 失敗 → 掃除不能
+     elif ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
+       # 補助フォールバック: add --force で登録済みパスを上書き再利用(最新 head への確実な差し替えは
+       # 保証されないため主手段にせず最後の手段のみ)。それも失敗なら掃除不能。
+       git worktree add --force --detach "$WORKTREE" "origin/$HEAD_REF" || CLEANUP_FAILED=1
+     fi
+   fi
+
+   if [ "$CLEANUP_FAILED" -eq 1 ]; then
+     EVIDENCE_EXIT=1                                           # (b) 掃除失敗 → 検証せず fail(下記 outcome へ)
+   else
+     ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
+     git worktree remove --force "$WORKTREE"                   # 成否に関わらず後片付け
+   fi
    ```
    (`$EVIDENCE_DONE` は台帳の `evidence.done`、無ければ `evidence.test` にフォールバック。)
    - **`EVIDENCE_EXIT == 0`** → outcome=**`pr_evidence_pass`**。
-   - **`EVIDENCE_EXIT != 0`** → outcome=**`pr_evidence_fail`**。
+   - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** 残骸掃除失敗 (b))→ outcome=**`pr_evidence_fail`**(route=sink・need for human review。古い残骸で誤って pass/fail を出すより停止が安全)。
 
 4. **判定器を呼び route を実行**(role=implementer。規則は判定器が正・下記は route の実行だけ):
    ```
@@ -252,17 +284,33 @@ jq -c '[ .steps[]
 
 3. **返答検証(越権の無効化)**: `proposed_status` が `"waiting for review"` 以外(特に `"ready for merge"`)でも**無視して先へ進む**(対応役の越権を orchestrator 側で機械的に無効化する — `.harness/CLAUDE.harness.md` の「対応側が `ready for merge` を立てるのは越権(例外なし)」を技術的に担保)。対応役の返答は outcome 解決に使わない — status は evidence gate だけで決まる。
 
-4. **evidence gate**(実装役の手順 3 と同じ方法。対象 PR は既に `pr.number` が確定しており subagent の dispatch 済み worktree の生死に依存しない。**worktree は `EVIDENCE_EXIT` の成否に関わらず必ず `git worktree remove --force` する**):
+4. **evidence gate**(実装役の手順 3 と同じ方法 — **`git worktree add` の exit code 確認 + 残骸掃除(remove --force → prune → 最新 head で再 add)を含む**。対象 PR は既に `pr.number` が確定しており subagent の dispatch 済み worktree の生死に依存しない。**worktree は成否に関わらず必ず後始末する**):
    ```
    HEAD_REF=$(gh pr view <n> --repo <repo> --json headRefName --jq .headRefName)
    git fetch origin "$HEAD_REF" --quiet
    WORKTREE=".claude/worktrees/orchestrate-pr-<n>"
-   git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"
-   ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
-   git worktree remove --force "$WORKTREE"
+
+   # 残骸掃除つき add(実装役 手順 3 と同一ロジック。失敗系 (a)(b)(c) の扱いも同じ)。
+   CLEANUP_FAILED=0
+   if ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
+     git worktree remove --force "$WORKTREE"; REMOVE_EXIT=$?   # 残骸削除
+     git worktree prune                                        # (c) admin record 除去
+     if [ "$REMOVE_EXIT" -ne 0 ]; then
+       CLEANUP_FAILED=1                                        # (b) locked/dirty で remove 失敗 → 掃除不能
+     elif ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
+       git worktree add --force --detach "$WORKTREE" "origin/$HEAD_REF" || CLEANUP_FAILED=1  # 補助フォールバック
+     fi
+   fi
+
+   if [ "$CLEANUP_FAILED" -eq 1 ]; then
+     EVIDENCE_EXIT=1                                           # (b) 掃除失敗 → 検証せず fail
+   else
+     ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
+     git worktree remove --force "$WORKTREE"                   # 成否に関わらず後片付け
+   fi
    ```
    - **`EVIDENCE_EXIT == 0`** → outcome=**`evidence_pass`**。
-   - **`EVIDENCE_EXIT != 0`** → outcome=**`evidence_fail`**。
+   - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** 残骸掃除失敗 (b))→ outcome=**`evidence_fail`**(route=sink。古い残骸で誤検証するより停止が安全)。
 
 5. **判定器を呼び route を実行**(role=responder):
    - `evidence_pass` → 判定器の `ledger_write`(`pr.status`="waiting for review")を「ルーティング判定」節の **`ledger_write` の適用**手続きで書く(対応役は `pr.status` のみ・`<pr_number>` は空文字でよい。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)・route=normal(次 tick で pr reviewer が再レビュー)。
