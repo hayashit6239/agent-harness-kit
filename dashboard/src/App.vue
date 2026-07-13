@@ -2,8 +2,9 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import CharacterStage from './components/CharacterStage.vue';
 import KanbanBoard from './components/KanbanBoard.vue';
+import WorkFeed from './components/WorkFeed.vue';
 import { parseLedgerResponse } from './lib/api';
-import { derive } from './lib/derive';
+import { derive, deriveFeed } from './lib/derive';
 import type { Ledger } from './types';
 
 /** ポーリング既定値 5 秒 (issue #9 決定事項。DoD ③「10 秒以内」= 5 秒 × 2 周期分) */
@@ -67,6 +68,9 @@ onUnmounted(() => {
 
 const board = computed(() => (ledger.value ? derive(ledger.value) : null));
 
+/** 作業フィード (issue #25 レイヤ5)。fetchedAt をポーリングごとに渡し相対時刻を再計算させる */
+const feed = computed(() => (ledger.value ? deriveFeed(ledger.value) : []));
+
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ja-JP');
 }
@@ -97,6 +101,7 @@ function formatTime(iso: string): string {
       <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
       <aside class="side">
         <CharacterStage :characters="board.characters" :celebrate="board.celebrate" :escalate="board.escalate" />
+        <WorkFeed :items="feed" :now="fetchedAt" />
       </aside>
     </main>
     <p v-else-if="!errorMessage" class="loading mono">台帳を読み込み中<span class="cursor">▋</span></p>
@@ -114,7 +119,7 @@ function formatTime(iso: string): string {
 /* カンバン (左・可変幅) とキャラ (右・常時見える側柱) の 2 段組 */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   gap: 18px;
   align-items: start;
 }
@@ -122,6 +127,11 @@ function formatTime(iso: string): string {
 .side {
   position: sticky;
   top: 16px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 /* 幅が足りない画面では縦積みに戻す (キャラは下段) */
