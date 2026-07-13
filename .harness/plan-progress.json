@@ -304,7 +304,7 @@
       "title": "dashboard 表示の不整合を解消 (Issue 表記統一・implementation-ready レーン非表示・レーン高さ揃え)",
       "issue": {
         "number": 24,
-        "status": "completed review",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "created issue"
       },
@@ -320,7 +320,7 @@
       "title": "進捗ダッシュボードを「せなおAIオフィス」方向へ進化 — ピクセルキャラ刷新・台帳レポート駆動の作業フィード・コマンド送信枠 (epic #23 子)",
       "issue": {
         "number": 25,
-        "status": "completed review",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "waiting for review"
       },
