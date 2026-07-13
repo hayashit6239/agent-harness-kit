@@ -304,8 +304,9 @@
       "title": "dashboard 表示の不整合を解消 (Issue 表記統一・implementation-ready レーン非表示・レーン高さ揃え)",
       "issue": {
         "number": 24,
-        "status": "created issue",
-        "githubState": "open"
+        "status": "starting review",
+        "githubState": "open",
+        "lastReviewedStatus": "created issue"
       },
       "pr": {
         "number": null,
