@@ -54,9 +54,17 @@ function warningText(w: LedgerWarning): string {
   }
 }
 
-/** unknown 列は空なら出さない (流れの列ではなく警告列のため)。flow / terminal は空でも表示 */
-function visibleColumns(columns: KanbanColumn[]): KanbanColumn[] {
-  return columns.filter((c) => c.kind !== 'unknown' || c.cards.length > 0);
+/**
+ * unknown 列は空なら出さない (流れの列ではなく警告列のため)。flow / terminal は空でも表示。
+ * PR レーンの implementation-ready 列は表示側フィルタで常に隠す (issue #24 項目 2・決定事項:
+ * derive.ts の PR_COLUMN_ORDER / derive.test.ts の enum 一致テストは変更しない。表示層のみで隠す。
+ * 該当 step は fail-soft で単純に非表示 (現状 0 件・実害なしと issue 側で確認済み))。
+ */
+function visibleColumns(phase: Phase, columns: KanbanColumn[]): KanbanColumn[] {
+  return columns.filter((c) => {
+    if (phase === 'pr' && c.status === 'implementation-ready') return false;
+    return c.kind !== 'unknown' || c.cards.length > 0;
+  });
 }
 
 /**
@@ -154,7 +162,7 @@ watch(
       <div class="lane-scroll">
         <div class="columns">
           <div
-            v-for="(col, i) in visibleColumns(lane.columns)"
+            v-for="(col, i) in visibleColumns(lane.phase, lane.columns)"
             :key="columnKey(lane.phase, col)"
             class="column"
             :class="[
