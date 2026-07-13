@@ -29,6 +29,22 @@
     }
   },
   "definitions": {
+    "report": {
+      "type": "object",
+      "description": "最後に作業したエージェントの作業レポート 1 件 (issue #25)。人間可読の「誰が・いつ・何をしたか」をダッシュボードのフィードに流すための任意データ",
+      "required": ["author", "role", "timestamp", "body"],
+      "properties": {
+        "author": { "type": "string", "description": "書いたエージェントの識別名" },
+        "role": { "type": "string", "description": "書いたエージェントのロール (developer / reviewer 等)" },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(Z|[+-]\\d{2}:\\d{2})?$",
+          "description": "ISO 8601 秒精度 (例: 2026-07-13T12:34:56+09:00)"
+        },
+        "body": { "type": "string", "description": "作業レポート本文 (人間可読)" }
+      }
+    },
     "issueStatus": {
       "enum": [
         null,
@@ -82,6 +98,12 @@
             "isDraft": { "type": "boolean" },
             "lastReviewedStatus": { "$ref": "#/definitions/prStatus" }
           }
+        },
+        "reports": {
+          "type": "array",
+          "maxItems": 10,
+          "description": "作業レポートの履歴 (任意・後方互換。issue #25)。step あたり最新 10 件を上限 (maxItems)、超えたら古いものから削除する (FIFO・要約なし。全履歴は git history に残る)。書込は v1 では best-effort",
+          "items": { "$ref": "#/definitions/report" }
         }
       }
     }
