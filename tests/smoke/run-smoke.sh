@@ -22,7 +22,9 @@
 # 9. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
 #    カバーされていることも検査)
-# 10. すべて通れば "SMOKE OK" を出して exit 0
+# 10. report-ledger-status.sh (台帳検証の自己申告 script・#2/#7 で commands/*.md から抽出) の
+#    bash -n 構文チェック (shellcheck があれば追加)。ネットワーク post は smoke 対象外 (手動確認)
+# 11. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -80,12 +82,12 @@ d["evidence"]["done"] = "make test"
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(d, f, ensure_ascii=False, indent=2)
 PY
-echo "[1/10] fixture + .harness/ を組み立てた: $REPO"
+echo "[1/11] fixture + .harness/ を組み立てた: $REPO"
 
 # --- 2. schema 検証: exit 0 を期待 ------------------------------------------
 python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
-echo "[2/10] --schema exit 0"
+echo "[2/11] --schema exit 0"
 
 # validator を import して検査規則を直接呼ぶ (直接テスト可能性の固定化 — 構造の退行検知)
 python3 - "$VALIDATOR" <<'PY_DIRECT'
@@ -105,13 +107,13 @@ assert errors[0].startswith("::error:: "), (
 assert "があるのに githubState が null" in errors[0], (
     f"期待する規則の文言が無い (got: {errors[0]!r})")  # 規則単位の固定化 (FAIL_CASES と同じ流儀)
 PY_DIRECT
-echo "[2/10] 検査規則の直接呼出 (import) OK"
+echo "[2/11] 検査規則の直接呼出 (import) OK"
 
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
 ( cd "$REPO" && eval "$TEST_CMD" ) \
   || fail "evidence.test ($TEST_CMD) が exit 0 で終わらなかった"
-echo "[3/10] evidence.test ($TEST_CMD) exit 0"
+echo "[3/11] evidence.test ($TEST_CMD) exit 0"
 
 # --- 4. 失敗パターン群 (すべて non-zero + 期待文言を期待。件数はここに書かない — 乖離の温床) --------------------
 
@@ -228,7 +230,7 @@ for row in "${FAIL_CASES[@]}"; do
       fail "FAIL_CASES の検査モードが不正 ($checkmode): $row"
       ;;
   esac
-  echo "[4/10] $label -> non-zero + 期待文言"
+  echo "[4/11] $label -> non-zero + 期待文言"
 done
 
 # --- 以下は形が特殊で表に入れない個別ケース (無理に畳むと可読性が落ちる)。
@@ -240,7 +242,7 @@ make_broken "$TMP/broken-statusenums.json" statusenums
 expect_fail_with "(v) statusEnums 残存" \
   "台帳に statusEnums を置かない" \
   python3 "$VALIDATOR" --schema "$TMP/broken-statusenums.json"
-echo "[4/10] (v) statusEnums 残存 -> non-zero + 期待文言"
+echo "[4/11] (v) statusEnums 残存 -> non-zero + 期待文言"
 
 # (viii) literal-guard: 壊れ schema の配置 (台帳と同じディレクトリ) が必要なため、表に入れず個別に残す。
 #        schema 複製から "ready for merge" を取り除いた壊れ schema を
@@ -262,7 +264,7 @@ PY
 expect_fail_with "(viii) literal-guard" \
   "literal-guard" \
   python3 "$VALIDATOR" --schema "$LITDIR/plan-progress.json"
-echo "[4/10] (viii) literal-guard -> non-zero + 期待文言"
+echo "[4/11] (viii) literal-guard -> non-zero + 期待文言"
 
 # (ix) isDraft drift: 共通の STUB_MISMATCH では表現できない専用 stub (state は台帳と一致し
 #      isDraft だけ食い違う) が必要なため、表に入れず個別に残す。
@@ -285,7 +287,7 @@ make_broken "$ISDRAFT_PLAN" isdraft
 expect_fail_with "(ix) isDraft drift" \
   "台帳は False だが GitHub (PR #1) は True" \
   env PATH="$STUB_DRAFT:$PATH" python3 "$VALIDATOR" --drift "$ISDRAFT_PLAN"
-echo "[4/10] (ix) isDraft drift -> non-zero + 期待文言"
+echo "[4/11] (ix) isDraft drift -> non-zero + 期待文言"
 
 # --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
 
@@ -309,7 +311,7 @@ SH
 chmod +x "$STUB_MATCH/gh"
 env PATH="$STUB_MATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN" \
   || fail "drift 正系 (stub gh が台帳と一致) で --drift が失敗した"
-echo "[5/10] drift 正系 -> exit 0"
+echo "[5/11] drift 正系 -> exit 0"
 
 # gh 実行失敗: 壊れた gh (常に exit 1) では「drift 検出」ではなく
 # 「実行エラー」と分かる文言で fail すること (紛れの防止)
@@ -324,7 +326,7 @@ chmod +x "$STUB_BROKEN/gh"
 expect_fail_with "gh 実行失敗の区別" \
   "gh 呼出に失敗した" \
   env PATH="$STUB_BROKEN:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
-echo "[5/10] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
+echo "[5/11] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
 
 # gh 途中失敗: 2 step の台帳で step A (PR #1) は drift を検出し、step B (PR #2) で
 # gh が失敗する。fatal しても蓄積済みの検出済み drift が全件出力されること (診断情報を失わない)
@@ -368,7 +370,7 @@ grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$partial_out
   || fail "gh 途中失敗: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $partial_out)"
 grep -qF "gh 呼出に失敗した" <<< "$partial_out" \
   || fail "gh 途中失敗: gh 失敗エラーが出力に無い (got: $partial_out)"
-echo "[5/10] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
+echo "[5/11] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
 
 # (xv) gh が非オブジェクト JSON (null) を返す: json.loads は null / 配列 / 文字列も受理する
 #      ため、dict 形状検証で実行エラーとして fail し、蓄積済みの検出済み drift (PR #1) も
@@ -394,7 +396,7 @@ grep -qF "JSON オブジェクトでない" <<< "$null_out" \
   || fail "(xv) gh null 出力: dict 形状エラー文言が出力に無い (got: $null_out)"
 grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$null_out" \
   || fail "(xv) gh null 出力: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $null_out)"
-echo "[5/10] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
+echo "[5/11] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
 
 # --- 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定 ----------------
 REAGG="$ROOT/scripts/reaggregate-has-blocker.py"
@@ -480,7 +482,7 @@ assert_reagg "(p) 複数 findings (blocker と非 blocker の混在)" true \
 reagg_count="$(printf '%s' '[{"severity":"🔴","sources":["code-review"]},{"severity":"🟡","sources":["arch"]}]' \
   | python3 "$REAGG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["blocker_count"])')"
 [ "$reagg_count" = "2" ] || fail "(q) blocker_count=2 を期待したが $reagg_count"
-echo "[6/10] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
+echo "[6/11] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
 
 # --- 7. evaluate-stop-condition (停止条件 round_flag/trend_flag/escalate) の単体判定 ----
 # reaggregate-has-blocker と対の decision script。round 上限 (round_flag) / blocker trend /
@@ -566,7 +568,7 @@ grep -qF "、" <<< "$same_reason" \
 #     (4,4,4 で trend 成立 -> escalate true。round=2 の (a) が false なのと対をなす境界)
 assert_escalate "(j) round=3 境界 (判定開始の最小 round・trend 成立)" true \
   '{"round":3,"has_blocker":true,"blocker_count":4,"prev_markers":["blocker_count=4","blocker_count=4"]}'
-echo "[7/10] evaluate-stop-condition 判定ケース OK (round 上限・trend・trend の and/or 判別・fail-open 境界・has_blocker 抑止・round<3 短絡・同時成立・round=3 境界・不正入力 exit 2)"
+echo "[7/11] evaluate-stop-condition 判定ケース OK (round 上限・trend・trend の and/or 判別・fail-open 境界・has_blocker 抑止・round<3 短絡・同時成立・round=3 境界・不正入力 exit 2)"
 
 # --- 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定 ----
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
@@ -635,7 +637,7 @@ PY
 )"
 [ "$ROUTE_CASES" -eq "$TABLE_ENTRIES" ] \
   || fail "decision-table 行数ガード: assert_route で網羅したケース数 ($ROUTE_CASES) が DECISION_TABLE のエントリ総数 ($TABLE_ENTRIES) と一致しない (行追加時の assert 書き忘れ / 行削除の取りこぼし)"
-echo "[8/10] decision-table 行数ガード OK (assert_route ケース数 $ROUTE_CASES == DECISION_TABLE エントリ数 $TABLE_ENTRIES)"
+echo "[8/11] decision-table 行数ガード OK (assert_route ケース数 $ROUTE_CASES == DECISION_TABLE エントリ数 $TABLE_ENTRIES)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — evaluate-stop-condition と同じ流儀)
 # (k) role が enum 外 -> exit 2
@@ -654,16 +656,15 @@ printf '%s' '{"role":"reviewer"}' | python3 "$DECIDE" >/dev/null 2>&1 || route_r
 route_rc=0
 printf '%s' '["not","an","object"]' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
 [ "$route_rc" -eq 2 ] || fail "(n) 非オブジェクト入力で exit 2 を期待したが exit $route_rc"
-echo "[8/10] decide-orchestrator-route 判定ケース OK (全 role×outcome 10 行を網羅 + 不正入力 exit 2 境界)"
+echo "[8/11] decide-orchestrator-route 判定ケース OK (全 role×outcome 10 行を網羅 + 不正入力 exit 2 境界)"
 
 # --- 9. kit 自身の checkout なら複製の一致を検査 ------------------------------
-# (fixture への複製検証とは別。templates が原本、.harness/ と .github/ は複製)
+# (fixture への複製検証とは別。templates が原本、.harness/ は複製)
 if [ -d "$ROOT/.harness" ]; then
   COPY_PAIRS=(
     "templates/validate-plan-progress.py:.harness/validate-plan-progress.py"
     "templates/plan-progress.schema.json:.harness/plan-progress.schema.json"
     "templates/CLAUDE.harness.md:.harness/CLAUDE.harness.md"
-    "templates/harness-gate.yml:.github/workflows/harness-gate.yml"
   )
   # 複製対象外の既知除外 (init.json は導入先で書き換わる雛形なので複製一致を求めない)
   COPY_EXCLUDED=(
@@ -697,11 +698,26 @@ if [ -d "$ROOT/.harness" ]; then
     diff -u "$ROOT/$src" "$ROOT/$dst" \
       || fail "複製が古い: $dst が $src と一致しない。cp で同期せよ (cp $src $dst)"
   done
-  echo "[9/10] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
+  echo "[9/11] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
 else
-  echo "[9/10] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
+  echo "[9/11] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi
 
-# --- 10. 完了 -----------------------------------------------------------------
-echo "[10/10] 全アサーション通過"
+# --- 10. report-ledger-status.sh (台帳検証の自己申告) の構文チェック -----------
+# commands/*.md から複製削除し単一 script へ抽出した Statuses 自己申告ロジック (#2/#7 対応)。
+# ネットワーク post (gh api) は smoke 対象外 (手動確認) のため、ここでは bash -n の構文チェックのみ
+# 行う (shellcheck があれば追加で静的検査)。この script は templates/ 複製対象ではないので
+# section 9 の COPY_PAIRS には含めない。
+REPORT_SH="$ROOT/scripts/report-ledger-status.sh"
+[ -f "$REPORT_SH" ] || fail "report-ledger-status.sh が見つからない: $REPORT_SH"
+bash -n "$REPORT_SH" || fail "report-ledger-status.sh の bash -n 構文チェックに失敗した"
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck "$REPORT_SH" || fail "report-ledger-status.sh の shellcheck に失敗した"
+  echo "[10/11] report-ledger-status.sh bash -n + shellcheck OK"
+else
+  echo "[10/11] report-ledger-status.sh bash -n OK (shellcheck 未導入のため skip)"
+fi
+
+# --- 11. 完了 -----------------------------------------------------------------
+echo "[11/11] 全アサーション通過"
 echo "SMOKE OK"

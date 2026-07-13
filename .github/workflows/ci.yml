@@ -1,4 +1,4 @@
-# kit 専用 CI。run-smoke は kit のテストなので templates として配布しない (harness-gate.yml とは別物)。
+# kit 専用 CI。run-smoke は kit 自身のテストであり導入先へは配布しない (導入先の台帳検証はローカル validator + Statuses API 自己申告で、GitHub ホストの CI ワークフローは生成しない)。
 name: ci
 
 on:

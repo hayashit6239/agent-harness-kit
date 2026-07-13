@@ -8,11 +8,11 @@
 - 1 つの作業単位 = `steps[]` の 1 要素。issue フェーズと PR フェーズそれぞれの status を持つ。
 - status は schema (`.harness/plan-progress.schema.json`) の enum にある語だけを使う。一覧は下の status 表。勝手な語を足さない・言い換えない。
 - 状況が変わるたびに status と `updatedAt` (YYYY-MM-DD) を更新する。
-- `githubState` は GitHub の実態を写す欄。願望や予定を書かない (CI の drift 検査が失敗する)。
+- `githubState` は GitHub の実態を写す欄。願望や予定を書かない (台帳検証の drift 照合が失敗する)。
 - 任意フィールド: `lastReviewedStatus` は reviewer がレビュー時の status を記録用に書く欄 (選別では参照しない・作者は触らない)。`isDraft` は GitHub の draft 実態を写す任意欄 (drift 照合はキーがある場合のみ行われる)。
-- CI (harness-gate) が常時スキーマ検査を、PR 時と日次で GitHub との突き合わせ (drift 検査) を行う。手元では
-  `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` で同じ検査ができる。
-  GitHub との突き合わせは `--drift` (要 gh 認証)。
+- 台帳の機械検証は **ローカル validator の実行結果を Statuses API で自己申告する**方式で行う (台帳は git にコミットしないため、GitHub ホストの CI が committed な台帳を検証する方式は取らない。詳細は「台帳の書込経路」節)。手元では
+  `python3 .harness/validate-plan-progress.py --schema .harness/plan-progress.json` で schema 検査ができる。
+  GitHub との突き合わせ (drift 照合) は `--drift` (要 gh 認証)。
 
 ### status 一覧 (意味と遷移)
 
@@ -65,23 +65,31 @@ PR フェーズ (10 status):
 
 ## 台帳の書込経路
 
-- **状態遷移は main へ直接コミットする**。`.harness/plan-progress.json` だけを含む小さいコミットを作る。
-  - コミットメッセージの規約: `chore(harness): <step id> pr.status -> <新 status>`
-  - 例: `chore(harness): P1 pr.status -> ready for merge`
-- PR は原則コードだけを運ぶ。status の書込を PR ブランチに載せない (merge されるまで main の台帳に現れず、reviewer の選別から漏れ続ける)。
-- 例外: `.harness/` 自体を導入する PR だけは、自分の台帳項目を自分で運んでよい (PR 番号は作成後に追記して push する)。
-- reviewer は開始時に `git pull --ff-only` してから台帳を読む (古い台帳で選別しない)。
-- 同時に main へ push して競合したら、後から push した側が pull してやり直す。
-- orchestrator モードで運用する場合、台帳の書込主体は orchestrator のみとし、同じ台帳に対して手動コマンド (`/harness-review-pr` 等) から直接 commit しない (モードは台帳ごとに択一)。
+台帳 (`.harness/plan-progress.json`) は **ローカル台帳** = main checkout の所定位置に置く単一のローカルファイルとして扱う。**状態遷移はこのファイルのローカル編集だけで行い、git にコミット/push しない** (issue #11 F案)。main への直接 push を禁止する branch protection / 組織ポリシーのリポジトリでもそのまま運用できる。
+
+- **状態遷移はローカルのファイル編集のみ** (`jq` / python でファイルを書き換えるだけ)。`git add` / `git commit` / `git push` は行わない。
+  - `.harness/plan-progress.json` は git 追跡対象のままだが、状態遷移によるローカル編集分はコミットしない (作業ツリー上は常に「変更あり」の状態になる — これは F案の正常な状態)。
+  - 新規 step の追加など構造的な変更も同様にローカル編集のみで完結させる (コミットしない)。単一マシンへの依存によるバックアップ・災害復旧はスコープ外 (#11 Decision で履歴喪失は受容済み)。
+- PR は原則コードだけを運ぶ。台帳 (状態遷移) を PR ブランチに載せない。
+- **機械検証は「ローカル validator の実行結果を Statuses API で自己申告する」方式**で維持する (台帳が commit されないため、GitHub ホストの CI が committed な台帳を検証する方式は成立しない)。**この機械検証 (schema/drift) は、F案では台帳がローカル (非コミット) であり独立ランナー (旧 harness-gate.yml) から見えないため、状態遷移を書いた本人セッションによる自己申告に必然的に縮退する。これは main-push 禁止ポリシー (台帳ローカル化) が生む受容コストである。台帳に対する ③ (作る人 ≠ 判定する人) の実質は、ほぼ**別セッションで起動する PR reviewer が実際の diff/状態を初見で読むこと単独**に依存する — F案では状態遷移をローカルにのみ書きコミットしないため、台帳の git history は遷移の監査証跡にならない (この点は下記『終端の記録と merge 代行』節「台帳はローカルで git 履歴に残らない」とも整合する)。自己申告は独立検証の代替ではなく便宜シグナル (convenience signal) である**:
+  - 状態遷移を書くたびに、ローカルで `python3 .harness/validate-plan-progress.py --schema` と `--drift` を実行し、その結果を **対象 PR の head SHA** に対して Statuses API で報告する:
+    `gh api repos/<owner>/<repo>/statuses/<head_sha> -f state=<success|failure> -f context=harness-gate -f description="..."`
+    (この schema/drift 実行 → Statuses post は `scripts/report-ledger-status.sh` に抽出済み。`ROOT="$(git rev-parse --show-toplevel)"` から `PLAN` / validator を全て**絶対パス**で解決するので CWD が repo ルート以外でも失敗しない。`commands/harness-orchestrate.md` と `commands/harness-review-pr.md` 手順 3/6 が共有する単一の実体で、報告ロジックを散文に複製しない。)
+  - 報告対象は常に「その時点で処理対象になっている PR の head SHA」、報告内容は「その処理の瞬間にローカル台帳が schema 妥当・drift 無しであった」という attestation。PR のライフサイクル中、状態遷移のたびに最新化される。
+  - branch protection の required check はこの Statuses API の context (`harness-gate`) を指定する — ただし**便宜シグナルとしての required check (spoof 可能性を承知の上)** である。**Statuses API** (`POST /repos/{owner}/{repo}/statuses/{sha}`) を使うのは、個人アカウントの `gh auth` (PAT/OAuth) で書き込めるため — Check Run 作成 (Checks API) は GitHub App 認証が必須 (このリポジトリの個人 `gh auth` では不可能) なので使わない (issue #17 round 2 決定)。**この選定の帰結として、Statuses API は書込権限を持つ主体が validator を実行せず直接 `state=success` を打てる (spoof 可能) — Checks API より弱い。したがって自己申告は security boundary ではなく、真の検証は上記 PR reviewer の別セッション読み取りが担う。**
+  - **日次 cron drift 検査は「統合」ではなく廃止した**: 旧 harness-gate.yml の日次 schedule による drift 検査は**廃止**した (issue #17 round 2 で deprecate 決定)。F案ではローカル台帳を自動で定期検証する手段が原理的に無いため、**drift は状態遷移時の自己申告 + reviewer の台帳読み取り時にのみ検知される**。遷移が無い間 (例: `waiting for review` 放置中) の GitHub 側乖離は次遷移まで見逃されうる — これは F案の**受容された帰結**である。
+  - **`--drift` の呼出頻度増 (受容コスト + follow-up)**: 状態遷移のたびに `--drift` (実台帳で 1 回あたり O(N)・約 23 回の gh 呼出) が走るため、旧方式 (日次 1 回) より gh API 呼出頻度が大幅に増える。これは F案の受容コストとして許容する。**対象 PR の head SHA に紐づく step のみへ drift を絞る (full O(N) を避ける) 最適化は follow-up** とする (本 PR ではコード最適化はせず文書化のみ)。
+- orchestrator モードで運用する場合、台帳の書込主体は orchestrator のみとし、同じ台帳に対して手動コマンド (`/harness-review-pr` 等) から直接編集しない (モードは台帳ごとに択一)。
+- developer / reviewer は同一マシンの同一ローカル台帳ファイルを共有する。書込主体をモードごとに単一に保つことで、ローカルファイルへの競合書込を避ける (別セッションでも同じファイルを読む)。
 
 ## 終端の記録と merge 代行
 
 - 終端 status (`merged pr` / `closed issue`) は原則として人間が実際に merge / close した時にだけ書く (「役割の分離」参照)。ただし **人間の明示指示がある場合に限り**、エージェントが merge と終端記録を代行してよい。守るのは判断の所在が人間にあることであって、誰がコマンドを叩くかは守らない。
-- **orchestrator モードの単一書込主体原則との関係**: merge 代行は、人間が明示的に指示した際に別セッションで一回性に行う手動操作であり、orchestrator モードの単一書込主体原則 (orchestrator モードでは同じ台帳に対して手動コマンドから直接 commit しない、という原則) とは矛盾しない。ただし orchestrator ループが稼働中の台帳に対して人間が merge 代行を指示する場合、push タイミングが重なる可能性があるため、既存の競合対処 (`git pull --ff-only` してやり直す) に従う。
+- **orchestrator モードの単一書込主体原則との関係**: merge 代行は、人間が明示的に指示した際に別セッションで一回性に行う手動操作であり、orchestrator モードの単一書込主体原則 (orchestrator モードでは同じ台帳に対して手動コマンドから直接編集しない、という原則) とは矛盾しない。ただし orchestrator ループが稼働中の同一ローカル台帳に対して人間が merge 代行を指示する場合、ローカルファイルへの書込タイミングが重なる可能性があるため、書込主体を単一に保つ原則 (モードごとに択一) に従い、タイミングを分ける。
 - 代行するときの必須手順:
   1. 事前確認 — `pr.status == "ready for merge"` かつ CI が緑であることを確認する。
   2. merge する。既定方式は merge commit。導入先の branch protection が squash-only / rebase-only を強制する場合はその設定が優先する (本 kit の既定値は「他に制約が無い場合」に適用される)。この既定 (merge commit) は代行時に限らず、人間による通常の merge 判断にも同様に適用される。
-  3. 終端 status (`merged pr` + `githubState: merged`) を main へ直接コミットする。コミットメッセージには**人間の明示指示による代行である旨**を注記する (メッセージ規約: `chore(harness): <step id> pr.status -> merged pr (merge 代行: 人間の明示指示による)`)。加えて、代行を実施した旨を対象 PR へコメントとして残す (監査証跡)。
+  3. 終端 status (`merged pr` + `githubState: merged`) を **ローカル台帳に記録する** (「台帳の書込経路」節に従いローカル編集のみ・コミットしない)。**人間の明示指示による代行である旨**を対象 PR へコメントとして残す (監査証跡。台帳はローカルで git 履歴に残らないため、代行の事実は PR コメントで担保する)。書込後は「台帳の書込経路」節の Statuses API 自己申告を対象 PR の head SHA に対して行う。
   4. `--drift` を検算し、merge で自動 close された issue の終端 (`closed issue` + `githubState: closed`) もここで記録する。
 - **スコープ外(意図的)**: 本節が定義するのは PR merge に伴う終端記録の代行のみ。PR を伴わない issue 単体の close 代行(人間の明示指示によるスタンドアロン close)は本節の対象外とし、必要になった時点で別途手順を定義する。
 - **1. の事前確認が失敗した場合 (`pr.status != "ready for merge"` または CI 未緑)、エージェントは merge を拒否し、状況を人間へ報告してエスカレーションする。** 人間の明示指示があっても、機械検証可能なゲートを自己判断で上書きしない — doer ≠ judge の精神を merge 代行にも適用する。
