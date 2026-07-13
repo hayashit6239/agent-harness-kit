@@ -82,6 +82,32 @@ PR フェーズ (10 status):
 - orchestrator モードで運用する場合、台帳の書込主体は orchestrator のみとし、同じ台帳に対して手動コマンド (`/harness-review-pr` 等) から直接編集しない (モードは台帳ごとに択一)。
 - developer / reviewer は同一マシンの同一ローカル台帳ファイルを共有する。書込主体をモードごとに単一に保つことで、ローカルファイルへの競合書込を避ける (別セッションでも同じファイルを読む)。
 
+### 作業レポートの書込 (`reports[]`)
+
+各ロールは作業を終えたとき、対象 step の `reports[]` へ作業レポートを 1 件追記できる (issue #25 レイヤ1b / #29)。目的はダッシュボードの作業フィード (`WorkFeed`) へ「誰が・いつ・何をしたか」を人間可読で流すこと。台帳の status / evidence の正しさとは独立した**可視化の付加価値**であり、**v1 は best-effort** (書き忘れても台帳は妥当) とする。
+
+- **書込経路は状態遷移と同じ**: `reports[]` もローカル台帳への直接編集で書く (F案・issue #11)。`git add` / `git commit` / `git push` は**しない** (作業ツリー上で台帳が「変更あり」になるのは正常)。
+- **1 件の形 (schema `definitions.report`)**: `{author, role, timestamp, body}` の 4 つすべて必須。
+  - `author` / `role`: 作業したロールの識別名とロール区分 (developer / reviewer 等)。下表「作業ロール」列の値。
+  - `body`: ロールごとの簡潔な自由文サマリ (下表「`body` の目安」列。`WorkFeed` は本文を 1 段落として表示するため構造化は不要)。
+  - `timestamp`: **`date -u +%Y-%m-%dT%H:%M:%SZ` で生成する** (UTC・`Z` 終端)。schema の timestamp pattern はオフセットに**コロン必須** (`+09:00`) か `Z` を要求するが、macOS/BSD の `date +%z` は `+0900` (コロン無し) を返しこの pattern に**マッチしない** — `updatedAt` に使う `date +%F` の延長で `date +%FT%T%z` と書くとここで不正値になる。`Z` 終端に固定して pattern の `Z` 枝へ確実に乗せる。
+- **保持は最新 10 件・FIFO / trim は書込側の責務**: append した後に**最新 10 件へ切り詰める** (`(.reports + [$new])[-10:]` 相当。jq では `(.steps[] | select(...) | .reports) |= (((. // []) + [$rep])[-10:])`)。schema の `maxItems: 10` は超過を**拒否する契約**であって自動削除はしない (11 件目を append しただけでは古いものは消えない) ため、append と trim を一体で行う。
+- **機械強制されない (best-effort の帰結・正直な明記)**: 現行の `validate-plan-progress.py --schema` は台帳の status / evidence / 整合規則のみを**限定的に手書き検査**する validator で (JSON Schema ライブラリは使わない)、`reports[]` の件数・timestamp 形式・必須キーは**検査しない**。したがって上の timestamp 形式・10 件 trim・4 キー必須は「書込側が守る規約」であって、状態遷移時の自己申告 (`--schema`) が捕まえるゲートではない。これは A1 (v1 best-effort・status 遷移へのレポート同伴を機械強制しない) の帰結であり、reports の妥当性は書込側の遵守と読取側 `deriveFeed` の fail-soft (壊れた要素は読み飛ばす) が担保する。
+- **昇格条件 (自動計数機構は持たない)**: 書き忘れによるフィード欠落が 3 回観測されたら validator 検査 (L3 相当) への昇格を検討する。ただし best-effort は「書かなくても台帳は妥当」= 欠落が痕跡を残さないため、この「3 回」を**自動計数する機構は持たない** — 人間がレビュー時などに観測して判断する目安であり、自動発火するゲートではない。
+- **単一 writer 整合 — 「誰が作業したか」と「誰が台帳へ書くか」を分ける**: 本 repo は Phase 1 完了まで**単一 writer (orchestrator / ルート) だけが台帳を書く**運用 (上記「台帳の書込経路」節)。作業レポートも例外ではなく、**委譲先の子ロールは `reports[]` を直接書かない**。作業したロールは単一 writer に報告し、**単一 writer がそのロールを `author` / `role` に記録して書く**。したがって下表「作業ロール」列は `author` / `role` に入る値であって、台帳へ書き込む主体 (= 単一 writer) とは別である (手動モードで単一 writer と作業ロールが同一の場合もこの分離と矛盾しない)。
+
+  | 作業ロール (= `author` / `role` の値) | 書くタイミング | `body` の目安 |
+  |---|---|---|
+  | main developer (実装役) | 実装完了・PR 作成 / status を進めた時 | 何を実装したかの要約 |
+  | main developer (対応役) | レビュー指摘への対応完了時 | 採用 / 却下した指摘の概要 |
+  | pr reviewer | 判定確定時 (`ready for merge` / `completed review` / `need for human review`) | 判定結果 + finding 件数 |
+  | pr review worker | 対応完了時 | 対応内訳の要約 |
+  | issue reviewer | レビュー判定確定時 | 判定結果 (`ready for implementation` / `completed review`) + finding 件数 |
+  | issue review worker | 指摘対応完了時 | 対応内訳の要約 |
+  | orchestrator | dispatch 結果確定時 (evidence gate 通過後など) | dispatch した相手・結果の要約 |
+
+- **kit で編集できる範囲の区別**: 本規約 (`.harness/CLAUDE.harness.md` + `templates/` 複製) が全ロール共通の正。kit 同梱コマンドのうち **`commands/harness-review-pr.md` (pr reviewer) だけが実際の書込手順を持つ** (手順 6・手動モードは直書き / orchestrator モードは返り値)。`commands/harness-orchestrate.md` への配線は #26 (単一 writer・in-flight マーカーを並行改訂中) の着地後の follow-up。kit 未同梱の個人 skill 側ロール (issue reviewer / issue review worker / pr review worker 等) は本規約を読んで best-effort で手編集するのみで、kit からは強制できない。**したがって #29 完了時点で実際に稼働する自動書込経路は手動モードの pr reviewer のみ**であり、他ロールは #26 着地 (orchestrator 代筆) か手動 best-effort を待つ。
+
 ## 終端の記録と merge 代行
 
 - 終端 status (`merged pr` / `closed issue`) は原則として人間が実際に merge / close した時にだけ書く (「役割の分離」参照)。ただし **人間の明示指示がある場合に限り**、エージェントが merge と終端記録を代行してよい。守るのは判断の所在が人間にあることであって、誰がコマンドを叩くかは守らない。
