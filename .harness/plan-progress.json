@@ -262,7 +262,7 @@
       },
       "pr": {
         "number": 22,
-        "status": "created pr",
+        "status": "starting review",
         "githubState": "open",
         "lastReviewedStatus": "created pr"
       }
