@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import CharacterStage from './components/CharacterStage.vue';
+import CommandPanel from './components/CommandPanel.vue';
 import KanbanBoard from './components/KanbanBoard.vue';
 import WorkFeed from './components/WorkFeed.vue';
 import { parseLedgerResponse } from './lib/api';
@@ -98,6 +99,8 @@ function formatTime(iso: string): string {
     </div>
 
     <main v-if="board" class="layout">
+      <!-- 左: コマンド送信パネル (枠 + 開閉のみ — issue #25 レイヤ6。実送信は別 issue) -->
+      <CommandPanel class="command" />
       <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
       <aside class="side">
         <CharacterStage :characters="board.characters" :celebrate="board.celebrate" :escalate="board.escalate" />
@@ -116,12 +119,17 @@ function formatTime(iso: string): string {
   padding: 28px 24px 56px;
 }
 
-/* カンバン (左・可変幅) とキャラ (右・常時見える側柱) の 2 段組 */
+/* 左パネル (auto = 開閉で伸縮) + カンバン (可変幅) + 右側柱 (ステージ + フィード) の 3 段組 */
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: auto minmax(0, 1fr) 360px;
   gap: 18px;
   align-items: start;
+}
+
+.command {
+  position: sticky;
+  top: 16px;
 }
 
 .side {
@@ -139,8 +147,13 @@ function formatTime(iso: string): string {
   .layout {
     grid-template-columns: minmax(0, 1fr);
   }
-  .side {
+  .side,
+  .command {
     position: static;
+  }
+  .side {
+    max-height: none;
+    overflow-y: visible;
   }
 }
 
