@@ -337,7 +337,7 @@
       "title": "orchestrator dispatch の liveness/監督 — 締切+schema契約+有界リトライ+可視化 (no_pr 無界再dispatch の follow-up)",
       "issue": {
         "number": 26,
-        "status": "completed review",
+        "status": "waiting for review",
         "githubState": "open",
         "lastReviewedStatus": "created issue"
       },
