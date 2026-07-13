@@ -220,6 +220,23 @@ watch(
 </template>
 
 <style scoped>
+/*
+ * ダッシュボード全体 (issue + PR の 2 レーン) を 1 ビューポート高に収める
+ * (issue #24 項目 3・PR #27 round1 対応)。
+ * magic number (ビューポートからの控除) は この root 1 箇所だけに置く — 以前は各列に
+ * calc(100vh - 236px) を二重適用しており、テンプレートが 2 レーンを常に描画する構造と噛み合わず
+ * 合計ページ高がビューポートの約 2 倍になって全ページ縦スクロールが要っていた (二重スクロール bug)。
+ * 180px の内訳 (概算・実測で微調整可能な唯一の箇所): App の上 padding 28 + ヘッダ ~90 + 下 padding 56
+ * ≈ 174 → 余白込み 180。厳密な実測値ではないため実機で人間が最終調整する前提。
+ * この高さを 2 レーンで flex 分け合い (各レーン flex:1)、各列は自レーン高に追従 (height:100%)、
+ * 溢れたカードはレーン/列内で縦スクロールする (ページ全体はスクロールさせない)。
+ */
+.kanban {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 180px);
+}
+
 .kanban-warning {
   margin: 0 0 14px;
   padding: 9px 14px;
@@ -242,8 +259,13 @@ watch(
   text-align: center;
 }
 
-/* レーン = 盆 (tray)。ページより一段沈めて、カードの浮きと対比させる */
+/* レーン = 盆 (tray)。ページより一段沈めて、カードの浮きと対比させる。
+   root (.kanban) の高さを 2 レーンで分け合う (flex:1) — min-height:0 で内側の縦スクロールを効かせる */
 .lane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--tray);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -280,8 +302,11 @@ watch(
   color: var(--text-hi);
 }
 
-/* レーンは横スクロール可 (列数が画面幅を超える場合) */
+/* レーンは横スクロール可 (列数が画面幅を超える場合)。
+   flex:1 + min-height:0 でレーン頭を除いた残り高を占め、列高の基準になる */
 .lane-scroll {
+  flex: 1 1 0;
+  min-height: 0;
   overflow-x: auto;
   padding-bottom: 6px;
 }
@@ -291,6 +316,8 @@ watch(
   gap: 8px;
   align-items: stretch;
   min-width: max-content;
+  /* lane-scroll の高さいっぱいに伸ばし、各列 (height:100%) の追従基準にする */
+  height: 100%;
 }
 
 /* ---- 列: ロールの色言語 (--role) を列ヘッダに乗せる ---- */
@@ -299,16 +326,13 @@ watch(
   --role: var(--text-lo);
   --role-dim: rgba(125, 138, 163, 0.12);
   /*
-   * 列の高さは画面いっぱいに追従する (issue #24 項目 3・決定事項):
-   *   画面いっぱい = ビューポート高 − (ヘッダ + レーンタグ + 上下 padding)
-   * KanbanBoard.vue はこのコンポーネント単体で完結させる方針のため、App.vue 側の
-   * 高さ 100% 伝播 (flexbox 案) ではなく calc(100vh - Npx) 案を採る (issue 側で両案は
-   * 同格の選択肢として許容されている)。236px は App のヘッダ・レーン頭・余白の概算値で
-   * 厳密な実測値ではない (手動確認で微調整可能な 1 箇所にまとめてある)。
-   * 下限は旧固定値 264px を min-height として維持し、上限は設けない。
-   * リサイズは 100vh の再評価だけで追従するため JS 再計算は不要。
+   * 列の高さは自レーンの高さに追従する (issue #24 項目 3・PR #27 round1 対応)。
+   * ビューポートからの控除 (magic number) は root (.kanban) に 1 回だけ置き、レーンが
+   * flex で高さを分け合う。列はその分け前 (.columns の height:100%) に height:100% で追従するため、
+   * 以前のように各列へ calc(100vh - Npx) を二重適用しない (2 レーン分の二重スクロールを解消)。
+   * 下限は旧固定値 264px を min-height として維持し極小化を防ぐ。上限は設けない。
+   * リサイズは root の 100vh 再評価だけで追従するため JS 再計算は不要。
    */
-  --column-fill-height: calc(100vh - 236px);
   position: relative;
   flex: 0 0 158px;
   width: 158px;
@@ -319,7 +343,7 @@ watch(
   border-top: 2px solid var(--role);
   border-radius: 10px;
   /* カードが溢れたら列内の縦スクロールで見る (元の設計方針は変わらず、高さの基準だけ変更) */
-  height: var(--column-fill-height);
+  height: 100%;
   min-height: 264px;
   transition: flex-basis 0.35s ease, width 0.35s ease;
   /* 初回ロードの時差表示 (1 回だけ。以後は要素が保持されるので再発火しない) */
