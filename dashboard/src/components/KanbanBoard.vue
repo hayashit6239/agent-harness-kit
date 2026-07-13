@@ -19,8 +19,10 @@ const props = defineProps<{
 
 const kanban = computed(() => deriveKanban(props.steps));
 
+// Issue 表記は 'Issue' (大文字始まり) に統一し、'PR' の略語表記と対称にする (issue #24 項目 1)。
+// columnLabel() は台帳 schema の生 status 文字列をそのまま表示する別物のため対象外 (issue #24 決定)。
 const LANE_TITLES: Record<Phase, string> = {
-  issue: 'issue フェーズ',
+  issue: 'Issue フェーズ',
   pr: 'PR フェーズ',
 };
 
@@ -30,17 +32,25 @@ function columnLabel(col: KanbanColumn): string {
   return col.status ?? '未着手';
 }
 
+/** 警告文中で phase を指す表記 (LANE_TITLES と大文字小文字を揃える: Issue / PR。issue #24 項目 1) */
+function warningPhaseLabel(phase: Phase | null): string {
+  if (phase === 'issue') return 'Issue';
+  if (phase === 'pr') return 'PR';
+  return '';
+}
+
 /** 警告バナー 1 件分の文言 (kind ごとに原因を言い分ける)。網羅は switch の返り値型で担保 */
 function warningText(w: LedgerWarning): string {
+  const phase = warningPhaseLabel(w.phase);
   switch (w.kind) {
     case 'duplicate-id':
       return `id 「${w.stepId}」が複数の step で重複しています (2 枚目以降は表示キーを別に振っています)`;
     case 'missing-phase':
-      return `${w.stepId} ${w.phase}: オブジェクト欠落 (unknown 列に置いています)`;
+      return `${w.stepId} ${phase}: オブジェクト欠落 (unknown 列に置いています)`;
     case 'missing-status':
-      return `${w.stepId} ${w.phase}: status キー欠落 (unknown 列に置いています。未着手 = 明示 null と区別)`;
+      return `${w.stepId} ${phase}: status キー欠落 (unknown 列に置いています。未着手 = 明示 null と区別)`;
     case 'unknown-status':
-      return `${w.stepId} ${w.phase}: 未知の status 「${w.status}」 (unknown 列に置いています)`;
+      return `${w.stepId} ${phase}: 未知の status 「${w.status}」 (unknown 列に置いています)`;
   }
 }
 
