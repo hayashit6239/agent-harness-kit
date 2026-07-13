@@ -262,9 +262,9 @@
       },
       "pr": {
         "number": 22,
-        "status": "starting review",
+        "status": "created pr",
         "githubState": "open",
-        "lastReviewedStatus": "created pr"
+        "lastReviewedStatus": null
       }
     },
     {
