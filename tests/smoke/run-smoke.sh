@@ -25,7 +25,8 @@
 #    締切超過でリトライ余地あり→redispatch(retry_count 加算) / リトライ上限到達→sink /
 #    壊れた・不整合な marker→sink(fail-closed。progressed=true でも優先) の境界、
 #    妥当性検証の各項目 (型崩れ・負値・deadline<dispatched・dispatched>current の未来矛盾)、
-#    不正入力 exit 2 の境界を含む)
+#    不正入力 exit 2 の境界を含む)。加えて選別(jq) 実装役ブロックの dispatchMarker ガード
+#    (PR #35 round1 🔴#1 対応) を、commands/harness-orchestrate.md と同一の jq を直接実行して固定する
 # 10. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
 #    カバーされていることも検査)
@@ -761,6 +762,28 @@ recon_rc=0
 printf '%s' '["not","an","object"]' | python3 "$RECONCILE" >/dev/null 2>&1 || recon_rc=$?
 [ "$recon_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $recon_rc"
 echo "[9/12] reconcile-dispatch-marker 不正入力 exit 2 境界 OK"
+
+# 選別(jq) 実装役の dispatchMarker ガード (PR #35 round1 🔴#1 対応)。
+# commands/harness-orchestrate.md 選別(jq) 実装役ブロックと同一の jq をここで直接実行し、
+# `dispatchMarker` が残っている step (wait 決着で締切未到達、または redispatch が同 tick 内で
+# 再試行して再び marker が残った場合) が候補から除外されることを固定する。このガードが無いと
+# issue.status/pr.number が不変のまま選別に再度乗り、同一 issue へ二重 dispatch されうる
+# (round1 🔴#1 の要点)。
+SELECT_IMPLEMENTER_JQ='[ .steps[]
+  | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
+  | {id, issueNumber: .issue.number} ]'
+SELECT_IMPLEMENTER_INPUT='{"steps":[
+  {"id":"X1","issue":{"status":"ready for implementation","number":1},"pr":{"number":null}},
+  {"id":"X2","issue":{"status":"ready for implementation","number":2},"pr":{"number":null},
+   "dispatchMarker":{"dispatched_tick":5,"deadline_tick":7,"retry_count":0}},
+  {"id":"X3","issue":{"status":"ready for implementation","number":3},"pr":{"number":5}},
+  {"id":"X4","issue":{"status":"created issue","number":4},"pr":{"number":null}}
+]}'
+SELECT_IMPLEMENTER_GOT="$(printf '%s' "$SELECT_IMPLEMENTER_INPUT" | jq -c "$SELECT_IMPLEMENTER_JQ")"
+SELECT_IMPLEMENTER_WANT='[{"id":"X1","issueNumber":1}]'
+[ "$SELECT_IMPLEMENTER_GOT" = "$SELECT_IMPLEMENTER_WANT" ] \
+  || fail "選別(jq) 実装役: dispatchMarker が残る step (X2) が候補から除外されず二重 dispatch ガードが機能していない (got: $SELECT_IMPLEMENTER_GOT / want: $SELECT_IMPLEMENTER_WANT)"
+echo "[9/12] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外)"
 
 # --- 10. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ は複製)

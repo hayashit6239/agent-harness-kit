@@ -216,13 +216,16 @@ issue サイドの走査は台帳の `issue.status` を読むだけ(追加の Gi
 PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
 REVIEW_MODE="${2:-code-review}"
 
-# 実装役 dispatch 対象(tick 冒頭 reconciliation で `action` が eligible/redispatch と決着した
-# step のみ。`wait`/`sink` は今 tick の選別対象から除外する — 実際の除外判定は reconciliation の
-# 結果を読むだけで、この jq 自体は marker の有無を直接見ない。marker が既に消えている
-# (eligible) か、reconciliation が redispatch 用に retry_count を引き継いだ後の step だけが
-# ここへ来る)
+# 実装役 dispatch 対象。`dispatchMarker` が残っている step は、この jq 自身が
+# `.dispatchMarker == null` で除外する(round1 🔴#1 対応: 旧版は「reconciliation の結果を
+# 読むだけで jq 自体は marker の有無を直接見ない」としていたが、`wait` 決着(締切未到達)の
+# step は issue.status/pr.number が不変のままなのでこの guard が無いと選別に再度乗り、
+# 同一 issue へ二重 dispatch(worktree/PR の競合)が起きる。marker が無い(eligible)か、
+# reconciliation が `clear` して pr_number 確定・marker 削除まで完了した step だけがここへ
+# 来る。`redispatch` が同 tick 内で再試行して再び marker が残った場合も、この guard により
+# 次 tick 以降の選別から除外され続ける — 有界化は reconciliation 側の締切・リトライ上限に委ねる)
 jq -c '[ .steps[]
-  | select(.issue.status == "ready for implementation" and .pr.number == null)
+  | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
   | {id, issueNumber: .issue.number} ]' "$PLAN"
 
 # 対応役 dispatch 対象

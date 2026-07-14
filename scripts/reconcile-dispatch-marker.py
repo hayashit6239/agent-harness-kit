@@ -79,11 +79,19 @@ def input_error(cause):
     sys.exit(2)
 
 
+def _is_valid_int(v):
+    """bool を除く整数かどうかを判定する (True/False の混入は整数として扱わない)。
+    require_int() (入力エラーで exit) と marker_is_valid() (判定結果として False を返す) の
+    両方が同じ型検査条件を必要とするため、条件式そのものをここへ集約する
+    (round1 🟡#3 対応: 同一ファイル内での重複を解消)。"""
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def require_int(data, key):
     if key not in data:
         input_error(f"必須キー '{key}' が無い。")
     v = data[key]
-    if isinstance(v, bool) or not isinstance(v, int):
+    if not _is_valid_int(v):
         input_error(f"'{key}' が整数でない ({v!r})。")
     return v
 
@@ -100,10 +108,7 @@ def require_bool(data, key):
 def marker_is_valid(marker, current_tick):
     """marker (dict であることは呼び出し前に確定) の型/整合を検査する。壊れていれば False。"""
     for key in ("dispatched_tick", "deadline_tick", "retry_count"):
-        if key not in marker:
-            return False
-        v = marker[key]
-        if isinstance(v, bool) or not isinstance(v, int):
+        if key not in marker or not _is_valid_int(marker[key]):
             return False
     if marker["dispatched_tick"] < 0 or marker["retry_count"] < 0:
         return False
