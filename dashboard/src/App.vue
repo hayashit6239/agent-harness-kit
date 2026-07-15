@@ -119,10 +119,15 @@ function formatTime(iso: string): string {
   padding: 28px 24px 56px;
 }
 
-/* 左パネル (auto = 開閉で伸縮) + カンバン (可変幅) + 右側柱 (ステージ + フィード) の 3 段組 */
+/*
+ * 左パネル (auto = 開閉で伸縮) + カンバン (可変幅) + 右側柱 (ステージ + フィード) の 3 段組。
+ * 右側柱 (.side) は画面全体の約 1/3 を目標に可変化 (issue #34)。
+ * 母数 = この .layout の inline 幅 (.dashboard の content 幅・max-width 1720px 基準)。
+ * 下限 360px (旧固定値を維持) / 目標 33%。等分ではなく「下限つき比率上限」方式。
+ */
 .layout {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 360px;
+  grid-template-columns: auto minmax(0, 1fr) minmax(360px, 33%);
   gap: 18px;
   align-items: start;
 }
