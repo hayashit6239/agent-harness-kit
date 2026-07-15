@@ -16,8 +16,9 @@
 #    has_blocker=false 抑止 / round<3 短絡 / round_flag+trend_flag 同時成立 / round=3 境界 /
 #    不正入力 exit 2 の境界を含む)
 # 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定が期待通り
-#    (決定表の全 role×outcome 11 行を網羅 = reviewer の invalid 分岐 + implementer の
-#    timeout 分岐 (issue #26) の存在を機械保証 /
+#    (決定表の全 role×outcome 14 行を網羅 = reviewer の invalid 分岐 + implementer の
+#    timeout 分岐 (issue #26) + 3 role 共通の主観的エスカレーション
+#    (issue #31・subjective_escalate) の存在を機械保証 /
 #    網羅ケース数と DECISION_TABLE のエントリ総数を突き合わせる行数ガード /
 #    不正入力 exit 2 の境界を含む)
 # 9. reconcile-dispatch-marker (dispatch in-flight マーカーの tick 冒頭 reconciliation 判定・
@@ -584,12 +585,13 @@ echo "[7/12] evaluate-stop-condition 判定ケース OK (round 上限・trend・
 
 # --- 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定 ----
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
-# 決定表の全 (role × outcome) 11 行を網羅検証する — この網羅により、reviewer の "invalid"
-# 分岐 (dispatch 結果失敗 -> sink) および implementer の "timeout" 分岐 (issue #26・
-# in-flight マーカーのリトライ上限到達/不整合 -> sink) が存在し正しく sink に落ちることが
-# 機械的に保証される (orchestrator の散文分岐が毎 round どこかずれる問題を構造的に止める)。
-# さらに網羅ケース数と DECISION_TABLE のエントリ総数を突き合わせる行数ガードで
-# 「行追加時の assert 書き忘れ」を塞ぐ。不正入力 exit 2 も含む。
+# 決定表の全 (role × outcome) 14 行を網羅検証する — この網羅により、reviewer の "invalid"
+# 分岐 (dispatch 結果失敗 -> sink)、implementer の "timeout" 分岐 (issue #26・in-flight
+# マーカーのリトライ上限到達/不整合 -> sink)、および 3 role 共通の主観的エスカレーション
+# (issue #31・"subjective_escalate") が存在し正しく sink に落ちることが機械的に保証される
+# (orchestrator の散文分岐が毎 round どこかずれる問題を構造的に止める)。さらに網羅ケース数と
+# DECISION_TABLE のエントリ総数を突き合わせる行数ガードで「行追加時の assert 書き忘れ」を塞ぐ。
+# 不正入力 exit 2 も含む。
 DECIDE="$ROOT/scripts/decide-orchestrator-route.py"
 
 # $1=ラベル $2=role $3=outcome $4=期待する出力 JSON (キー順・空白を正規化して比較。
@@ -608,7 +610,7 @@ assert_route() {
   ROUTE_CASES=$((ROUTE_CASES + 1))
 }
 
-# implementer (5 outcome)
+# implementer (6 outcome)
 assert_route "(a) implementer/no_pr" implementer no_pr \
   '{"ledger_write":null,"route":"skip","label_action":null}'
 assert_route "(b) implementer/ambiguous" implementer ambiguous \
@@ -621,12 +623,16 @@ assert_route "(d) implementer/pr_evidence_fail (書いてから sink)" implement
 #   PR は実在しない (ambiguous と同型で書込なし))
 assert_route "(d2) implementer/timeout (issue #26 マーカー有界化 -> sink)" implementer timeout \
   '{"ledger_write":null,"route":"sink","label_action":null}'
-# responder (2 outcome)
+assert_route "(k) implementer/subjective_escalate (issue #31・PR 未作成 -> 書込なしで sink)" implementer subjective_escalate \
+  '{"ledger_write":null,"route":"sink","label_action":null}'
+# responder (3 outcome)
 assert_route "(e) responder/evidence_pass" responder evidence_pass \
   '{"ledger_write":{"pr.status":"waiting for review"},"route":"normal","label_action":null}'
 assert_route "(f) responder/evidence_fail" responder evidence_fail \
   '{"ledger_write":null,"route":"sink","label_action":null}'
-# reviewer (全 4 outcome — invalid/escalate/clean_pass/blockers を必ず網羅する。
+assert_route "(l) responder/subjective_escalate (issue #31・書いてから sink)" responder subjective_escalate \
+  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}'
+# reviewer (全 5 outcome — invalid/escalate/clean_pass/blockers/subjective_escalate を必ず網羅する。
 #   invalid は dispatch 結果失敗を単一 sink に落とす分岐で、この行が抜けると reviewer だけ
 #   sink をすり抜ける — 全網羅で「表に invalid 行が在る」ことを機械保証する)
 assert_route "(g) reviewer/invalid (dispatch 失敗 -> sink)" reviewer invalid \
@@ -637,6 +643,8 @@ assert_route "(i) reviewer/clean_pass" reviewer clean_pass \
   '{"ledger_write":{"pr.status":"ready for merge"},"route":"normal","label_action":"add_ready_for_merge"}'
 assert_route "(j) reviewer/blockers" reviewer blockers \
   '{"ledger_write":{"pr.status":"completed review"},"route":"normal","label_action":"remove_ready_for_merge"}'
+assert_route "(m) reviewer/subjective_escalate (issue #31・客観 escalate とは別トリガーだが同じ sink)" reviewer subjective_escalate \
+  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}'
 
 # 行数ガード: DECISION_TABLE の全エントリ数 (role×outcome の全組み合わせ) と assert_route で
 # 網羅したケース数 (ROUTE_CASES) が一致することを機械的に確認する。手動列挙は「行削除」は
@@ -657,23 +665,23 @@ PY
 echo "[8/12] decision-table 行数ガード OK (assert_route ケース数 $ROUTE_CASES == DECISION_TABLE エントリ数 $TABLE_ENTRIES)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — evaluate-stop-condition と同じ流儀)
-# (k) role が enum 外 -> exit 2
+# (n) role が enum 外 -> exit 2
 route_rc=0
 printf '%s' '{"role":"reviewer2","outcome":"invalid"}' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
-[ "$route_rc" -eq 2 ] || fail "(k) role enum 外で exit 2 を期待したが exit $route_rc"
-# (l) outcome が role に対応しない (implementer に reviewer の outcome) -> exit 2
+[ "$route_rc" -eq 2 ] || fail "(n) role enum 外で exit 2 を期待したが exit $route_rc"
+# (o) outcome が role に対応しない (implementer に reviewer の outcome) -> exit 2
 route_rc=0
 printf '%s' '{"role":"implementer","outcome":"escalate"}' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
-[ "$route_rc" -eq 2 ] || fail "(l) outcome 不整合で exit 2 を期待したが exit $route_rc"
-# (m) 必須キー欠損 (outcome なし) -> exit 2
+[ "$route_rc" -eq 2 ] || fail "(o) outcome 不整合で exit 2 を期待したが exit $route_rc"
+# (p) 必須キー欠損 (outcome なし) -> exit 2
 route_rc=0
 printf '%s' '{"role":"reviewer"}' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
-[ "$route_rc" -eq 2 ] || fail "(m) 必須キー欠損で exit 2 を期待したが exit $route_rc"
-# (n) 非オブジェクト入力 (配列) -> exit 2
+[ "$route_rc" -eq 2 ] || fail "(p) 必須キー欠損で exit 2 を期待したが exit $route_rc"
+# (q) 非オブジェクト入力 (配列) -> exit 2
 route_rc=0
 printf '%s' '["not","an","object"]' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
-[ "$route_rc" -eq 2 ] || fail "(n) 非オブジェクト入力で exit 2 を期待したが exit $route_rc"
-echo "[8/12] decide-orchestrator-route 判定ケース OK (全 role×outcome 11 行を網羅 + 不正入力 exit 2 境界)"
+[ "$route_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $route_rc"
+echo "[8/12] decide-orchestrator-route 判定ケース OK (全 role×outcome 14 行を網羅 + 不正入力 exit 2 境界)"
 
 # --- 9. reconcile-dispatch-marker (dispatch in-flight マーカーの reconciliation 判定・issue #26) --
 # decide-orchestrator-route / evaluate-stop-condition / reaggregate-has-blocker と同型の
