@@ -55,7 +55,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 | 実装役 dispatch 後の evidence gate 失敗 | implementer/`pr_evidence_fail` | `pr.number` + `pr.githubState="open"` + `pr.status="created pr"`(PR は実在するという事実。1 回のローカル書込後に sink) |
 | 対応役 dispatch 後の evidence gate 失敗 | responder/`evidence_fail` | 書込なし(`pr.status` は `completed review` のまま。未解決の review blocker が残っているという事実) |
 | 実装役の `pr_number` 復旧検索(`Closes #N`)が複数一致(曖昧) | implementer/`ambiguous` | 書込なし(誤った番号を書かない) |
-| 実装役 dispatch が主観的エスカレーション(`escalate_to_human`)を返した(PR 未作成。issue #31) | implementer/`subjective_escalate` | 書込なし(進める PR が無い。`ambiguous` と同型の空状態。`dispatchMarker` も `ambiguous` と同じ手続きで同一書込のうちに削除する — 詳細は「developer(実装役)」手順 6/7) |
+| 実装役 dispatch が主観的エスカレーション(`escalate_to_human`)を返した(PR 未作成。issue #31) | implementer/`subjective_escalate` | 書込なし(進める PR が無い。`ledger_write=None` である点は `ambiguous` と同型だが、`dispatchMarker` は削除せず永続させ `notified: true` を追加する(`timeout` と同型)— 詳細は「developer(実装役)」手順 6/7) |
 | 対応役 dispatch が主観的エスカレーション(`escalate_to_human`)を返した(issue #31) | responder/`subjective_escalate` | `pr.status="need for human review"`(1 回のローカル書込後に sink) |
 | reviewer dispatch が主観的エスカレーション(`escalate_to_human`)を返した(客観的な `escalate` とは別トリガー。issue #31) | reviewer/`subjective_escalate` | `pr.status="need for human review"`(1 回のローカル書込後に sink) |
 | git-status ガードが `.harness/` への意図しない変更を検知 | (判定器の外・単一書込ガード) | 書込なし(提案を破棄する) |
@@ -105,7 +105,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   - **responder**: `evidence_pass` / `evidence_fail` / `subjective_escalate`(issue #31)
   - **reviewer**: `invalid`(返答が JSON でない・`escalate` を読めない=dispatch 結果失敗)/ `escalate`(escalate=true)/ `clean_pass`(escalate=false かつ has_blocker=false)/ `blockers`(escalate=false かつ has_blocker=true)/ `subjective_escalate`(issue #31・客観的な `escalate` とは別に `escalate_to_human` を返した)
 
-  **3 role 共通の `subjective_escalate` の解決方法(issue #31・詳細は「主観的エスカレーション」節)**: 各ロールの dispatch 応答が `escalate_to_human: {reason}`(`reason` は空でない文字列)を含む場合、その他の分岐より**先に** outcome=`subjective_escalate` へ解決する。`reason` の形式検証(空・欠損・非文字列なら無視してフォールバック)は「主観的エスカレーション」節の「最小の形式検証(A案)」を参照(判定ロジックの唯一の正はそちらに置き、ここでは複製しない)。
+  **3 role 共通の `subjective_escalate` の解決方法(issue #31・詳細は「主観的エスカレーション」節)**: 各ロールの dispatch 応答が `escalate_to_human: {reason}`(`reason` は空でない文字列)を含む場合、その他の分岐より**先に** outcome=`subjective_escalate` へ解決する。**この検出条件(JSON として解釈できるか・`escalate_to_human.reason` の有無)の唯一の正はここに置き、各ロール節(実装役手順 3・対応役手順 3・reviewer 手順 2)では複製せずここを参照する**(役割ごとに異なるのは「他の分岐より先に判定する」という優先順位の適用箇所と「解決後にどの手順へ進むか」だけで、検出条件自体は共通)。`reason` の形式検証(空・欠損・非文字列なら無視してフォールバック)は「主観的エスカレーション」節の「最小の形式検証(A案)」を参照(判定ロジックの唯一の正はそちらに置き、ここでは複製しない)。
 
   script が exit 2(role enum 外 / outcome が role に対応しない / 必須キー欠損)なら、その step の処理を止め状態を報告する(黙って散文判定に切り替えない — `reaggregate-has-blocker.py` の扱いと同じ)。
 
@@ -113,7 +113,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   - `"pr.number": true` → orchestrator が保持する実 `pr_number` を書く(script は番号を知らないので真偽フラグ。この 1 点だけ prose が実値を供給する)
   - `"pr.githubState"` / `"pr.status"` → script が返したリテラル値をそのまま書く
 
-  抽出と適用は次の 1 手続きで行う(`<step id>` は対象 step、`<pr_number>` は orchestrator が保持する確定番号。`pr.number` を含まない経路では空文字でよい。`<clear_marker>` は省略可・既定 `false` — `true` を渡すと同じ書込内で `dispatchMarker` キーも削除する。実装役の `pr_evidence_pass`/`pr_evidence_fail`/`ambiguous`/`subjective_escalate` がこれを `true` で呼ぶ理由は「developer(実装役)」手順 6 参照 — `ambiguous`/`subjective_escalate` は `ledger_write` が無い(=null)ため、他のフィールド書込を伴わない marker 単独削除としてこの同じ手続きで扱われる)。`ledger_write` の全キー(と、渡された場合は `dispatchMarker` 削除)を 1 回のファイル書込で適用するため原子的(`pr.number` だけ書いて `pr.status` 未書込という中間状態や、`dispatchMarker` だけ消えて `pr.number` 未書込という中間状態を作らない):
+  抽出と適用は次の 1 手続きで行う(`<step id>` は対象 step、`<pr_number>` は orchestrator が保持する確定番号。`pr.number` を含まない経路では空文字でよい。`<clear_marker>` は省略可・既定 `false` — `true` を渡すと同じ書込内で `dispatchMarker` キーも削除する。実装役の `pr_evidence_pass`/`pr_evidence_fail`/`ambiguous` がこれを `true` で呼ぶ理由は「developer(実装役)」手順 6 参照 — `ambiguous` は `ledger_write` が無い(=null)ため、他のフィールド書込を伴わない marker 単独削除としてこの同じ手続きで扱われる。**`subjective_escalate` はこの手続きを呼ばない**(marker を削除せず永続させるため。代わりに上記「`notified` フラグの付与」の手続きを使う — 詳細は「developer(実装役)」手順 6/7)。`ledger_write` の全キー(と、渡された場合は `dispatchMarker` 削除)を 1 回のファイル書込で適用するため原子的(`pr.number` だけ書いて `pr.status` 未書込という中間状態や、`dispatchMarker` だけ消えて `pr.number` 未書込という中間状態を作らない):
   ```
   PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
   python3 - "$PLAN" "<step id>" "$ROUTE" "<pr_number>" "<clear_marker>" <<'PY'
@@ -149,6 +149,24 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   PY
   ```
   これで**実行される書込は decision script の `ledger_write` から来る**(prose に status リテラルを複製しない)。書込後は「書込方式」節に従いローカルファイル編集のみで完結させ(commit/push しない)、続けて Statuses API 自己申告を行う。
+
+- **`notified` フラグの付与(marker 永続 + 通知 1 回化の共通手続き)**: `route=sink` の中には、marker を削除せず**永続させたまま**「以後は通知済みとして再判定をスキップする」ことだけを記録したいケースがある(`timeout`・実装役 `subjective_escalate` が該当。両者とも PR が実在しないため上記 `ledger_write` の適用手続き(`<clear_marker>`)は使わない — 削除ではなく永続が目的のため)。この場合は `dispatchMarker` の既存 3 キー(`dispatched_tick`/`deadline_tick`/`retry_count`)は変更せず、`notified: true` を追加する 1 回の書込だけを行う(`ledger_write` が伴わない sink でも、この 1 回のファイル書込で完結する):
+  ```
+  PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
+  python3 - "$PLAN" "<step id>" <<'PY'
+  import datetime, json, os, sys
+  plan_path, step_id = sys.argv[1], sys.argv[2]
+  with open(plan_path, encoding="utf-8") as f:
+      plan = json.load(f)
+  step = next(s for s in plan["steps"] if s["id"] == step_id)
+  step["dispatchMarker"]["notified"] = True   # 既存 3 キーは変更せず追加のみ
+  plan["updatedAt"] = datetime.date.today().isoformat()
+  with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
+      json.dump(plan, f, ensure_ascii=False, indent=2)
+  os.replace(plan_path + ".tmp", plan_path)
+  PY
+  ```
+  これにより次 tick 以降は「tick 冒頭 reconciliation」節の「`notified` 済みマーカーの早期スキップ」に該当し、この step は無条件スキップされる(解除は人間が `dispatchMarker` を手動削除するまで行われない — ラベル解除に相当する手段が無い点も `timeout` と同じ)。
 
 - **`route` の実行**:
   - **`normal`**: `ledger_write`(あれば)を書いて完了。sink・ラベル以外の副作用なし。
@@ -212,7 +230,7 @@ PY
   - **`redispatch`**: **今 tick 内で即座には dispatch しない**。返った `retry_count` を保持したまま「実装役の再 dispatch 候補」として、下記「配車テーブル」節の**5 件上限を実装役の選別(jq)新規対象と共有する枠**へ合流させる(独自の無制限枠を持たせない)。この枠に収まった候補だけ、**引き継いだ `retry_count` を渡して**「developer(実装役)」手順 1 から再実行する(**marker の書込は手順 1 が単独で行う** — reconciliation 自身はここで `dispatchMarker` を書かない。手順 1 の marker 書込 `{"dispatched_tick": $TICK, "deadline_tick": $TICK + K, "retry_count": <0 か引き継いだ値>}` は新規 dispatch・redispatch のどちらでも同じ 1 箇所のみで行われ、reconciliation と手順 1 が同一 tick 内で同内容の marker を 2 回書く冗長書込を避ける)。**枠から溢れた候補は今 tick では marker を書き換えない**(`retry_count` を消費しない) — 次 tick も `current_tick > deadline_tick` が成立し続けるため、reconciliation が同じ候補として再び `redispatch` を返し、優先度が回れば後続 tick で処理される(取りこぼしではなく先送り)。
   - **`sink`**(`reason` が `retries_exhausted`(リトライ上限 N=2 到達)または `invalid_marker`(マーカーが壊れている/不整合・fail-closed)): outcome=**`timeout`** として判定器(role=implementer)を呼ぶ(`decide-orchestrator-route.py` の implementer/`timeout` 行。`ledger_write` は null — PR がまだ存在しない `ambiguous` と同型)。「失敗経路(単一の need for human review sink)」の**変則**として次のとおり扱う(通常の sink 共通手続きとの差分):
     - **ラベル付与は行わない**(PR が存在しないため `gh pr edit --add-label` の対象が無い。`ambiguous` と同じ制約)。
-    - `PushNotification` を行う(内容: 「issue #<N> の実装役 dispatch が締切超過でリトライ上限(N=2)に到達した」または「issue #<N> の in-flight マーカーが不整合」)。**この通知と同じタイミングで、`dispatchMarker` へ `notified: true` を追加する 1 回の書込を行う**(`dispatched_tick`/`deadline_tick`/`retry_count` の既存 3 キーは変更せず追加のみ。`reconcile-dispatch-marker.py` の marker 妥当性検査はこの 3 キーの存在・型しか見ないため、追加の `notified` キーは判定に影響しない)。これにより次 tick 以降は上記「`notified` 済みマーカーの早期スキップ」に該当し、この sink は tick をまたいで**一度だけ**通知される(通知の無限反復を防ぐ)。
+    - `PushNotification` を行う(内容: 「issue #<N> の実装役 dispatch が締切超過でリトライ上限(N=2)に到達した」または「issue #<N> の in-flight マーカーが不整合」)。**この通知と同じタイミングで、「ルーティング判定」節の「`notified` フラグの付与」手続きを実行する**(`dispatched_tick`/`deadline_tick`/`retry_count` の既存 3 キーは変更せず `notified: true` を追加のみ。`reconcile-dispatch-marker.py` の marker 妥当性検査はこの 3 キーの存在・型しか見ないため、追加の `notified` キーは判定に影響しない)。これにより次 tick 以降は上記「`notified` 済みマーカーの早期スキップ」に該当し、この sink は tick をまたいで**一度だけ**通知される(通知の無限反復を防ぐ)。
     - **`dispatchMarker` は消さず残す**(この持続状態自体が「無条件スキップ」の実装 — 次 tick 以降は `notified: true` により復旧検索・script 呼出そのものをスキップするため、無期限の GitHub 検索の繰り返しも止まる。ラベルが無くても選別ガードは marker の存在自体で恒久的にこの step をスキップする)。
     - **人間の解除手段**: ラベル解除に相当する操作は「対象 step の `dispatchMarker` を手動で削除する」(根本原因(issue 実装不能等)を先に解消してから削除するのが通常の流れ)。orchestrator 側に自動解除ロジックは持たない(既存の「ラベルの解除は人間が手動で行う」原則と同型)。
 
@@ -229,7 +247,7 @@ PY
 **最小の形式検証(A 案)**: orchestrator prose が `escalate_to_human` を受けたら、**`reason` が存在し空でない文字列であることのみ**を確認する(ファイルパスや行番号の実在確認・意味的真偽の検証はしない)。この形式検証は `decide-orchestrator-route.py` の入力に `reason` 自体を含まない(script は `{role, outcome}` のみを受け取る)ため、**prose(orchestrator 自身の判断)側で行う** — reason 空チェックが script でなく prose に置かれる唯一の理由は、判定器の入力契約を `role`/`outcome` に絞り続けるため(この形式検証自体は L1 の防護線に留まり、machine-checked ではない。ただし脅威モデル上、破れても実害は注意コストのみなので L1 でも害に比例する)。`reason` が空・欠損・非文字列なら**形式不正として `escalate_to_human` を無視し**、通常の outcome 解決へフォールバックする(黙って握りつぶさず、tick 報告に「`escalate_to_human` 形式不正のため無視した」と 1 行残す)。
 
 **新 outcome とルーティング**: `escalate_to_human.reason` が有効なら、各ロールは outcome=`subjective_escalate` として「ルーティング判定」節の判定器を呼ぶ(role はそのまま実装役/対応役/reviewer)。判定器の出力は「失敗経路(単一の need for human review sink)」の**既存 sink** に合流する(別 sink を新設しない):
-- **実装役**(PR 未作成 = `pr.number` 未確定): `ledger_write=None`(進める PR が無いため書込なし)・`route=sink`。
+- **実装役**(PR 未作成 = `pr.number` 未確定): `ledger_write=None`(進める PR が無いため書込なし)・`route=sink`。**`dispatchMarker` は削除せず永続させ `notified: true` を追加する**(`timeout` と同型。削除すると次 tick に即座に再 dispatch されてしまうため — 詳細は「developer(実装役)」手順 6/7)。
 - **対応役 / reviewer**(PR が実在): `ledger_write={"pr.status": "need for human review"}`(escalate と同じく書いてから sink)・`route=sink`。
 
 **実装役の複合ケースは v1 では扱わない**: 実装役が PR を作成した上で `escalate_to_human` も返す複合ケース(完了と申告の同時)は v1 のスコープ外(issue #31 set1 Implementation Scope 6 の決定)。実装役の dispatch prompt では「PR を作成した場合は通常どおり `{pr_number, proposed_status}` を返す。人間の判断が必要と感じた場合は PR を作らずに `{escalate_to_human: {reason}}` を返す(両方を返す必要がある状況は無い)」と明示し、二択であることを源流(dispatch prompt)で徹底する。万一両方が返された場合は `escalate_to_human` を優先して `subjective_escalate` に解決する(pr_number 側の追跡は行わない — 既知の限界として残す)。
@@ -307,7 +325,7 @@ jq -c '[ .steps[]
 
    > 「対象 issue #<N> の本文(Problem/Context/Alternatives/Implementation Scope/DoD)を `gh issue view <N>` で Read せよ。次に `creating-git-worktrees` skill を Skill ツールで起動し、その手順に従って worktree を作成せよ。issue の Implementation Scope に従って実装せよ。実装後、`creating-gh-prs` skill を Skill ツールで起動し、その手順に従って PR を作成せよ(base は main、`Closes #<N>` を本文に含める)。最後に `{pr_number, proposed_status}`(`proposed_status` は通常 `"created pr"`)を JSON で返せ。**人間の判断が必要と感じた場合(実装方針が確定できない・issue の指示が矛盾する等)は、PR を作らずに代わりに `{escalate_to_human: {reason}}` を返してよい(両方を返す必要がある状況は無い — issue #31・v1 は「完了 or 主観エスカレーション」の二択)。** 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
-3. **主観的エスカレーションの確認(issue #31・pr_number 解決より先に行う)**: 返答が JSON として解釈でき `escalate_to_human.reason`(空でない文字列)を含む場合 → outcome=**`subjective_escalate`**(判定器は `ledger_write=None`・`route=sink` を返す。手順 4〜5 の pr_number 解決・evidence gate は行わず、手順 7 の判定器呼び出しへ進む)。`reason` の形式検証は「主観的エスカレーション」節の「最小の形式検証(A案)」を参照 — 形式不正なら `escalate_to_human` を無視し下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
+3. **主観的エスカレーションの確認(issue #31・pr_number 解決より先に行う)**: 検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)。該当すれば outcome=**`subjective_escalate`**(判定器は `ledger_write=None`・`route=sink` を返す。手順 4〜5 の pr_number 解決・evidence gate は行わず、手順 7 の判定器呼び出しへ進む)。形式不正で `escalate_to_human` を無視した場合は下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
 
 4. **`pr_number` の確定と outcome 解決**:
    - 返答が JSON として解釈でき、`pr_number` が `gh pr view <pr_number> --repo <repo>` で実在確認できた → その番号を採用し、手順 5 の evidence gate へ。
@@ -364,8 +382,11 @@ jq -c '[ .steps[]
    - **`EVIDENCE_EXIT == 0`** → outcome=**`pr_evidence_pass`**。
    - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** 残骸掃除失敗 (b))→ outcome=**`pr_evidence_fail`**(route=sink・need for human review。古い残骸で誤って pass/fail を出すより停止が安全)。
 
-6. **`dispatchMarker` の扱い(判定器呼出と同一の原子書込に統合)**: **`no_pr` を除く実装役の全 outcome は、この tick 内で「進める PR の有無」が解決済み(pr_number が確定した・確定不能と分かった・進める PR が無いと判明した、のいずれか)であり、marker を持ち越す理由が無い。** この性質を満たす outcome(`ambiguous` / `pr_evidence_pass` / `pr_evidence_fail` / `subjective_escalate` — 今後実装役に同種の outcome が増えても、この性質を満たす限り同じ扱いになる)は、marker 削除をここで単独では行わない — 手順 7 で判定器を呼んだ後、その `$ROUTE` を「ルーティング判定」節の **`ledger_write` の適用**手続きへ `<clear_marker>`="true" として渡し、**同一の原子書込**で削除する(適用手続きの条件を `lw is not None or clear_marker == "true"` に一般化したことで、`ledger_write` が非 null(`pr_evidence_pass`/`pr_evidence_fail`)でも null(`ambiguous`/`subjective_escalate`)でも、この 1 つの手続きが扱えるようになった。「marker 削除と `ledger_write` を同一書込に統合し中間状態を無くす」不変条件を、`ledger_write` が無い outcome にも一貫させたことが要点 — 個別に `if` を足して欠落を塞ぐのではなく、適用手続き自身を「marker 削除の唯一の実行点」にし、かつ本手順自体も outcome 名の固定列挙ではなく「進める PR の有無が確定した」という性質で束ねることで、新しい outcome が増えた際にここの更新漏れが起きにくい設計にした)。
-   - **`no_pr`** だけは `dispatchMarker` を残す(「tick 冒頭 reconciliation」節の機構による有界化の対象)。
+6. **`dispatchMarker` の扱い(outcome ごとに 3 通りの決着を固定列挙する)**: 実装役の outcome(`no_pr` / `ambiguous` / `pr_evidence_pass` / `pr_evidence_fail` / `subjective_escalate`。**`timeout` はこの手順(1〜8)を通らず「tick 冒頭 reconciliation」節で独立に解決されるため、ここには含まれない** — 下記の `subjective_escalate` の扱いは timeout の変則をこの手順内で再現したものであり、timeout 自身がこの手順を通るわけではない)は、marker に対して次の 3 通りのいずれかで決着する。**固定列挙にするのは、「進める PR の有無が確定した」という性質だけで一括りにすると、新しい outcome がどちらの型に属すか誤分類しうるためである**(実際に起きた誤り: `subjective_escalate` をこの性質だけで判断して `marker 削除`型に分類したが、正しくは marker を永続させる `timeout` 型だった — 削除すると次 tick の選別 jq(`.dispatchMarker == null` かつ `.pr.number == null`)へ即座に再合致し、締切超過を待たず無条件・無制限に再 dispatch されてしまう)。**実装役に新しい outcome を追加する際は、この 3 分類のどれに属するかを明示的に決めてここへ追記すること**(性質ベースの一文で束ねて済ませない)。
+
+   - **削除**(`ambiguous` / `pr_evidence_pass` / `pr_evidence_fail`): pr_number が確定した、または確定不能と判明したことで「進める PR の有無」がこの tick 内で解決し、marker を持ち越す理由が無い outcome。手順 7 で判定器を呼んだ後、その `$ROUTE` を「ルーティング判定」節の **`ledger_write` の適用**手続きへ `<clear_marker>`="true" として渡し、**同一の原子書込**で削除する(適用手続きの条件を `lw is not None or clear_marker == "true"` に一般化しているため、`ledger_write` が非 null(`pr_evidence_pass`/`pr_evidence_fail`)でも null(`ambiguous`)でも、この 1 つの手続きが扱える)。
+   - **永続 + この場で `notified` を追加**(`subjective_escalate`): 委譲先が「人間の判断を仰ぎたい」と明示的に自己申告した outcome。marker を削除せず、`timeout` と同じく永続させたうえで、締切超過・リトライ上限到達を待たず**この場で即座に**「ルーティング判定」節の「`notified` フラグの付与」手続きを実行する(既存 3 キーは変更せず `notified: true` を追加するのみ)。これにより次 tick 以降は「notified 済みマーカーの早期スキップ」に該当し無条件スキップされる(詳細は手順 7)。
+   - **完全に不可触**(`no_pr`): marker を書込も削除もしない。「tick 冒頭 reconciliation」節の機構(締切 K=2 tick・リトライ上限 N=2)による有界化に委ねる。
 
 7. **判定器を呼び route を実行**(role=implementer。規則は判定器が正・下記は route の実行だけ):
    ```
@@ -377,9 +398,9 @@ jq -c '[ .steps[]
      - `pr_evidence_fail` → route=sink。上記のローカル書込を行った**うえで**「失敗経路(単一の need for human review sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。need for human review ラベル付与後は次 tick から無条件スキップされ安全に停止する。
    - `no_pr` → route=skip。書込なし。`dispatchMarker` は手順 6 のとおり残る(次 tick 以降「tick 冒頭 reconciliation」節が締切・リトライを判定する。**issue #26・P1 決定によりもはや無界ではない**)。
    - `ambiguous` → route=sink。`ledger_write` は null のため pr.number 等のフィールド書込は無いが、この判定器呼出の直後に同じ `ledger_write` の適用手続きを `<clear_marker>`="true" で呼び、`dispatchMarker` の削除だけを行う(この outcome の再 dispatch 挙動自体は issue #26 のスコープ外・変更しない)。
-   - `subjective_escalate`(issue #31・手順 3 で解決済み)→ route=sink。`ledger_write` は null(進める PR が無い)のため、`ambiguous` と同じくこの判定器呼出の直後に同じ `ledger_write` の適用手続きを `<clear_marker>`="true" で呼び、`dispatchMarker` の削除だけを行う(手順 6 参照。**この呼出を怠ると、締切超過後にリトライ上限内で「人間の判断を仰ぎたい」という要求が無条件・無通知で上書きされ、同じ issue へ実装役が再 dispatch されてしまう**)。「失敗経路(単一の need for human review sink)」の**変則**として、`timeout`/`ambiguous` と同じく PR が実在しないため次のとおり扱う: **ラベル付与は行わない**(`gh pr edit <n> --add-label` の対象となる PR 番号が無い)。`PushNotification` のみ行い、通知本文には「主観的エスカレーション」の 1 語と `reason` を含める(例: 「issue #<N> の実装役 dispatch が主観的エスカレーションを返した(PR 未作成・委譲先の自己申告: `<reason>`)」。sink 共通手続き手順 2 の通知例も参照)。
+   - `subjective_escalate`(issue #31・手順 3 で解決済み)→ route=sink。`ledger_write` は null(進める PR が無い)。手順 6 のとおり `<clear_marker>` は渡さない(marker を削除しない) — 代わりに、判定器呼出の直後に「ルーティング判定」節の「`notified` フラグの付与」手続きを実行し、`dispatchMarker` へ `notified: true` を追加する(既存 3 キー(`dispatched_tick`/`deadline_tick`/`retry_count`)は変更せず追加のみ)。**この書込を怠ると(あるいは誤って marker を削除すると)、次 tick の選別 jq(`.dispatchMarker == null` かつ `.pr.number == null`)へ即座に再合致し、締切超過を待たず無条件・無制限に実装役が再 dispatch されてしまう**(marker を削除する誤りでも同じ実害になる — どちらの誤りでも「人間の判断を仰ぎたい」という明示的な意思表示が毎 tick 無視される)。`notified: true` の付与により、次 tick 以降は「notified 済みマーカーの早期スキップ」に該当しこの step は無条件スキップされる(解除は人間が `dispatchMarker` を手動削除するまで行われない — `timeout` と同じ解除手段)。「失敗経路(単一の need for human review sink)」の**変則**として、`timeout`/`ambiguous` と同じく PR が実在しないため次のとおり扱う: **ラベル付与は行わない**(`gh pr edit <n> --add-label` の対象となる PR 番号が無い)。`PushNotification` のみ行い、通知本文には「主観的エスカレーション」の 1 語と `reason` を含める(例: 「issue #<N> の実装役 dispatch が主観的エスカレーションを返した(PR 未作成・委譲先の自己申告: `<reason>`)」。sink 共通手続き手順 2 の通知例も参照)。
 
-8. **orphan 防止は write-early ではなく復旧検索が担う**: 手順 5〜7 の途中で tick が中断しても、次 tick は `pr.number == null` のままなので手順 4 の復旧検索が既存 PR(`Closes #<N>`)を再発見して self-heal する(`ambiguous` / `pr_evidence_pass` / `pr_evidence_fail` / `subjective_escalate` いずれも、手順 7 の原子書込(marker 削除 + (あれば) `ledger_write`)の**前**に tick が中断した場合、marker が残ったままなので二重 dispatch は起きない — これらの outcome は手順 6 のとおり同一の適用手続きに削除を統合しているため、この中断保護は outcome によらず一律に成立する)。だから `pr.number` を先行して書き込む必要はなく、書込は手順 7 のとおり原子的にできる(先行書込 → evidence → 本書込 の 2 段書込は取らない。**`dispatchMarker` 自体は手順 1 で先行して書く点は変わらない** — こちらは `pr.number` ではなく hang 検知専用の別状態であり、この self-heal の議論とは独立)。
+8. **orphan 防止は write-early ではなく復旧検索が担う(marker を永続させる outcome は書込前後を問わず安全)**: `ambiguous` / `pr_evidence_pass` / `pr_evidence_fail` は、手順 7 の原子書込(marker 削除 + (あれば) `ledger_write`)の**前**に tick が中断しても、marker が残ったままなので二重 dispatch は起きない(次 tick は `pr.number == null` のままなので手順 4 の復旧検索が既存 PR(`Closes #<N>`)を再発見して self-heal する)。`subjective_escalate` は手順 6 のとおり marker を削除しない(永続させる)ため、この保護は書込の前後を問わず一律に成立する — 手順 7 の `notified: true` 付与が tick 中断で未完了でも、`dispatchMarker` キー自体は残り続けるため選別 jq(`.dispatchMarker == null`)から除外され続け、二重 dispatch は起きない(次 tick は notified 未付与のまま reconciliation が通常どおり判定し、締切内なら `wait`、締切超過なら `redispatch`/`timeout` へ自然に合流する — 取りこぼしではなく先送り)。だから `pr.number` を先行して書き込む必要はなく、書込は手順 7 のとおり原子的にできる(先行書込 → evidence → 本書込 の 2 段書込は取らない。**`dispatchMarker` 自体は手順 1 で先行して書く点は変わらない** — こちらは `pr.number` ではなく hang 検知専用の別状態であり、この self-heal の議論とは独立)。
 
 ### developer(対応役)
 
@@ -397,7 +418,7 @@ jq -c '[ .steps[]
    >
    > 対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review"}` を JSON で返せ。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。**人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない等)は、代わりに `{escalate_to_human: {reason}}` を返してよい。** 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
-3. **主観的エスカレーションの確認(issue #31・返答検証より先に行う)**: 返答が JSON として解釈でき `escalate_to_human.reason`(空でない文字列)を含む場合 → outcome=**`subjective_escalate`**(判定器は `ledger_write={"pr.status":"need for human review"}`・`route=sink` を返す。手順 5 の evidence gate は行わず、手順 6 の判定器呼び出しへ進む)。`reason` の形式検証は「主観的エスカレーション」節の「最小の形式検証(A案)」を参照 — 形式不正なら `escalate_to_human` を無視し下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
+3. **主観的エスカレーションの確認(issue #31・返答検証より先に行う)**: 検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)。該当すれば outcome=**`subjective_escalate`**(判定器は `ledger_write={"pr.status":"need for human review"}`・`route=sink` を返す。手順 5 の evidence gate は行わず、手順 6 の判定器呼び出しへ進む)。形式不正で `escalate_to_human` を無視した場合は下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
 
 4. **返答検証(越権の無効化)**: `proposed_status` が `"waiting for review"` 以外(特に `"ready for merge"`)でも**無視して先へ進む**(対応役の越権を orchestrator 側で機械的に無効化する — `.harness/CLAUDE.harness.md` の「対応側が `ready for merge` を立てるのは越権(例外なし)」を技術的に担保)。対応役の返答は outcome 解決に使わない — status は evidence gate だけで決まる。
 
@@ -445,7 +466,7 @@ jq -c '[ .steps[]
 **outcome 解決(判定器の reviewer 行に渡すトークンを決める。全 5 outcome を必ず解決する)**: 実装役の復旧検索・対応役の evidence gate と対称に、**reviewer にも「dispatch 結果失敗」分岐を持たせて単一 sink をすり抜けさせない**(「実装役は復旧検索、対応役は evidence gate で dispatch 失敗を捌けるが、reviewer だけ dispatch 結果失敗の分岐が無く単一 sink をすり抜ける」を、この `invalid` 分岐で塞ぐ)。判定順序は次のとおり(上から順に該当する最初の分岐を採用する):
 
 1. **返答が JSON として解釈できない / `escalate` を読めない**(subagent クラッシュ・不正 JSON・個人 skill 欠落で `escalate` を組み立てられない等の **dispatch 結果失敗**)→ outcome=**`invalid`**(判定器は route=sink を返す)。
-2. **(issue #31)返答が JSON として解釈でき `escalate_to_human.reason`(空でない文字列)を含む**(客観的な `escalate` の値に関わらず優先) → outcome=**`subjective_escalate`**。`reason` の形式検証は「主観的エスカレーション」節の「最小の形式検証(A案)」を参照 — 形式不正なら `escalate_to_human` を無視し下記へフォールバックする(tick 報告に 1 行残す)。
+2. **(issue #31)検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)**。該当する場合(客観的な `escalate` の値に関わらず優先) → outcome=**`subjective_escalate`**。形式不正で `escalate_to_human` を無視した場合は下記へフォールバックする(tick 報告に 1 行残す)。
 3. **`escalate == true`**(round/trend 停止条件)→ outcome=**`escalate`**。
 4. **`escalate == false` かつ `has_blocker == false`** → outcome=**`clean_pass`**。
 5. **`escalate == false` かつ `has_blocker == true`** → outcome=**`blockers`**。
@@ -506,9 +527,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
 | P11 | pr reviewer | waiting for review → escalate → **need for human review へ書込済み** | — | 🛑 need for human review 付与 + 通知済み |
 | P10 | pr reviewer | created pr → invalid(dispatch 失敗)→ **書込なし** | — | ⚠️ ラベル付与失敗(手動付与が必要) |
 | P12 | developer(対応役) | completed review → evidence_fail → **書込なし** | ❌ 非 0 | 🛑 need for human review 付与 + 通知済み |
-| P14 | developer(実装役) | ready for implementation → subjective_escalate(issue #31) → **書込なし** | — | 🛑 need for human review 付与 + 通知済み(主観的エスカレーション) |
+| P14 | developer(実装役) | ready for implementation → subjective_escalate(issue #31) → **書込なし(marker 永続 + notified 付与)** | — | 🔔 通知済み(ラベル対象 PR なし・主観的エスカレーション) |
 
-**失敗 sink 列は無条件に「付与 + 通知済み」と書かない**(報告虚偽の防止)。sink 共通手続き手順 1 の `LABEL_OK` と通知の成否を**実際に反映**する: 付与成功時のみ「🛑 need for human review 付与 + 通知済み」、`add-label` 失敗時は「⚠️ ラベル付与失敗(手動付与が必要)」と正直に書く(上表 P10 が失敗例)。
+**失敗 sink 列は無条件に「付与 + 通知済み」と書かない**(報告虚偽の防止)。sink 共通手続き手順 1 の `LABEL_OK` と通知の成否を**実際に反映**する: 付与成功時のみ「🛑 need for human review 付与 + 通知済み」、`add-label` 失敗時は「⚠️ ラベル付与失敗(手動付与が必要)」と正直に書く(上表 P10 が失敗例)。**PR が実在せずラベル付与そのものを行わない変則(`timeout`・実装役 `subjective_escalate`)は、「🛑 付与」/「⚠️ 失敗」のいずれでもなく「🔔 通知済み(ラベル対象 PR なし)」と書く**(上表 P14 が例。この行が「🛑 付与 + 通知済み」になっていると、実際には付与していないラベルを付与済みと報告する虚偽になる)。
 
 ### ⏭️ スキップ(あれば)
 - #M は `need for human review` ラベル付きのため無条件スキップ
@@ -540,6 +561,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
   - **(c) git-status ガードだけが decision script を通らない唯一の失敗経路(設計境界・意図的)**: 他の全失敗面は「ルーティング判定」節の decision script が `route=sink` として決めるが、git-status ガードの drift 検知 → sink だけは script を経由しない。これは意図的である — **git-guard trip は「(role, outcome) に紐づくルーティング判断」ではなく、全ロール横断(cross-cutting)の pre-write 前提チェックであり、その帰結は自明に sink(分岐する判断ロジックが無い)ため decision script の対象外とする**(decision script はルーティング「判断」を集約するものであって、判断の無い自明な guard→sink はその対象ではない、という設計境界)。無理に決定表へ押し込まない。
 - **dispatch 上限 5 件のトレードオフ**: 1 tick で処理しきれない場合は次 tick へ持ち越される(dedup は各ロールの status 遷移が担う)。**「tick 冒頭 reconciliation」の `redispatch` 候補もこの上限の対象**(「選別(jq)」節参照)であり、枠から溢れた候補は marker を書き換えずに持ち越されるため retry_count は消費されない。
 - **ルーティングは tested decision script**: (role, outcome) → (ledger_write, route, label_action) を `scripts/decide-orchestrator-route.py` が決定論的に解決し、`tests/smoke/run-smoke.sh` [8] が全 (role × outcome) 14 行を網羅検証する(reviewer の `invalid` 分岐 / implementer の `timeout` 分岐(issue #26)/ 3 role 共通の `subjective_escalate`(issue #31)を含む)。散文分岐の取りこぼしを構造的に防ぐのが目的で、規則は script が正・prose は「outcome への解決」と「route の実行」だけを持つ。
+- **`dispatchMarker` のライフサイクル(削除 / 永続 / 永続+`notified`)は machine-enforce されていない(既知のギャップ)**: 上記の decision script が検証するのは `(ledger_write, route, label_action)` の 3 つだけで、実装役の各 outcome が marker をどう扱うか(手順 6 の 3 分類)は `DECISION_TABLE` にも `tests/smoke/run-smoke.sh` にも反映されておらず、手順 6 の固定列挙(prose)だけが正である。これは意図的な現状維持であり、次の理由による: (i) `dispatchMarker` は issue #26 の決定により schema 非宣言・transient なフィールドであり、`validate-plan-progress.py` の対象外(marker の**存在確認・妥当性**は `reconcile-dispatch-marker.py` が既に smoke [9] で網羅検証しているが、これは「marker が有効か」の判定であって「outcome ごとにどう処理すべきか」の判定ではない — 後者を machine-enforce するには decision script の出力契約(`ledger_write`/`route`/`label_action`)を拡張する必要があり、これは 1 フィールド追加では済まず、`decide-orchestrator-route.py` の 14 行・smoke [8] の `assert_route` 全件・「ルーティング判定」節の適用手続き・reconciliation の timeout 分岐(現状 decision script を経由しない別経路)を横断する変更になる。(ii) issue #31 は「主観的エスカレーション経路の追加」がスコープであり、marker ライフサイクルの machine-enforce 化はそれ自体別の改善提案として independently 評価すべき設計変更である。手順 6 を固定列挙(性質ベースの一文ではなく `no_pr`/`ambiguous`/`pr_evidence_pass`/`pr_evidence_fail`/`subjective_escalate` の個別列挙 + 新 outcome 追加時の追記指示)に変更したことが、今回のスコープで取れる現実的な緩和策である。**同種の欠落(散文の一般化が実際の分類を誤る)が今後も観測される場合は、decision script の出力契約への `marker_disposition` 相当フィールド追加を検討する。**
 - **issue #26 との共有面(既知の drift リスク)**: `scripts/decide-orchestrator-route.py` の `DECISION_TABLE` と `tests/smoke/run-smoke.sh` [8] は issue #26(dispatch した子の生存監視と失敗の有界化)とも共有ファイルであり、両 issue が独立に `implementer` 行へ新エントリを追加する。詳細と rebase 時の注意点は「主観的エスカレーション(issue #31)」節の「issue #26 との共有面」を参照。
 - **失敗経路は単一 sink に集約(重要)**: 実装役・対応役・reviewer のどの経路でも「前進不能 = need for human review sink 到達」で対称に扱う。reviewer も `escalate`(停止条件)に加え `invalid`(dispatch 結果失敗)を持ち、単一 sink をすり抜けない。個別ロールに独自の失敗処理(片方だけ有界停止・片方は無界ループ)を持たせない。書き込む事実 status だけがトリガーごとに異なる(「失敗経路(単一の need for human review sink)」節の一覧表を参照)。**実装役の `no_pr` はこの対称性の唯一の例外だったが、issue #26(P1 決定)で解消済み**(下記「実装役の `no_pr` の有界化(issue #26)」参照)。
 - **対応役の無作業検知は escalate backstop に委ねる(意図的な既知の限界)**: 対応役だけは dispatch 結果失敗の即時検知分岐を持たない(最後の非対称)。subagent が **無作業/クラッシュでも test が元々緑なら `evidence_pass` → `waiting for review`** へ進む(偽の前進)。実装役(復旧検索)・reviewer(`invalid` 検知)が dispatch 失敗を即座に sink するのに対し、対応役の無作業だけ検知が **~3 round 遅延する**という latency の非対称が残る。ただし finding 未対応なら reviewer が同じ blocker を再検出 → `completed review` へ戻す往復が続き、**escalate backstop(round≥5 / blocker trend)が最終的に人間へ surface する**。これは bounded(`has_blocker=true` 維持で `clean_pass`=不正 merge には至らない)であり、walking skeleton では検知機構を足さず backstop に委ねる(作者の意図的判断)。実害(無作業 dispatch が頻発)が観測されたら follow-up で対応役の作業有無(`# PR Review Worker` コメント / commit の有無)検証を足す(対応役 flow の該当箇所にも同旨を明記済み)。
