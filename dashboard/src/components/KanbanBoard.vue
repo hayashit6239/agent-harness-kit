@@ -89,6 +89,43 @@ function columnKey(phase: Phase, col: KanbanColumn): string {
   return `${phase}:${col.kind}:${col.status ?? ''}`;
 }
 
+/*
+ * --- 列の開閉 (issue #34)。「LANE」は横スクロール単位のレーン (`.lane`) と紛らわしいが、
+ * 開閉対象はレーン全体ではなく status 列 (`.column`) 単位とする — 既存の `.column.is-empty`
+ * (空列の自動畳み) が列単位で存在し、その手動版として自然に接続するため。
+ * ---
+ */
+
+/**
+ * 手動畳み状態。key = columnKey (status 由来の安定キー)。value = true で畳み。
+ * columnKey は status 由来で安定しているため、5 秒ポーリングで盤面が再構築されても
+ * 列と開閉状態の対応が壊れない。
+ * 空列 (cards.length === 0) は「開く」操作自体が無意味なので常に自動畳み (`.is-empty`) の対象とし、
+ * この Map の対象外にする (非空列のみ手動開閉)。
+ * リロードをまたぐ永続化 (localStorage 等) は入れず、セッション内保持のみとする —
+ * 5 秒 poll での復元設計や単体テストを誘発する割に、セッション内で畳める価値に対して過剰。
+ */
+const manuallyCollapsed = ref<Map<string, boolean>>(new Map());
+
+function isManuallyCollapsed(phase: Phase, col: KanbanColumn): boolean {
+  return manuallyCollapsed.value.get(columnKey(phase, col)) === true;
+}
+
+/** 表示上の手動畳み判定。空列は `.is-empty` 側の自動畳みが担当するため対象外にする (重複防止) */
+function isCollapsed(phase: Phase, col: KanbanColumn): boolean {
+  if (col.cards.length === 0) return false;
+  return isManuallyCollapsed(phase, col);
+}
+
+/** 空列を開く操作は意味を持たないため手動トグル対象外とする (トグル UI 自体も出さない) */
+function toggleColumn(phase: Phase, col: KanbanColumn): void {
+  if (col.cards.length === 0) return;
+  const key = columnKey(phase, col);
+  const next = new Map(manuallyCollapsed.value);
+  next.set(key, !isManuallyCollapsed(phase, col));
+  manuallyCollapsed.value = next;
+}
+
 const flashing = ref<ReadonlySet<string>>(new Set());
 const flashTimers = new Map<string, number>();
 
@@ -168,13 +205,27 @@ watch(
             :class="[
               `kind-${col.kind}`,
               roleClass(lane.phase, col),
-              { celebrating: col.celebrating, escalating: col.escalating, 'is-empty': col.cards.length === 0 },
+              {
+                celebrating: col.celebrating,
+                escalating: col.escalating,
+                'is-empty': col.cards.length === 0,
+                'is-collapsed': isCollapsed(lane.phase, col),
+              },
             ]"
             :style="{ '--col-i': i }"
           >
             <!-- 移動先列の一拍ハイライト (v-if の出し入れで 1 回だけ光る) -->
             <div v-if="isFlashing(lane.phase, col)" class="flash-overlay" aria-hidden="true"></div>
             <header class="column-head">
+              <!-- 開閉トグル: 空列は自動畳みで固定のため対象外 (col.cards.length > 0 の列にのみ表示) -->
+              <button
+                v-if="col.cards.length > 0"
+                type="button"
+                class="column-toggle"
+                :aria-expanded="!isCollapsed(lane.phase, col)"
+                :aria-label="`${columnLabel(col)} 列を${isCollapsed(lane.phase, col) ? '開く' : '畳む'}`"
+                @click="toggleColumn(lane.phase, col)"
+              >{{ isCollapsed(lane.phase, col) ? '▸' : '▾' }}</button>
               <span class="column-name" :title="columnLabel(col)">
                 <span v-if="col.kind === 'unknown'" title="schema 語彙にない status">⚠</span>
                 <span v-if="col.escalating">🚨</span>
@@ -332,9 +383,14 @@ watch(
    * 以前のように各列へ calc(100vh - Npx) を二重適用しない (2 レーン分の二重スクロールを解消)。
    * 下限は旧固定値 264px を min-height として維持し極小化を防ぐ。上限は設けない。
    * リサイズは root の 100vh 再評価だけで追従するため JS 再計算は不要。
+   *
+   * 幅: 下限 158px を保ちつつレーンの余剰幅へ grow する (issue #34)。
+   * `.columns { min-width: max-content }` は維持するため、全列が下限幅で収まらない場合は
+   * `.columns` が利用可能幅を超えて溢れ `.lane-scroll` の横スクロールが発動する
+   * (余剰があるときは grow・無いときは横スクロール、の 2 挙動が同一 CSS で両立する)。
    */
   position: relative;
-  flex: 0 0 158px;
+  flex: 1 1 158px;
   width: 158px;
   display: flex;
   flex-direction: column;
@@ -398,13 +454,20 @@ watch(
  * 空列は細いレールに畳む (ラベル縦書き) — 密度で「今どこが熱いか」を見せる。
  * 畳むのは幅のみ (issue #24 項目 3・決定事項): 高さは .column の height を上書きしないため
  * 画面いっぱいのまま伸びる。幅の畳みと高さの伸長は独立した挙動とする。
+ *
+ * 手動畳み (.is-collapsed・issue #34 レイヤ2) は非空列を .is-empty と同じ見た目 (46px 縦ラベル
+ * レール) に畳む機能で、flex-basis の切替だけでは縦書きラベル・カード非表示は再現できないため
+ * 上記の子セレクタ群を共有する。
+ * どちらも grow 対象外に固定する (`flex-grow:0`。列幅の grow から除外し畳んだ幅を保つ)。
  */
-.column.is-empty {
-  flex-basis: 46px;
+.column.is-empty,
+.column.is-collapsed {
+  flex: 0 0 46px;
   width: 46px;
 }
 
-.column.is-empty .column-head {
+.column.is-empty .column-head,
+.column.is-collapsed .column-head {
   flex-direction: column;
   align-items: center;
   gap: 8px;
@@ -413,7 +476,8 @@ watch(
   padding: 10px 4px;
 }
 
-.column.is-empty .column-name {
+.column.is-empty .column-name,
+.column.is-collapsed .column-name {
   writing-mode: vertical-rl;
   overflow-wrap: normal;
   white-space: nowrap;
@@ -423,13 +487,39 @@ watch(
   overflow: hidden;
 }
 
-.column.is-empty .count {
+.column.is-empty .count,
+.column.is-collapsed .count {
   margin-left: 0;
 }
 
 .column.is-empty .terminal-mark,
-.column.is-empty .cards {
+.column.is-empty .cards,
+.column.is-collapsed .terminal-mark,
+.column.is-collapsed .cards {
   display: none;
+}
+
+/* 開閉トグル (issue #34 レイヤ2)。既存のヘッダ配色 (--role) を踏襲し新規トークンは導入しない */
+.column-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--role);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.column-toggle:focus-visible {
+  outline: 2px solid var(--role);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .column-head {
