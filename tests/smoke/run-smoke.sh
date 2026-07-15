@@ -26,7 +26,11 @@
 #    壊れた・不整合な marker→sink(fail-closed。progressed=true でも優先) の境界、
 #    妥当性検証の各項目 (型崩れ・負値・deadline<dispatched・dispatched>current の未来矛盾)、
 #    不正入力 exit 2 の境界を含む)。加えて選別(jq) 実装役ブロックの dispatchMarker ガード
-#    (PR #35 round1 🔴#1 対応) を、commands/harness-orchestrate.md と同一の jq を直接実行して固定する
+#    (PR #35 round1 🔴#1 対応) を、commands/harness-orchestrate.md と同一の jq を直接実行して固定する。
+#    さらに「ルーティング判定」節の ledger_write 適用手続き(marker 削除 + ledger_write の原子適用)
+#    を同一ロジックで直接実行し、lw=null でも clear_marker=true なら marker 単独削除される
+#    (PR #35 round3 🔴#1 対応)・lw 非 null 時の原子適用(round2 🔴#2 回帰確認)・
+#    clear_marker 省略時は marker 不変・lw=null かつ clear_marker 省略時は no-op、の 4 ケースを固定する
 # 10. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
 #    カバーされていることも検査)
@@ -784,6 +788,97 @@ SELECT_IMPLEMENTER_WANT='[{"id":"X1","issueNumber":1}]'
 [ "$SELECT_IMPLEMENTER_GOT" = "$SELECT_IMPLEMENTER_WANT" ] \
   || fail "選別(jq) 実装役: dispatchMarker が残る step (X2) が候補から除外されず二重 dispatch ガードが機能していない (got: $SELECT_IMPLEMENTER_GOT / want: $SELECT_IMPLEMENTER_WANT)"
 echo "[9/12] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外)"
+
+# ledger_write 適用手続き(「ルーティング判定」節)の直接検証 (PR #35 round3 🔴#1/#2 regression guard)。
+# commands/harness-orchestrate.md の同手続きと同一のロジックをここで直接実行し、次を固定する:
+#   (i)  lw=null + clear_marker=true でも dispatchMarker が削除される (round3 🔴#1: 旧コードは
+#        `if lw is not None:` の外側に marker 削除が無く、ledger_write=null の ambiguous outcome
+#        では永久に marker が残っていた)
+#   (ii) lw が非 null のときは ledger_write の全キーと marker 削除が同一書込で適用される
+#        (round2 🔴#2 の原子性が壊れていないことの回帰確認)
+#   (iii) clear_marker が false/省略なら marker に触れない (対応役・reviewer 等 通常経路の回帰確認)
+#   (iv) lw=null かつ clear_marker=false/省略ならファイルへ一切書き込まない (no-op の確認)
+APPLY_LW() {
+  # $1=plan_json_path $2=step_id $3=route_json $4=pr_number $5=clear_marker(省略可・set -u 対応で既定空文字)
+  python3 - "$1" "$2" "$3" "$4" "${5:-}" <<'PY'
+import datetime, json, os, sys
+argv = sys.argv[1:]
+if len(argv) > 5:
+    print("::error:: too many args", file=sys.stderr)
+    sys.exit(2)
+argv = argv + ["false"] * (5 - len(argv))
+plan_path, step_id, route_json, pr_number, clear_marker = argv[:5]
+lw = json.loads(route_json)["ledger_write"]
+if lw is not None or clear_marker == "true":
+    with open(plan_path, encoding="utf-8") as f:
+        plan = json.load(f)
+    step = next(s for s in plan["steps"] if s["id"] == step_id)
+    if lw is not None:
+        for key, val in lw.items():
+            section, field = key.split(".", 1)
+            if key == "pr.number" and val is True:
+                val = int(pr_number)
+            step[section][field] = val
+    if clear_marker == "true":
+        step.pop("dispatchMarker", None)
+    plan["updatedAt"] = datetime.date.today().isoformat()
+    with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(plan, f, ensure_ascii=False, indent=2)
+    os.replace(plan_path + ".tmp", plan_path)
+PY
+}
+
+LW_PLAN="$TMP/lw-apply-plan.json"
+
+mk_lw_fixture() {
+  # marker 付きの単一 step を持つ最小台帳を作る
+  printf '%s' '{"steps":[{"id":"S1","issue":{"status":"ready for implementation","number":9},"pr":{"number":null,"githubState":null,"status":null},"dispatchMarker":{"dispatched_tick":1,"deadline_tick":3,"retry_count":0}}]}' \
+    > "$LW_PLAN"
+}
+
+# (i) lw=null + clear_marker=true -> marker だけ削除される (round3 🔴#1 の regression guard)
+mk_lw_fixture
+APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":null}' "" "true"
+python3 - "$LW_PLAN" <<'PY' || fail "(i) lw=null+clear_marker=true: marker 削除に失敗した"
+import json, sys
+plan = json.load(open(sys.argv[1], encoding="utf-8"))
+step = plan["steps"][0]
+assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
+assert step["pr"]["number"] is None, "pr.number が意図せず書き換わった"
+PY
+echo "[9/12] ledger_write 適用 (i) lw=null + clear_marker=true -> marker 単独削除 OK (round3 🔴#1)"
+
+# (ii) lw 非 null + clear_marker=true -> ledger_write の全キーと marker 削除が同一書込で適用される
+mk_lw_fixture
+APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":{"pr.number":true,"pr.githubState":"open","pr.status":"created pr"}}' "42" "true"
+python3 - "$LW_PLAN" <<'PY' || fail "(ii) lw 非 null + clear_marker=true: 原子適用に失敗した"
+import json, sys
+plan = json.load(open(sys.argv[1], encoding="utf-8"))
+step = plan["steps"][0]
+assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
+assert step["pr"] == {"number": 42, "githubState": "open", "status": "created pr"}, f"pr フィールドが期待と不一致: {step['pr']}"
+PY
+echo "[9/12] ledger_write 適用 (ii) lw 非 null + clear_marker=true -> ledger_write と marker 削除の原子適用 OK (round2 🔴#2 回帰確認)"
+
+# (iii) clear_marker=false(省略) -> marker には触れない (通常の対応役/reviewer 経路)
+mk_lw_fixture
+APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":{"pr.status":"waiting for review"}}' ""
+python3 - "$LW_PLAN" <<'PY' || fail "(iii) clear_marker 省略: marker が意図せず変化した"
+import json, sys
+plan = json.load(open(sys.argv[1], encoding="utf-8"))
+step = plan["steps"][0]
+assert step.get("dispatchMarker") == {"dispatched_tick": 1, "deadline_tick": 3, "retry_count": 0}, f"dispatchMarker が変化した: {step.get('dispatchMarker')}"
+assert step["pr"]["status"] == "waiting for review", f"pr.status が書かれていない: {step['pr']}"
+PY
+echo "[9/12] ledger_write 適用 (iii) clear_marker 省略 -> marker 不変 OK"
+
+# (iv) lw=null かつ clear_marker=false(省略) -> ファイルへ一切書き込まない (no_pr 経路相当の no-op)
+mk_lw_fixture
+BEFORE_HASH="$(shasum -a 256 "$LW_PLAN" | cut -d' ' -f1)"
+APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":null}' ""
+AFTER_HASH="$(shasum -a 256 "$LW_PLAN" | cut -d' ' -f1)"
+[ "$BEFORE_HASH" = "$AFTER_HASH" ] || fail "(iv) lw=null+clear_marker=false: no-op のはずがファイルが変化した"
+echo "[9/12] ledger_write 適用 (iv) lw=null + clear_marker 省略 -> no-op OK"
 
 # --- 10. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ は複製)
