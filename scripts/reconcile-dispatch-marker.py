@@ -83,7 +83,7 @@ def _is_valid_int(v):
     """bool を除く整数かどうかを判定する (True/False の混入は整数として扱わない)。
     require_int() (入力エラーで exit) と marker_is_valid() (判定結果として False を返す) の
     両方が同じ型検査条件を必要とするため、条件式そのものをここへ集約する
-    (round1 🟡#3 対応: 同一ファイル内での重複を解消)。"""
+    (同一ファイル内での重複を解消)。"""
     return isinstance(v, int) and not isinstance(v, bool)
 
 

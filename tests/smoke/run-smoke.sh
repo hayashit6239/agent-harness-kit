@@ -26,11 +26,11 @@
 #    壊れた・不整合な marker→sink(fail-closed。progressed=true でも優先) の境界、
 #    妥当性検証の各項目 (型崩れ・負値・deadline<dispatched・dispatched>current の未来矛盾)、
 #    不正入力 exit 2 の境界を含む)。加えて選別(jq) 実装役ブロックの dispatchMarker ガード
-#    (PR #35 round1 🔴#1 対応) を、commands/harness-orchestrate.md と同一の jq を直接実行して固定する。
+#    を、commands/harness-orchestrate.md と同一の jq を直接実行して固定する。
 #    さらに「ルーティング判定」節の ledger_write 適用手続き(marker 削除 + ledger_write の原子適用)
-#    を同一ロジックで直接実行し、lw=null でも clear_marker=true なら marker 単独削除される
-#    (PR #35 round3 🔴#1 対応)・lw 非 null 時の原子適用(round2 🔴#2 回帰確認)・
-#    clear_marker 省略時は marker 不変・lw=null かつ clear_marker 省略時は no-op、の 4 ケースを固定する
+#    を同一ロジックで直接実行し、lw=null でも clear_marker=true なら marker 単独削除される・
+#    lw 非 null 時の原子適用・clear_marker 省略時は marker 不変・lw=null かつ clear_marker 省略時は
+#    no-op、の 4 ケースを固定する
 # 10. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
 #    カバーされていることも検査)
@@ -767,12 +767,11 @@ printf '%s' '["not","an","object"]' | python3 "$RECONCILE" >/dev/null 2>&1 || re
 [ "$recon_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $recon_rc"
 echo "[9/12] reconcile-dispatch-marker 不正入力 exit 2 境界 OK"
 
-# 選別(jq) 実装役の dispatchMarker ガード (PR #35 round1 🔴#1 対応)。
+# 選別(jq) 実装役の dispatchMarker ガード。
 # commands/harness-orchestrate.md 選別(jq) 実装役ブロックと同一の jq をここで直接実行し、
 # `dispatchMarker` が残っている step (wait 決着で締切未到達、または redispatch が同 tick 内で
 # 再試行して再び marker が残った場合) が候補から除外されることを固定する。このガードが無いと
-# issue.status/pr.number が不変のまま選別に再度乗り、同一 issue へ二重 dispatch されうる
-# (round1 🔴#1 の要点)。
+# issue.status/pr.number が不変のまま選別に再度乗り、同一 issue へ二重 dispatch されうる。
 SELECT_IMPLEMENTER_JQ='[ .steps[]
   | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
   | {id, issueNumber: .issue.number} ]'
@@ -789,13 +788,13 @@ SELECT_IMPLEMENTER_WANT='[{"id":"X1","issueNumber":1}]'
   || fail "選別(jq) 実装役: dispatchMarker が残る step (X2) が候補から除外されず二重 dispatch ガードが機能していない (got: $SELECT_IMPLEMENTER_GOT / want: $SELECT_IMPLEMENTER_WANT)"
 echo "[9/12] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外)"
 
-# ledger_write 適用手続き(「ルーティング判定」節)の直接検証 (PR #35 round3 🔴#1/#2 regression guard)。
+# ledger_write 適用手続き(「ルーティング判定」節)の直接検証。
 # commands/harness-orchestrate.md の同手続きと同一のロジックをここで直接実行し、次を固定する:
-#   (i)  lw=null + clear_marker=true でも dispatchMarker が削除される (round3 🔴#1: 旧コードは
+#   (i)  lw=null + clear_marker=true でも dispatchMarker が削除される (旧コードは
 #        `if lw is not None:` の外側に marker 削除が無く、ledger_write=null の ambiguous outcome
 #        では永久に marker が残っていた)
 #   (ii) lw が非 null のときは ledger_write の全キーと marker 削除が同一書込で適用される
-#        (round2 🔴#2 の原子性が壊れていないことの回帰確認)
+#        (原子性の確認)
 #   (iii) clear_marker が false/省略なら marker に触れない (対応役・reviewer 等 通常経路の回帰確認)
 #   (iv) lw=null かつ clear_marker=false/省略ならファイルへ一切書き込まない (no-op の確認)
 APPLY_LW() {
@@ -836,7 +835,7 @@ mk_lw_fixture() {
     > "$LW_PLAN"
 }
 
-# (i) lw=null + clear_marker=true -> marker だけ削除される (round3 🔴#1 の regression guard)
+# (i) lw=null + clear_marker=true -> marker だけ削除される
 mk_lw_fixture
 APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":null}' "" "true"
 python3 - "$LW_PLAN" <<'PY' || fail "(i) lw=null+clear_marker=true: marker 削除に失敗した"
@@ -846,7 +845,7 @@ step = plan["steps"][0]
 assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
 assert step["pr"]["number"] is None, "pr.number が意図せず書き換わった"
 PY
-echo "[9/12] ledger_write 適用 (i) lw=null + clear_marker=true -> marker 単独削除 OK (round3 🔴#1)"
+echo "[9/12] ledger_write 適用 (i) lw=null + clear_marker=true -> marker 単独削除 OK"
 
 # (ii) lw 非 null + clear_marker=true -> ledger_write の全キーと marker 削除が同一書込で適用される
 mk_lw_fixture
@@ -858,7 +857,7 @@ step = plan["steps"][0]
 assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
 assert step["pr"] == {"number": 42, "githubState": "open", "status": "created pr"}, f"pr フィールドが期待と不一致: {step['pr']}"
 PY
-echo "[9/12] ledger_write 適用 (ii) lw 非 null + clear_marker=true -> ledger_write と marker 削除の原子適用 OK (round2 🔴#2 回帰確認)"
+echo "[9/12] ledger_write 適用 (ii) lw 非 null + clear_marker=true -> ledger_write と marker 削除の原子適用 OK"
 
 # (iii) clear_marker=false(省略) -> marker には触れない (通常の対応役/reviewer 経路)
 mk_lw_fixture
