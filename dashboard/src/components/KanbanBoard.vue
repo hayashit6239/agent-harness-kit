@@ -101,7 +101,9 @@ function columnKey(phase: Phase, col: KanbanColumn): string {
  * columnKey は status 由来で安定しているため、5 秒ポーリングで盤面が再構築されても
  * 列と開閉状態の対応が壊れない。
  * 空列 (cards.length === 0) は「開く」操作自体が無意味なので常に自動畳み (`.is-empty`) の対象とし、
- * この Map の対象外にする (非空列のみ手動開閉)。
+ * この Map の対象外にする (非空列のみ手動開閉)。列が空になった時点で該当キーは
+ * watch(kanban, ...) 内で破棄する (下記) — 破棄しないと、後から再度カードが入って
+ * 非空に戻った際、ユーザー操作なしで畳まれた状態が復活してしまう (手動畳みの意図と矛盾する)。
  * リロードをまたぐ永続化 (localStorage 等) は入れず、セッション内保持のみとする —
  * 5 秒 poll での復元設計や単体テストを誘発する割に、セッション内で畳める価値に対して過剰。
  */
@@ -121,9 +123,9 @@ function isCollapsed(phase: Phase, col: KanbanColumn): boolean {
 function toggleColumn(phase: Phase, col: KanbanColumn): void {
   if (col.cards.length === 0) return;
   const key = columnKey(phase, col);
-  const next = new Map(manuallyCollapsed.value);
-  next.set(key, !isManuallyCollapsed(phase, col));
-  manuallyCollapsed.value = next;
+  // ref<Map> は Vue3 でも Map ごと reactive 化されるため、.set() の直接 mutate で
+  // リアクティビティが効く (コピー→再代入は不要)
+  manuallyCollapsed.value.set(key, !isManuallyCollapsed(phase, col));
 }
 
 const flashing = ref<ReadonlySet<string>>(new Set());
@@ -144,6 +146,11 @@ watch(
     for (const lane of [view.issue, view.pr]) {
       for (const col of lane.columns) {
         const key = columnKey(lane.phase, col);
+        // 空列化した列の手動畳みキーは破棄する — 残したままだと、後から再度カードが入り
+        // 非空へ戻った際にユーザー操作なしで畳まれた状態が復活してしまう (manuallyCollapsed 側コメント参照)
+        if (col.cards.length === 0 && manuallyCollapsed.value.has(key)) {
+          manuallyCollapsed.value.delete(key);
+        }
         // card.key で同定 (stepId だと重複 id 台帳で対応表が上書きされ移動検出が欠ける)
         for (const card of col.cards) next.set(`${lane.phase}:${card.key}`, key);
       }
@@ -401,7 +408,7 @@ watch(
   /* カードが溢れたら列内の縦スクロールで見る (元の設計方針は変わらず、高さの基準だけ変更) */
   height: 100%;
   min-height: 264px;
-  transition: flex-basis 0.35s ease, width 0.35s ease;
+  transition: flex-basis 0.35s ease, width 0.35s ease, flex-grow 0.35s ease;
   /* 初回ロードの時差表示 (1 回だけ。以後は要素が保持されるので再発火しない) */
   animation: col-intro 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
   animation-delay: calc((var(--lane-i, 0) * 5 + var(--col-i, 0)) * 45ms);
