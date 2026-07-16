@@ -38,8 +38,10 @@
 # 10. kit 自身の checkout (.harness/ がある場合) なら templates と複製の diff が空
 #    (templates/ の全ファイルが隠しファイル込み (dotglob) でペア列挙 + 既知除外で
 #    カバーされていることも検査)
-# 11. report-ledger-status.sh (台帳検証の自己申告 script・#2/#7 で commands/*.md から抽出) の
-#    bash -n 構文チェック (shellcheck があれば追加)。ネットワーク post は smoke 対象外 (手動確認)
+# 11. commands/*.md から抽出した共通 script 群 (report-ledger-status.sh: 台帳検証の自己申告・
+#    #2/#7 で抽出 / run-orchestrator-evidence-gate.sh: evidence gate の worktree 手続き・
+#    issue #38 で dedup 抽出) の bash -n 構文チェック (shellcheck があれば追加)。ネットワーク呼出
+#    (gh api / gh pr view / git fetch) を伴う実処理は smoke 対象外 (手動確認)
 # 12. detect-dispatch-collision (実装役 dispatch 候補のファイル衝突検知・issue #37) の単体判定が
 #    期待通り (衝突なし / 全件衝突 / 部分衝突(推移閉包) / 独立した複数組の衝突 /
 #    Implementation Scope 欠落(files 空配列)時の fail-closed / 候補 0 件 / 単一候補 の境界、
@@ -1014,19 +1016,30 @@ else
   echo "[10/13] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi
 
-# --- 11. report-ledger-status.sh (台帳検証の自己申告) の構文チェック -----------
-# commands/*.md から複製削除し単一 script へ抽出した Statuses 自己申告ロジック (#2/#7 対応)。
-# ネットワーク post (gh api) は smoke 対象外 (手動確認) のため、ここでは bash -n の構文チェックのみ
-# 行う (shellcheck があれば追加で静的検査)。この script は templates/ 複製対象ではないので
-# section 9 の COPY_PAIRS には含めない。
-REPORT_SH="$ROOT/scripts/report-ledger-status.sh"
-[ -f "$REPORT_SH" ] || fail "report-ledger-status.sh が見つからない: $REPORT_SH"
-bash -n "$REPORT_SH" || fail "report-ledger-status.sh の bash -n 構文チェックに失敗した"
+# --- 11. commands/*.md から抽出した共通 script 群の構文チェック -----------
+# report-ledger-status.sh: commands/*.md から複製削除し単一 script へ抽出した Statuses 自己申告
+# ロジック (#2/#7 対応)。
+# run-orchestrator-evidence-gate.sh: commands/harness-orchestrate.md「developer(実装役)」/
+# 「developer(対応役)」の重複した evidence gate worktree 手続きを dedup した script (issue #38)。
+# ネットワーク呼出 (gh api / gh pr view / git fetch) を伴う実処理は smoke 対象外 (手動確認) のため、
+# ここでは bash -n の構文チェックのみ行う (shellcheck があれば追加で静的検査)。これらの script は
+# templates/ 複製対象ではないので section 9 の COPY_PAIRS には含めない。
+EXTRACTED_SCRIPTS=(
+  "scripts/report-ledger-status.sh"
+  "scripts/run-orchestrator-evidence-gate.sh"
+)
+for rel in "${EXTRACTED_SCRIPTS[@]}"; do
+  sh_path="$ROOT/$rel"
+  [ -f "$sh_path" ] || fail "$rel が見つからない: $sh_path"
+  bash -n "$sh_path" || fail "$rel の bash -n 構文チェックに失敗した"
+  if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck "$sh_path" || fail "$rel の shellcheck に失敗した"
+  fi
+done
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck "$REPORT_SH" || fail "report-ledger-status.sh の shellcheck に失敗した"
-  echo "[11/13] report-ledger-status.sh bash -n + shellcheck OK"
+  echo "[11/13] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n + shellcheck OK"
 else
-  echo "[11/13] report-ledger-status.sh bash -n OK (shellcheck 未導入のため skip)"
+  echo "[11/13] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n OK (shellcheck 未導入のため skip)"
 fi
 
 # --- 12. detect-dispatch-collision (実装役 dispatch 候補のファイル衝突検知・issue #37) --------

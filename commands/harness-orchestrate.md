@@ -370,9 +370,9 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 
 1. **in-flight マーカーを書く**(dispatch 直前・「tick 冒頭 reconciliation」節参照): 対象 step へ `{"dispatched_tick": $TICK, "deadline_tick": $TICK + K, "retry_count": <0 か reconciliation から引き継いだ値>}` を書いてから手順 2 の dispatch を行う(dispatch call 自体がセッションを止める真の hang でも、次 tick(人間がセッションを再起動した後)がこのマーカーを見て締切超過を検知できるようにするため)。この書込は「単一書込」節の git-status ガードにとっても orchestrator 自身の正当な書込であり、**PRE はこの書込が完了した直後・手順 2 の直前に再計測する**(「単一書込」節「PRE 計測タイミングの明確化」参照)。
 
-2. **dispatch**(subagent には `Read, Skill, Bash, Grep, Glob` のみ渡す。`Write` は渡さない)し、返答から `pr_number` の取得を試みる(git-status ガードの PRE はここ、dispatch 直前に控える):
+2. **dispatch**(subagent には `Read, Skill, Bash, Grep, Glob` のみ渡す。`Write` は渡さない)し、返答から `pr_number` の取得を試みる(git-status ガードの PRE はここ、dispatch 直前に控える)。**dispatch prompt 本文は `commands/harness-dispatch-implementer.md` へ外出し済み**(issue #38・毎 tick の実効トークン削減。pr reviewer 節が `commands/harness-review-pr.md` を参照するのと同型)。この参照ファイルは **dispatch する subagent 自身が(自分の Read ツールで)読む** — orchestrator 自身は読まない。したがって実装役 dispatch が 0 件の tick では、orchestrator はもとより誰もこのファイルを読まない(DoD (ii) の分岐はこの構造そのもので満たされる。「if 分岐」を prose に追加で持つ必要はない):
 
-   > 「**★最重要★ 手順を読む前に頭に入れておくこと(issue #37)**: (1) 作業中に `/code-review` 等が内部で finder / verifier を fan-out する場面に出会ったら `subagent_type: "general-purpose"` で起動させよ(`fork` を使わない。fork は呼出元の会話文脈を丸ごと継承し、狭い directive を無視して呼出元の最上位タスクを再実行する不具合が実測されている。文脈は各 subagent に自己完結する形で渡す)。(2) `gh auth switch` を実行するな(active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる)。(3) 観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。 --- 対象 issue #<N> の本文(Problem/Context/Alternatives/Implementation Scope/DoD)を `gh issue view <N>` で Read せよ。次に `creating-git-worktrees` skill を Skill ツールで起動し、その手順に従って worktree を作成せよ。issue の Implementation Scope に従って実装せよ。実装後、`creating-gh-prs` skill を Skill ツールで起動し、その手順に従って PR を作成せよ(base は main、`Closes #<N>` を本文に含める)。最後に `{pr_number, proposed_status}`(`proposed_status` は通常 `"created pr"`)を JSON で返せ。**人間の判断が必要と感じた場合(実装方針が確定できない・issue の指示が矛盾する等)は、PR を作らずに代わりに `{escalate_to_human: {reason}}` を返してよい(両方を返す必要がある状況は無い — issue #31・v1 は「完了 or 主観エスカレーション」の二択)。** 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
+   > 「`commands/harness-dispatch-implementer.md` を Read し、そこに書かれた指示をそのまま実行せよ(対象 issue は #<N>)。手順本体は転写しない — 必ずファイルを Read してから実行すること。」
 
 3. **主観的エスカレーションの確認(issue #31・pr_number 解決より先に行う)**: 検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)。該当すれば outcome=**`subjective_escalate`**(判定器は `ledger_write=None`・`route=sink` を返す。手順 4〜5 の pr_number 解決・evidence gate は行わず、手順 7 の判定器呼び出しへ進む)。形式不正で `escalate_to_human` を無視した場合は下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
 
@@ -395,41 +395,13 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
      - **複数件** → 曖昧(同一 issue を Closes する open PR が 2 本以上)。outcome=**`ambiguous`**(判定器は route=sink・書込なし。誤った番号を台帳に書かず人間が正しい PR を確定する)。
      - **1 件** → その番号を `pr_number` として採用し、手順 5 へ。
 
-5. **evidence gate**(`pr_number` 確定後・書込より前に実行)。**subagent が dispatch 中に作った worktree は削除済みの可能性があり参照できないため、orchestrator 自身が独立して PR の head ブランチを取得し専用の一時 worktree を作って実行する**(`commands/harness-review-pr.md` 手順 4 の per-PR worktree パターンと同じ)。**`git worktree add` の exit code を必ず確認する** — 直前 tick が `git worktree remove` の前に中断していると同一パスに古い worktree が残り、`add` が exit 128(`... already exists`)になる。exit code を見ずに進むと残骸(古いコード)に対して evidence gate が走り、現在の PR head を黙って検証しなくなる。**worktree は成否に関わらず必ず後始末する**(`EVIDENCE_EXIT` の成否に関わらず末尾で `git worktree remove --force` し、worktree を残さない):
+5. **evidence gate**(`pr_number` 確定後・書込より前に実行)。**subagent が dispatch 中に作った worktree は削除済みの可能性があり参照できないため、orchestrator 自身が独立して PR の head ブランチを取得し専用の一時 worktree を作って実行する**(`commands/harness-review-pr.md` 手順 4 の per-PR worktree パターンと同じ)。worktree の作成・残骸掃除(`git worktree add` の exit code 確認 + remove/prune/再 add のフォールバック)・実行の手続きは **`scripts/run-orchestrator-evidence-gate.sh` へ抽出済み**(issue #38。対応役 手順 5 と重複していたロジックを dedup した単一の実体):
    ```
-   HEAD_REF=$(gh pr view <pr_number> --repo <repo> --json headRefName --jq .headRefName)
-   git fetch origin "$HEAD_REF" --quiet
-   WORKTREE=".claude/worktrees/orchestrate-pr-<pr_number>"
-
-   # 残骸掃除つき add。直前 tick が remove 前に中断すると同一パスに古い worktree が残り add が失敗する。
-   # 失敗系の期待挙動(閉じた集合):
-   #   (a) 既存が同一 head でも「再利用せず」常に最新 origin/<head> で作り直す(未 fetch の古いコミット・
-   #       dirty な working tree で誤検証しないため、決定論的に「今の head を検証」を保証する)。
-   #   (b) locked/dirty で remove --force 自体が失敗したら掃除不能 → evidence を実行せず fail 扱い(sink)。
-   #   (c) admin record だけ残る(作業ディレクトリが消えている)場合は prune で解消してから再 add。
-   CLEANUP_FAILED=0
-   if ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
-     git worktree remove --force "$WORKTREE"; REMOVE_EXIT=$?   # 残骸削除
-     git worktree prune                                        # (c) admin record 除去
-     if [ "$REMOVE_EXIT" -ne 0 ]; then
-       CLEANUP_FAILED=1                                        # (b) locked/dirty で remove 失敗 → 掃除不能
-     elif ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
-       # 補助フォールバック: add --force で登録済みパスを上書き再利用(最新 head への確実な差し替えは
-       # 保証されないため主手段にせず最後の手段のみ)。それも失敗なら掃除不能。
-       git worktree add --force --detach "$WORKTREE" "origin/$HEAD_REF" || CLEANUP_FAILED=1
-     fi
-   fi
-
-   if [ "$CLEANUP_FAILED" -eq 1 ]; then
-     EVIDENCE_EXIT=1                                           # (b) 掃除失敗 → 検証せず fail(下記 outcome へ)
-   else
-     ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
-     git worktree remove --force "$WORKTREE"                   # 成否に関わらず後片付け
-   fi
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator-evidence-gate.sh" "<repo>" "<pr_number>"
+   EVIDENCE_EXIT=$?
    ```
-   (`$EVIDENCE_DONE` は台帳の `evidence.done`、無ければ `evidence.test` にフォールバック。)
    - **`EVIDENCE_EXIT == 0`** → outcome=**`pr_evidence_pass`**。
-   - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** 残骸掃除失敗 (b))→ outcome=**`pr_evidence_fail`**(route=sink・need for human review。古い残骸で誤って pass/fail を出すより停止が安全)。
+   - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** worktree 残骸掃除失敗)→ outcome=**`pr_evidence_fail`**(route=sink・need for human review。古い残骸で誤って pass/fail を出すより停止が安全)。
 
 6. **`dispatchMarker` の扱い(outcome ごとに 3 通りの決着を固定列挙する)**: 実装役の outcome(`no_pr` / `ambiguous` / `pr_evidence_pass` / `pr_evidence_fail` / `subjective_escalate`。**`timeout` はこの手順(1〜8)を通らず「tick 冒頭 reconciliation」節で独立に解決されるため、ここには含まれない** — 下記の `subjective_escalate` の扱いは timeout の変則をこの手順内で再現したものであり、timeout 自身がこの手順を通るわけではない)は、marker に対して次の 3 通りのいずれかで決着する。**固定列挙にするのは、「進める PR の有無が確定した」という性質だけで一括りにすると、新しい outcome がどちらの型に属すか誤分類しうるためである**(実際に起きた誤り: `subjective_escalate` をこの性質だけで判断して `marker 削除`型に分類したが、正しくは marker を永続させる `timeout` 型だった — 削除すると次 tick の選別 jq(`.dispatchMarker == null` かつ `.pr.number == null`)へ即座に再合致し、締切超過を待たず無条件・無制限に再 dispatch されてしまう)。**実装役に新しい outcome を追加する際は、この 3 分類のどれに属するかを明示的に決めてここへ追記すること**(性質ベースの一文で束ねて済ませない)。
 
@@ -457,47 +429,21 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 
 1. **選別ガードと `reviewLock` 書込**: 選別 jq に `.pr.githubState == "open"` と `.reviewLock == null` を含める(GitHub 上で既に merged/closed の PR を対応役へ回さない・in-flight な step への重複配車を防ぐ。詳細は「reviewer / 対応役の in-flight ロック」節)。dispatch する直前に、対象 step へ同節の書込手続きで `reviewLock` を書く。
 
-2. **dispatch**(ツール制限は実装役と同じ。`gh pr comment` 投稿は許可するが台帳・ラベルには触れさせない):
+2. **dispatch**(ツール制限は実装役と同じ。`gh pr comment` 投稿は許可するが台帳・ラベルには触れさせない)。**dispatch prompt 本文は `commands/harness-dispatch-responder.md` へ外出し済み**(issue #38・毎 tick の実効トークン削減。実装役節と同型)。この参照ファイルは **dispatch する subagent 自身が読む** — orchestrator 自身は読まない。したがって対応役 dispatch が 0 件の tick では、orchestrator はもとより誰もこのファイルを読まない(DoD (ii) の分岐はこの構造そのもので満たされる):
 
-   > 「**★最重要★ 手順を読む前に頭に入れておくこと(issue #37)**: (1) 作業中に内部で subagent を fan-out する場面に出会ったら `subagent_type: "general-purpose"` で起動させよ(`fork` を使わない。文脈は各 subagent に自己完結する形で渡す)。(2) `gh auth switch` を実行するな(active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる)。(3) 観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。 --- PR #<N> に投稿された最新の `# PR Reviewer` コメントを `gh pr view <N> --json comments` で読め。finding ごとに次の 4 分類で判定せよ:
-   > 1. **採用**: 指摘を修正し commit する
-   > 2. **却下**: 却下理由を明記する(誤検知・意図的な設計判断など)
-   > 3. **保留(follow-up)**: merge 後の対応でよいと判断した場合(ただし最終判断は reviewer の責務であり、対応役はここで `ready for merge` を提案してはならない — `.harness/CLAUDE.harness.md` の doer ≠ judge 規約通り)
-   > 4. **保留(解消不可)**: 環境依存の実測値が要る等、対応不能な場合(理由を明記)
-   >
-   > 対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review"}` を JSON で返せ。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。**人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない等)は、代わりに `{escalate_to_human: {reason}}` を返してよい。** 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
+   > 「`commands/harness-dispatch-responder.md` を Read し、そこに書かれた指示をそのまま実行せよ(対象 PR は #<N>)。手順本体は転写しない — 必ずファイルを Read してから実行すること。」
 
 3. **主観的エスカレーションの確認(issue #31・返答検証より先に行う)**: 検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)。該当すれば outcome=**`subjective_escalate`**(判定器は `ledger_write={"pr.status":"need for human review"}`・`route=sink` を返す。手順 5 の evidence gate は行わず、手順 6 の判定器呼び出しへ進む)。形式不正で `escalate_to_human` を無視した場合は下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
 
 4. **返答検証(越権の無効化)**: `proposed_status` が `"waiting for review"` 以外(特に `"ready for merge"`)でも**無視して先へ進む**(対応役の越権を orchestrator 側で機械的に無効化する — `.harness/CLAUDE.harness.md` の「対応側が `ready for merge` を立てるのは越権(例外なし)」を技術的に担保)。対応役の返答は outcome 解決に使わない — status は evidence gate だけで決まる。
 
-5. **evidence gate**(実装役の手順 5 と同じ方法 — **`git worktree add` の exit code 確認 + 残骸掃除(remove --force → prune → 最新 head で再 add)を含む**。対象 PR は既に `pr.number` が確定しており subagent の dispatch 済み worktree の生死に依存しない。**worktree は成否に関わらず必ず後始末する**):
+5. **evidence gate**(実装役の手順 5 と同じ `scripts/run-orchestrator-evidence-gate.sh` を呼ぶ — worktree 作成・残骸掃除ロジックは同スクリプトへ dedup 済み。issue #38。対象 PR は既に `pr.number` が確定しており subagent の dispatch 済み worktree の生死に依存しない):
    ```
-   HEAD_REF=$(gh pr view <n> --repo <repo> --json headRefName --jq .headRefName)
-   git fetch origin "$HEAD_REF" --quiet
-   WORKTREE=".claude/worktrees/orchestrate-pr-<n>"
-
-   # 残骸掃除つき add(実装役 手順 5 と同一ロジック。失敗系 (a)(b)(c) の扱いも同じ)。
-   CLEANUP_FAILED=0
-   if ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
-     git worktree remove --force "$WORKTREE"; REMOVE_EXIT=$?   # 残骸削除
-     git worktree prune                                        # (c) admin record 除去
-     if [ "$REMOVE_EXIT" -ne 0 ]; then
-       CLEANUP_FAILED=1                                        # (b) locked/dirty で remove 失敗 → 掃除不能
-     elif ! git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"; then
-       git worktree add --force --detach "$WORKTREE" "origin/$HEAD_REF" || CLEANUP_FAILED=1  # 補助フォールバック
-     fi
-   fi
-
-   if [ "$CLEANUP_FAILED" -eq 1 ]; then
-     EVIDENCE_EXIT=1                                           # (b) 掃除失敗 → 検証せず fail
-   else
-     ( cd "$WORKTREE" && eval "$EVIDENCE_DONE" ); EVIDENCE_EXIT=$?
-     git worktree remove --force "$WORKTREE"                   # 成否に関わらず後片付け
-   fi
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator-evidence-gate.sh" "<repo>" "<n>"
+   EVIDENCE_EXIT=$?
    ```
    - **`EVIDENCE_EXIT == 0`** → outcome=**`evidence_pass`**。
-   - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** 残骸掃除失敗 (b))→ outcome=**`evidence_fail`**(route=sink。古い残骸で誤検証するより停止が安全)。
+   - **`EVIDENCE_EXIT != 0`**(evidence 非 0 **または** worktree 残骸掃除失敗)→ outcome=**`evidence_fail`**(route=sink。古い残骸で誤検証するより停止が安全)。
 
 6. **判定器を呼び route を実行**(role=responder。**全 outcome で `<clear_marker>`="true" `<marker_field>`="reviewLock" を渡し、手順 1 で書いた `reviewLock` を同一の原子書込で解除する**(issue #37。解除しないと次 tick 以降この step が選別から永久に外れる)):
    - `evidence_pass` → 判定器の `ledger_write`(`pr.status`="waiting for review")を「ルーティング判定」節の **`ledger_write` の適用**手続きで書く(対応役は `pr.status` のみ・`<pr_number>` は空文字でよい。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)・route=normal(次 tick で pr reviewer が再レビュー)。
@@ -639,4 +585,5 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
   - **残る限界(issue #26 v1 のスコープ・意図的)**: (i) dispatch call 自体がセッションを止める**真の hang**は、`Agent` ツールにタイムアウト parameter が無い制約が変わらないため、リアルタイムには検知できない(marker が dispatch 直前に書かれているため、**人間がセッションを再起動した次の tick**で `TICK > deadline_tick` として事後検知される — tick を跨いだ persistent state による回復であり、hang 中のリアルタイム検知ではない)。(ii) `dispatchMarker`(`dispatched_tick`/`deadline_tick`/`retry_count`、および sink 通過後に追加される任意キー `notified`)は transient フィールドで schema に宣言せず、`validate-plan-progress.py` の `--schema`/`--drift`・`tests/smoke/run-smoke.sh` の複製一致検査のいずれも検査対象にしない(壊れた/不整合なマーカーへの fail-closed 判定は `reconcile-dispatch-marker.py` 自身の責務であり、この判定ロジック自体は smoke `[9]` で網羅検証している。`notified` は script が読まない prose 専用の帳簿フィールドであり script の妥当性検査の対象外)。(iii) implementer/`timeout` の sink は PR が存在しないため `need for human review` ラベルを付与できず(`ambiguous` と同じ制約)、「無条件スキップ」は永続する `dispatchMarker` 自体が実装する — 人間の解除手段はラベル解除ではなく `dispatchMarker` の手動削除(「tick 冒頭 reconciliation」節参照)。(iv) `ambiguous` outcome 自体の再 dispatch 有界化は本 issue のスコープ外(手順 7 の原子書込で `dispatchMarker` を削除し、marker による有界化の対象外にする — 挙動は issue #26 以前と変わらない)。(v) K=2 tick / N=2 の値は校正根拠の無い best-effort(loop 間隔が実装役の想定所要より十分長い前提)であり、観測に応じた見直しは follow-up。
 - **sink の出口を人間の意図と結線(issue #12 で実装済み)**: 「失敗経路(単一の need for human review sink)」節の**「sink の出口を人間の意図と結線」**を参照。reviewer/`escalate` は `pr.status="need for human review"` を書いてから sink するため、ラベル解除だけでは再 dispatch されない(status も人為的に戻す必要がある)。この結線の恩恵は `escalate` 経路のみで、`invalid`(dispatch 結果失敗)は引き続き無書込のまま(書ける確定事実が無いため)。
 - **ラベル同期ロジックの複製(drift リスク)**: 本コマンドのラベル同期ロジック(「ルーティング判定」節の `label_action の実行`)は `commands/harness-review-pr.md` 手順 6 の内容を単一書込の都合上複製している。将来どちらかの label 定義(色・説明・名称)を変更する場合は両ファイルを同時に更新すること(自動で同期されない、既知の drift リスク)。
+- **developer(実装役・対応役)の dispatch prompt 外出し(issue #38・毎 tick の実効トークン削減)**: 両ロールの dispatch prompt 本文(旧版で本ファイルへ直接埋め込まれていた `> 「...」` の巨大な引用ブロック)を `commands/harness-dispatch-implementer.md` / `commands/harness-dispatch-responder.md` へ抽出した(pr reviewer 節が `commands/harness-review-pr.md` を参照する既存パターンと同型)。抽出後は複製ではなく単一ソース化(旧「ラベル同期ロジックの複製」のような drift リスクは生じない)。**この参照ファイルは dispatch された subagent 自身が(自分の Read ツールで)読む設計であり、orchestrator 自身は読まない** — したがって当該ロールの dispatch が 0 件の tick では orchestrator はもとより誰もこれらのファイルを読まず、毎 tick の実効トークンが無条件に(dispatch の有無を判定する分岐無しで)削減される。実装役・対応役それぞれの evidence gate worktree 手続き(`git worktree add` の残骸掃除・実行・後始末)も、両ロールでほぼ同一だったロジックを `scripts/run-orchestrator-evidence-gate.sh` へ dedup 抽出した(こちらは全 tick で無条件に本体の行数を下げる。「developer(実装役)」節 手順 5・「developer(対応役)」節 手順 5 参照)。
 - **委譲先の返り値は独立検証できない(正直な明記・意図的に塞がない。issue #37・欠落 7)**: pr reviewer の `has_blocker` / `escalate`、および 3 role 共通の `escalate_to_human` は、いずれも委譲先 subagent の自己申告であり、orchestrator 側で機械的に裏取りする手段が無い。evidence gate(`evidence.done` の独立再実行)は実装役・対応役の**作業結果**を独立検証しているが、reviewer の**判定そのもの**(diff を実際に見て finding を出したか)は検証できない — 捏造する reviewer が `clean_pass` を返せば `ready for merge` まで進んでしまう。緩和策は各ロール委譲プロンプト**冒頭**の「観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け」という L1 文言のみで(「dispatch 先ごとの委譲方式」節 各ロールの冒頭注記を参照)、実測では捏造後に自己訂正が起きたことはあるが、これは検証の代替ではない。`.harness/CLAUDE.harness.md` が明記する「doer ≠ judge の実質はほぼ別セッションの PR reviewer が実際の diff/状態を初見で読むこと単独に依存する」という設計は、その reviewer 自身のレイヤでは担保されないまま残る既知の限界であり、現時点で構造的な解決策は無い(塞げないものを塞いだことにしない)。
