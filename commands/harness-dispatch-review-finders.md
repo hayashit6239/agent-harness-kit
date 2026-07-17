@@ -15,7 +15,7 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
 2. 各 finder への指示に **「`SendMessage` を使うな。結果は最終メッセージとして直接出力せよ」を必ず明示する**(実測で生死を分けた対策 — `SendMessage` で返す finder は宛先解決に失敗して結果を失うが、最終メッセージで直接出力した finder は 100% 到達した)。
 3. `gh auth switch` を実行するな(active アカウントを変えると呼出元の `gh` 操作が壊れる)。
 4. 8 体は角度ごとに担当領域が排他な独立タスクなので、可能な限り 1 メッセージ内で並列起動する(順番に 1 体ずつ起動しない)。
-5. **収集は機械的**(8 角度固定・選択の余地なし)。ここでは判定(severity 付与・CONFIRMED/REFUTED の検証・集計・投稿)を行わない — それは呼出元(pr reviewer)の独立検証の役目であり、finder が担うのは候補の列挙だけ(doer ≠ judge を壊さないための境界)。
+5. **収集は機械的**(8 角度固定・選択の余地なし)。ここでは判定(severity 付与・CONFIRMED/PLAUSIBLE/REFUTED の検証・集計・投稿)を行わない — それは呼出元(pr reviewer)の独立検証の役目であり、finder が担うのは候補の列挙だけ(doer ≠ judge を壊さないための境界)。
 
 ---
 
@@ -23,9 +23,10 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
 
 1. **対象 PR の diff を見られる worktree を用意する**(finder に文脈を自己完結させて渡すため。`.harness/plan-progress.json` には一切触れない):
    ```
-   HEAD_REF=$(gh pr view <N> --repo <repo> --json headRefName --jq .headRefName)
-   BASE_REF=$(gh pr view <N> --repo <repo> --json baseRefName --jq .baseRefName)
-   git fetch origin "$HEAD_REF" --quiet
+   REFS=$(gh pr view <N> --repo <repo> --json headRefName,baseRefName --jq '[.headRefName, .baseRefName] | @tsv')
+   HEAD_REF=$(printf '%s' "$REFS" | cut -f1)
+   BASE_REF=$(printf '%s' "$REFS" | cut -f2)
+   git fetch origin "$HEAD_REF" "$BASE_REF" --quiet
    WORKTREE=".claude/worktrees/review-finders-pr<N>"
    git worktree add --detach "$WORKTREE" "origin/$HEAD_REF"
    ```
@@ -66,4 +67,4 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
    git worktree remove --force "$WORKTREE"
    ```
 
-6. **呼出元へ返す**: 統合ファイルのパス `<OUT_DIR>/findings.json` と、未応答の角度があればその一覧(手順 3)を返す。**findings の中身そのものを呼出元へ再掲しない**(呼出元は必要になったときにファイルを Read する — このファイルの実行者が orchestrator の場合、findings 本文をここで自分の応答に含めて context に載せない)。呼出元(orchestrator または pr reviewer)はこのパスを使って独立検証(severity 付与・CONFIRMED/REFUTED 判定)を行う — **その検証はこのファイルの範囲外**(finder は候補を機械的に集めるだけで判定しない)。
+6. **呼出元へ返す**: 統合ファイルのパス `<OUT_DIR>/findings.json` と、未応答の角度があればその一覧(手順 3)を返す。**findings の中身そのものを呼出元へ再掲しない**(呼出元は必要になったときにファイルを Read する — このファイルの実行者が orchestrator の場合、findings 本文をここで自分の応答に含めて context に載せない)。呼出元(orchestrator または pr reviewer)はこのパスを使って独立検証(候補ごとの CONFIRMED/PLAUSIBLE/REFUTED 判定 + severity 付与。手順は `commands/harness-review-pr.md` 手順 4-b 参照)を行う — **その検証はこのファイルの範囲外**(finder は候補を機械的に集めるだけで判定しない)。
