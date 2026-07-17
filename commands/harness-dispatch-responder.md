@@ -12,6 +12,7 @@ allowed-tools: [Read, Skill, Bash, Grep, Glob]
 1. 作業中に内部で subagent を fan-out する場面に出会ったら `subagent_type: "general-purpose"` で起動させよ(`fork` を使わない。文脈は各 subagent に自己完結する形で渡す)。
 2. `gh auth switch` を実行するな(active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる)。
 3. 観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。
+4. **固定値の DoD を書き換えるな(issue #50 B1)**: 指摘対応の一環で issue/PR の DoD に触れる場合、issue 本文の DoD が具体値(数値・閾値・完全一致文字列)を指定していて、かつ「着手時に確定してよい」旨のマーカー文言(例:「着手時に確定する」)が本文に**無い**なら、その DoD は**固定値**であり書き換え禁止。**達成不能と判断しても書き換えず** `escalate_to_human` を返せ(下記)。マーカーが在る DoD は値を確定してよいが、確定した値と根拠を PR コメントに明記すること(reviewer が独立に妥当性を判定する。issue #50 B2)。
 
 ---
 
@@ -24,6 +25,6 @@ PR #<N> に投稿された最新の `# PR Reviewer` コメントを `gh pr view 
 
 対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review"}` を JSON で返せ。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。
 
-**人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない等)は、代わりに `{escalate_to_human: {reason}}` を返してよい。**
+**人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない・固定値の DoD が達成不能と判断した等)は、代わりに `{escalate_to_human: {reason}}` を返してよい。**
 
 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。
