@@ -291,12 +291,17 @@ def check_schema(errors, data, enums):
 
                 # dependsOn 整合規則 (issue #51・authoring-time の早期検知):
                 # 全要素が実在する step id でなければならない (fail-closed の前段防御。
-                # ここをすり抜けた場合も選別 jq 側が selection-time に fail-closed で未解決扱いする)
+                # ここをすり抜けた場合も選別 jq 側が selection-time に fail-closed で未解決扱いする)。
+                # null は選別 jq が `(.dependsOn // [])` で [] と同一視するため、ここでも [] と同一視する
+                # (PR #57 round 1 レビュー対応: null だけ selection-time と authoring-time で扱いが
+                # 食い違い、jq では無害な台帳を validator --schema が invalid 判定していた不一致を解消)。
                 if "dependsOn" in step:
                     deps = step["dependsOn"]
+                    if deps is None:
+                        deps = []
                     if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
-                        err(errors, f"{where}.dependsOn", f"文字列配列でない ({deps!r})。",
-                            "依存 step の id を文字列配列で指定する")
+                        err(errors, f"{where}.dependsOn", f"文字列配列か null でない ({deps!r})。",
+                            "依存 step の id を文字列配列で指定するか null/未設定にする")
                     else:
                         for dep_id in deps:
                             if dep_id not in step_ids:
