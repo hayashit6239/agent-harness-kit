@@ -1,5 +1,5 @@
 ---
-description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `commands/harness-review-pr.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。
+description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `commands/harness-review-pr.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。
 argument-hint: "[owner/repo] [review-mode]  省略時: CWD の origin から自動判定 / code-review(opt-in: multi-angle)"
 allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 ---
@@ -41,6 +41,8 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   いずれかで逸脱を検知したら(= subagent が dispatch 中に orchestrator の checkout 内の `.harness/` へ意図しない変更を加えた形跡)、その提案を採用せず、当該 step を下記「失敗経路(単一の need for human review sink)」へルーティングする(`git checkout -- .harness/` 等の破壊的な巻き戻しは行わず、状態を報告して人間の判断を待つ)。**このガードの限界(subagent の worktree 編集は見えない=部分的バックストップに過ぎず、主たる防御は「Write を渡さない」ツール制限であること)は「既知の制限・拡張ポイント」節に正直に明記する**。
 
   **PRE 計測タイミングの明確化**: 上記の PRE は「tick 開始時点」を指すのではなく、**「dispatch 直前・orchestrator 自身の直近の書込が完了した直後」**を指す。tick 冒頭の `orchestratorTick` インクリメント(「tick 冒頭 reconciliation」節)や、実装役手順 1 の `dispatchMarker` 書込は、いずれも orchestrator 自身が行う正当な書込であり、**PRE を控えるより前に完了させる**(PRE 計測をこれらの書込の後まで遅らせる、と言い換えてもよい)。この順序を守れば PRE→POST 間に挟まるのは「dispatch 中に subagent が加えた変更」だけになり、tick カウンタや `dispatchMarker` の書込自体を subagent の改変と誤検知することはない。具体的には、実装役の手順としては **手順 1(marker 書込)の直後・手順 2(dispatch)の直前に PRE を再計測する**(tick 冒頭で 1 度だけ控えて使い回さない — 使い回すと手順 1 の marker 書込自体が PRE→POST 間に挟まり、実装役 dispatch の正常系まで含めて毎回誤検知することになる)。
+
+  **同時配車(issue #51)下での一般化(dispatch 単位ではなく「各書込の直前直後」で運用する)**: 「実行ループ(同時配車)」節のとおり同一 tick 内で複数候補の手順 1〜8 が独立に進む場合、PRE/POST ガードは**候補ごとに個別**に運用する。tick 冒頭で 1 度だけ控えた PRE、あるいは他候補向けに控えた PRE を同一 tick 内の複数候補で使い回さない — 使い回すと、後述のとおり台帳書込自体は候補間で逐次実行されるため、**別候補の正当な書込(その候補自身の手順 1 の marker 書込や手順 7 の `ledger_write` 適用)が自分の PRE→POST 間に挟まり、それを subagent の改変と誤検知してしまう**。適用する原則は 1 件処理時と同一(「その候補自身の直前の正当な書込が完了した直後に PRE を控え直す」)であり、これを**候補ごとに個別**に行うだけである: 各候補について、その候補自身の手順 1(marker 書込)が完了した直後にその候補専用の PRE を控え、その候補自身の手順 6/7(marker 削除・`ledger_write` の適用)の直前に POST を照合する。台帳書込そのものを候補間でどう逐次化するかは「実行ループ(同時配車)」節を参照(規則の重複を避けるため、ここでは PRE/POST ガードの運用細則のみを扱う)。
 
 ## 失敗経路(単一の need for human review sink)
 
@@ -351,9 +353,21 @@ REVIEW_MODE="${2:-code-review}"
 # 節が返す `redispatch` 候補(dispatchMarker が既にある既存 in-flight step)。両者を合算した
 # ものが実装役枠の母集団になる(redispatch を合算せず jq 側だけで 5 件上限を
 # 適用すると、redispatch が無制限に別枠で実行されてしまう)。
-jq -c '[ .steps[]
-  | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
-  | {id, issueNumber: .issue.number} ]' "$PLAN"
+#
+# dependsOn ガード(issue #51・スループット): `dependsOn` の全要素が終端(`issue.status ==
+# "closed issue"` の step。PR の有無は問わない — discuss 型 step は PR を持たず直接この状態に
+# 至る)である step だけを候補にする。空配列/欠損は「依存なし」として常に eligible(後方互換・
+# `(.dependsOn // [])` が `[]` になり `all` は空配列に対し恒真)。存在しない step id を指す要素は
+# $terminal 集合に含まれえないため、自動的に fail-closed で未解決として除外される
+# (`.harness/plan-progress.schema.json` の整合規則が authoring-time に同じ違反を検知する
+# 2 段目の安全網 — この jq は selection-time の安全網)。
+jq -c '
+  ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
+  | [ .steps[]
+      | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
+      | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
+      | {id, issueNumber: .issue.number} ]
+' "$PLAN"
 
 # 対応役 dispatch 対象(issue #37: `.reviewLock == null` で in-flight な step を除外。
 # 実装役の `.dispatchMarker == null` ガードと同型 — 無いと重複配車が起きる)
@@ -369,9 +383,9 @@ jq -c '[ .steps[]
   | {id, number: .pr.number} ] | unique_by(.number)' "$PLAN"
 ```
 
-**実装役カテゴリの候補集合は、上記 jq が返す新規 eligible 対象と、「tick 冒頭 reconciliation」節が返す `redispatch` 候補(既存 in-flight step の再試行)を合算したもの**とする。
+**実装役カテゴリの候補集合は、上記 jq が返す新規 eligible 対象と、「tick 冒頭 reconciliation」節が返す `redispatch` 候補(既存 in-flight step の再試行)を合算したもの**とする(dependsOn ガード(issue #51)は上記 jq 自身が新規 eligible 対象に既に適用済み — 依存未解決の候補はここに含まれない。`redispatch` 候補は元々 eligible 判定を経て dispatch 済みだった step の再試行であり、dependsOn ガードを再適用しない)。
 
-**ファイル衝突検知(issue #37・欠落 3)**: 実装役カテゴリの候補が 1 件以上ある場合、各候補の対象 issue の Implementation Scope から対象ファイルを抽出する(バッククォートで囲まれたファイルパスのみを対象ファイルとして収集し、地の文中の通りすがり言及(例:「`decide-orchestrator-route.py` と同型」)は除外する — この抽出規則自体は script が判定しないため prose 側の責務。Implementation Scope の記載が無い/抽出 0 件なら `files: []` とする)。集めた `[{id, files}]` を `scripts/detect-dispatch-collision.py` へ渡す:
+**ファイル衝突検知(issue #37・欠落 3)**: dependsOn ガードとは直交する 2 段目のフィルタ(依存順序ではなくファイル単位の衝突を見る)。実装役カテゴリの候補が 1 件以上ある場合、各候補の対象 issue の Implementation Scope から対象ファイルを抽出する(バッククォートで囲まれたファイルパスのみを対象ファイルとして収集し、地の文中の通りすがり言及(例:「`decide-orchestrator-route.py` と同型」)は除外する — この抽出規則自体は script が判定しないため prose 側の責務。Implementation Scope の記載が無い/抽出 0 件なら `files: []` とする)。集めた `[{id, files}]` を `scripts/detect-dispatch-collision.py` へ渡す:
 ```
 COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/detect-dispatch-collision.py")
 # -> {"groups": [["<id>", ...], ...], "safe": ["<id>", ...]}
@@ -385,6 +399,16 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 各ロールは **dispatch → 状況を outcome トークンに解決 → 判定器(「ルーティング判定」節)→ route / label_action 実行**。dispatch prompt(委譲の中身)は転写せず参照させる方式を維持する。**ルーティング規則は判定器 script が正**なので、各ロール節は「どう outcome に解決するか」だけを書き、書込・sink・ラベルの規則は複製しない。
 
 ### developer(実装役)
+
+**実行ループ(同時配車。issue #51)**: 下記の手順 1〜8 は **1 候補ぶんの outcome 解決を記述している**。「選別(jq)」節の実装役 dispatch 対象(dependsOn ガード通過済みの新規 eligible + `redispatch` 候補、上限 5 件切り詰め後)が 2 件以上ある場合、orchestrator は **同一 tick 内で候補ごとに手順 1〜8 を独立に(並列に)実行する** — 候補を 1 件ずつ逐次処理しない。候補が 1 件以下の tick では従来どおり単体で実行する(挙動不変)。
+
+「同時配車」の定義はこの実行ループの挙動そのものを指す — 選別 jq の出力サイズ(何件 eligible か)と、実行時に何件の `Agent` 呼出を同一 tick で発行するか、の**両方**が揃って初めて成立する。選別だけを直しても実行ループが逐次のままなら同時配車は成立しない。この 2 つの性質は検証手段の性質が異なる:
+- **選別 jq の出力サイズ**: 決定論的な jq の入出力であり、`tests/smoke/run-smoke.sh` で機械検証できる(DoD (ii-a)。「選別(jq) 実装役の dependsOn ガード」ブロック参照)。
+- **実行時の並列 `Agent` 呼出**: orchestrator セッションの実行時ふるまいであり、bash の smoke script では原理的に検証できない(DoD (ii-b)。実運用の `/goal` 実行観測でのみ確認できる — 本 repo が既に「自己申告は便宜シグナル」「reports は best-effort で機械強制されない」と検証手段の限界を正直に書いている前例に倣う)。
+
+**台帳書込(marker 書込・`ledger_write` の適用)は並列化しない(issue #51・PR #57 round 1 レビュー対応)**: 同時配車で並列に実行されるのは手順 2 の `Agent` 呼出(dispatch call = subagent の実行そのもの)だけである。台帳(`.harness/plan-progress.json`)への書込主体は orchestrator という単一プロセスのままであり、書込そのものは本質的に逐次にしかなり得ない。したがって手順 1(in-flight マーカー書込)・手順 6/7(`dispatchMarker` の削除・`ledger_write` の適用)は、複数候補が同一 tick で処理されていても**候補ごとに 1 件ずつ逐次実行し、2 候補分の書込を同時に(重ねて)行わない**。複数候補の `Agent` 呼出が並列に走っている間に subagent の返答が interleave して戻ってきても、ある候補の返答を受けて台帳へ書き込む処理は、別候補の書込処理が進行中であればその完了を待ってから行う(実装上は「1 候補ぶんの書込処理をひとまとめの直列区間として扱い、この区間だけは複数候補間で重ねない」と読み替えてよい — 区間の外側(dispatch call の待ち時間や evidence gate の実行)は引き続き並列でよい)。**PRE/POST ガードをこの逐次書込に沿って候補ごとに個別運用する具体手順は「単一書込」節『PRE 計測タイミングの明確化』の同時配車向け一般化を参照**(規則の重複を避けるため、ここでは繰り返さない)。
+
+これは `.harness/CLAUDE.harness.md`『developer / reviewer は同一マシンの同一ローカル台帳ファイルを共有する。書込主体をモードごとに単一に保つことで、ローカルファイルへの競合書込を避ける』という規約と矛盾しない — 同規約が禁じるのは「複数の書込主体(モード)が同じ台帳へ競合して書くこと」であり、本節が定める「単一の書込主体(orchestrator)の内部で、複数候補ぶんの書込を時間的に直列化する」こととは水準が異なる。書込主体はこの並列化の前後で orchestrator のまま変わらず、並列化されるのは書込そのものではなく dispatch call の実行時間だけである。
 
 **outcome 解決(判定器の implementer 行に渡すトークンを決める)**:
 
@@ -434,7 +458,7 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
    - `pr_evidence_fail`: `<command>`=手順 5 で呼んだ `run-orchestrator-evidence-gate.sh` の呼出文字列 / `<exit_code>`=`$EVIDENCE_EXIT` / `<summary>`=evidence gate 失敗の要約(1 行)。
    - `subjective_escalate`: `<command>`="dispatch 応答の escalate_to_human 検出" / `<exit_code>`=0 / `<summary>`=委譲先が返した `reason` をそのまま。
    `no_pr` / `pr_evidence_pass`(sink でない)は `<command>` を空文字で渡し `observation` を省略する。`timeout` はこの手順を通らない(「tick 冒頭 reconciliation」節で別途解決・後述)。**呼出し自体(heredoc → `OBS_CMD`/`OBS_SUMMARY` → `"$OBS_CMD"`/`"$OBS_SUMMARY"` 展開)は「ルーティング判定」節「呼び方」の共通手続きをそのまま使う(ここでは複製しない)** — `<role>`="implementer"、`<outcome>`=上記で解決した outcome、`<command>/<exit_code>/<summary>` は上記の値を渡す。
-   - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**1 回のローカルファイル書込で書く**(`<pr_number>` に確定番号、`<clear_marker>`="true" を渡す — 手順 6 のとおり `dispatchMarker` の削除もこの同一書込に含める。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)と `dispatchMarker` 削除を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態や、marker だけ消えて `pr.number` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後は「書込方式」節に従いローカルファイル編集のみで完結させ(commit/push しない)、Statuses API 自己申告を行う。
+   - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**1 回のローカルファイル書込で書く**(`<pr_number>` に確定番号、`<clear_marker>`="true" を渡す — 手順 6 のとおり `dispatchMarker` の削除もこの同一書込に含める。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)と `dispatchMarker` 削除を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態や、marker だけ消えて `pr.number` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後、「作業レポートの代筆」節の共通手続きで対象 step の `reports[]` へ 1 件追記する(`author`="main developer (実装役)"・`role`="developer")。続けて「書込方式」節に従いローカルファイル編集のみで完結させ(commit/push しない)、Statuses API 自己申告を行う。
      - `pr_evidence_pass` → route=normal。上記のローカル書込で完了。次 tick で pr reviewer に dispatch される。
      - `pr_evidence_fail` → route=sink。上記のローカル書込を行った**うえで**「失敗経路(単一の need for human review sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。need for human review ラベル付与後は次 tick から無条件スキップされ安全に停止する。
    - `no_pr` → route=skip。書込なし。`dispatchMarker` は手順 6 のとおり残る(次 tick 以降「tick 冒頭 reconciliation」節が締切・リトライを判定する。**issue #26・P1 決定によりもはや無界ではない**)。
@@ -470,15 +494,19 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
    - `evidence_fail` → `ledger_write` は null。**`pr.status` は `completed review` のまま**(事実: 未解決 blocker が残る)。ただし `reviewLock` は解除する必要があるため、同じ適用手続きを `<clear_marker>`="true" `<marker_field>`="reviewLock" で呼ぶ(`ledger_write=null` のため他フィールドは書き換わらない — marker 単独削除)・route=sink。これで対応役も有界停止になり実装役と対称になる — 「evidence が通らないまま `completed review` 固定で毎 tick 再 dispatch → reviewer が選別せず round カウンタが進まず永久に停止しない」旧・無界ループを根絶する。
    - `subjective_escalate`(issue #31・手順 3 で解決済み)→ 判定器の `ledger_write`(`pr.status`="need for human review")を **`ledger_write` の適用**手続きで書く(escalate と同じく書いてから sink)・route=sink。「失敗経路(単一の need for human review sink)」へ(通知本文には「主観的エスカレーション」の 1 語と `reason` を含める)。
 
+   `evidence_pass` / `evidence_fail` はいずれも対応役が実際に作業した事実(採用/却下の判断・修正試行)を伴うため、上記の `ledger_write` 適用の直後に「作業レポートの代筆」節の共通手続きで対象 step の `reports[]` へ 1 件追記する(`author`="main developer (対応役)"・`role`="developer"。`subjective_escalate` は対応未完了のため追記しない)。
+
 **既知の限界(意図的・対応役の無作業検知は escalate backstop に委ねる)**: 対応役は outcome を evidence gate だけで決めるため、dispatch した subagent が **無作業/クラッシュでも test が元々緑なら `evidence_pass` → `waiting for review` へ進む**(偽の前進)。実装役(復旧検索)・reviewer(`invalid` 検知)が dispatch 結果失敗を即座に sink するのに対し、**対応役の無作業だけは即時検知しない**という latency の非対称が残る。ただし finding 未対応なら次 tick で reviewer が同じ blocker を再検出 → `completed review` へ戻す往復が続き、**escalate backstop(round≥5 / blocker trend)が最終的に人間へ surface する**。これは bounded(`has_blocker=true` 維持で `clean_pass`=不正 merge には至らない)であり、walking skeleton では検知機構を足さず backstop に委ねる(作者の意図的判断)。実害(無作業 dispatch が頻発)が観測されたら follow-up で対応役の作業有無(`# PR Review Worker` コメント / commit の有無)検証を足す(「既知の制限・拡張ポイント」節にも同旨を明記)。
 
 ### pr reviewer
 
+**候補収集(review-mode=code-review のときのみ・issue #49・reviewLock 書込より前に行う)**: `$REVIEW_MODE == "code-review"`(既定)の場合、pr reviewer を dispatch する**前**に、**orchestrator 自身**が `commands/harness-dispatch-review-finders.md` を Read し、そこに書かれた指示をそのまま実行する(対象 PR は #<N>、出力先ディレクトリは orchestrator が用意する一時ディレクトリ、effort は `$EFFORT` を目安として渡す)。手順本体は転写しない。この実行により 8 角度 finder が **orchestrator 自身の直接の子**として起動する(pr reviewer の子にしない — これが issue #49 の核心。orchestrator から見た「孫」を構造的に無くす)。finder は各自の findings をファイルへ直接 Write し、orchestrator へは短い確認メッセージしか返さないため、**findings 本文は orchestrator の context に載らない**。収集完了後に返る統合ファイルのパスを `$FINDINGS_PATH` として控える(未応答の角度があれば tick 報告に 1 行残す)。`$REVIEW_MODE == "multi-angle"` のときはこの手順を**行わない**(4-a 経路は本 issue のスコープ外・pr reviewer が引き続き内部で fan-out する現状維持)。
+
 **dispatch 直前の `reviewLock` 書込**: 対象 step へ「reviewer / 対応役の in-flight ロック」節の書込手続きで `reviewLock` を書く(選別 jq は既に `.reviewLock == null` で除外済み)。
 
-対象 PR 番号と `$REVIEW_MODE` を渡し、次を Agent ツールで dispatch する(ツール制限は実装役と同じ。**`gh pr comment` 投稿は許可するが台帳・ラベルには触れさせない**):
+対象 PR 番号と `$REVIEW_MODE`(code-review の場合は加えて `$FINDINGS_PATH`)を渡し、次を Agent ツールで dispatch する(ツール制限は実装役と同じ。**`gh pr comment` 投稿は許可するが台帳・ラベルには触れさせない**):
 
-> 「**★最重要★ 手順を読む前に頭に入れておくこと(issue #37)**: (1) `commands/harness-review-pr.md` 経由で `/code-review`(または `reviewing-multi-angle`)を実行する際、内部の finder / verifier は `subagent_type: "general-purpose"` で起動せよ(`fork` を使うな)。fork は呼出元の会話文脈を丸ごと継承する設計のため、finder が「この角度だけ見ろ」という狭い directive を無視し、継承した文脈から呼出元の最上位タスクを再実行する(別 schema での応答・呼出元が使用中の worktree の無断削除を実測)。`general-purpose` は文脈を継承しないためこの逸脱が起きない。文脈は各 finder / verifier に自己完結する形で渡す(`commands/harness-review-pr.md` 手順 4 直下にも同旨の指定があるが、位置(委譲プロンプト冒頭)が効果を左右するためここでも明示する)。(2) `gh auth switch` を実行するな(active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる)。(3) 観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。 --- `commands/harness-review-pr.md` を Read し、そこに書かれた手順 4 〜 5.6(投稿である手順 5 を含む。5.5/5.6 は投稿より前に計算するが、投稿自体も実行対象に含む。review-mode=`$REVIEW_MODE`、停止条件判定込み)を PR #<N> に対してそのまま実行せよ。手順本体は転写しない — 必ずファイルを Read してから実行すること。判定ロジックは変更しない。手順 6 の台帳書込・ラベル管理・報告(手順 3 のマーカー投稿含む)は行わず、代わりに `{has_blocker, blocker_count, escalate, review_markdown}` を JSON で返せ(`review_markdown` は手順 5 で組み立てたコメント本文。投稿は行ってよい — 投稿そのものは pr reviewer の専権であり本コマンドの触らないものではない)。**レビュー中に人間の判断が必要と感じた場合(判定が付かない・専門知識が必要等)は、加えて `escalate_to_human: {reason}` を返してよい(他フィールドとの共存可 — 客観的な `escalate` とは独立のシグナル)。** 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
+> 「**★最重要★ 手順を読む前に頭に入れておくこと(issue #37・#49)**: (1) `review-mode=multi-angle` の場合、`commands/harness-review-pr.md` 経由で `reviewing-multi-angle` を実行する際、内部の finder / verifier は `subagent_type: "general-purpose"` で起動せよ(`fork` を使うな)。fork は呼出元の会話文脈を丸ごと継承する設計のため、finder が「この角度だけ見ろ」という狭い directive を無視し、継承した文脈から呼出元の最上位タスクを再実行する(別 schema での応答・呼出元が使用中の worktree の無断削除を実測)。`general-purpose` は文脈を継承しないためこの逸脱が起きない。文脈は各 finder / verifier に自己完結する形で渡す。**`review-mode=code-review` の場合、あなた自身は finder を起動しない**(候補は orchestrator が事前に収集済み — 下記参照)。(2) `gh auth switch` を実行するな(active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる)。(3) 観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。 --- `commands/harness-review-pr.md` を Read し、そこに書かれた手順 4 〜 5.6(投稿である手順 5 を含む。5.5/5.6 は投稿より前に計算するが、投稿自体も実行対象に含む。review-mode=`$REVIEW_MODE`、停止条件判定込み)を PR #<N> に対してそのまま実行せよ。**review-mode=code-review の場合、手順 4-b の候補収集済みファイルのパスは `$FINDINGS_PATH` である(このファイルを Read せよ。finder は起動するな)。** 手順本体は転写しない — 必ずファイルを Read してから実行すること。判定ロジックは変更しない。手順 6 の台帳書込・ラベル管理・報告(手順 3 のマーカー投稿含む)は行わず、代わりに `{has_blocker, blocker_count, escalate, review_markdown}` を JSON で返せ(`review_markdown` は手順 5 で組み立てたコメント本文。投稿は行ってよい — 投稿そのものは pr reviewer の専権であり本コマンドの触らないものではない)。**レビュー中に人間の判断が必要と感じた場合(判定が付かない・専門知識が必要等)は、加えて `escalate_to_human: {reason}` を返してよい(他フィールドとの共存可 — 客観的な `escalate` とは独立のシグナル)。** 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。」
 
 **outcome 解決(判定器の reviewer 行に渡すトークンを決める。全 5 outcome を必ず解決する)**: 実装役の復旧検索・対応役の evidence gate と対称に、**reviewer にも「dispatch 結果失敗」分岐を持たせて単一 sink をすり抜けさせない**(「実装役は復旧検索、対応役は evidence gate で dispatch 失敗を捌けるが、reviewer だけ dispatch 結果失敗の分岐が無く単一 sink をすり抜ける」を、この `invalid` 分岐で塞ぐ)。判定順序は次のとおり(上から順に該当する最初の分岐を採用する):
 
@@ -494,6 +522,8 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 - `escalate`(停止条件到達)→ 判定器の `ledger_write`(`pr.status`="need for human review")を「ルーティング判定」節の **`ledger_write` の適用**手続きで書く(reviewer は `pr.status` のみ・`<pr_number>` は空文字でよい)・route=sink・label_action=null。「失敗経路(単一の need for human review sink)」へ(sink 共通手続きが `need for human review` ラベル付与 + PushNotification を行う)。
 - `clean_pass` → 判定器の `ledger_write`(`pr.status`="ready for merge")を「ルーティング判定」節の **`ledger_write` の適用**手続きで書く(reviewer は `pr.status` のみ・`<pr_number>` は空文字でよい。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)・route=normal・label_action=`add_ready_for_merge`。
 - `blockers` → 判定器の `ledger_write`(`pr.status`="completed review")を同手続きで書く・route=normal・label_action=`remove_ready_for_merge`。
+
+`subjective_escalate` / `escalate` / `clean_pass` / `blockers` の 4 分岐はいずれも判定が確定し `pr.status` が遷移するため、上記の `ledger_write` 適用の直後に「作業レポートの代筆」節の共通手続きで対象 step の `reports[]` へ 1 件追記する(`author`="pr reviewer"・`role`="reviewer"。`invalid` は dispatch 結果失敗で判定物が無いため追記しない)。
 
 label_action(`ready for merge` ラベル同期)の実コマンドは「ルーティング判定」節の `label_action の実行` を参照する(prose に複製しない)。
 
@@ -530,6 +560,48 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
 - **global halt(連続失敗が閾値に達したら)**: `statusesPostFailCount` が **3 回**(校正根拠の無い best-effort 値。他所の `K`/`N=2` より 1 大きいのは、単発の network flake で即 halt しないための余裕)に達したら、**その時点で処理中の tick の残り候補への dispatch を打ち切る**(既に完了した step のローカル書込は取り消さない — 台帳への書込は post 試行より前に完了しているため、halt は post の失敗そのものへの対応であり、ローカル状態を巻き戻す話ではない)。`PushNotification` で人間に auth/network の復旧を促し、tick 報告に `🛑 global halt` を明記する。**counter はリセットしない**(次 tick も引き継ぐ)。**tick 全体を将来にわたって停止する仕組みは持たない** — 次 tick は通常どおり選別・dispatch を試み、最初の step の post 結果が自然な回復確認(probe)になる。成功すればそこで counter が 0 にリセットされ通常運転に戻る。失敗すれば(counter は既に閾値以上のため)その step の処理後ただちに再度 halt する。
 - **per-step sink にしない理由**: Statuses post 失敗の主因(`gh auth switch` 事故・token 失効・network・rate limit)は **session 全体で起きる global 障害**であり、特定 step の品質問題ではない。特定 step だけを `need for human review` へ sink しても、他 step の post は同じ障害で失敗し続け実害(required check が付かない PR が無言で残る)が他 step で再発する。かつ、作業自体は正しい step を infra 障害で誤って blocker 化してしまう。global halt はこの mis-target を避ける。
 - **閾値ロジックを prose に置く理由(既知の位置づけ)**: 「連続 N 回失敗で halt」という閾値つき判定は、本来は `evaluate-stop-condition.py` と同型の decision script に載せる方が「規則は script が正」の設計境界と一貫する(衝突検知(欠落 3)を script 化した判断と対称)。v1 では counter の読み書きが 1 行の比較で足り、prose のまま置いても取りこぼしのリスクが低いため script 化を見送る(over-engineering 回避)。実運用で counter 判定の分岐が増えたら script への切り出しを検討する(follow-up・今すぐ決める必要はない)。
+
+## 作業レポートの代筆(`reports[]`・issue #52 症状2)
+
+**目的**: `.harness/CLAUDE.harness.md`「作業レポートの書込」節が定める単一 writer 原則により、委譲先の子ロールは `reports[]` を直接書かない — 単一 writer(本コマンド)がそのロールを `author`/`role` に記録して代筆する。同節は本コマンドへの配線を「#26(単一 writer・in-flight マーカー)着地後の follow-up」と明記していたが、#26 は着地済みのため本節で配線する(issue #52 Phase A)。
+
+**best-effort のまま(機械強制はしない)**: `reports[]` の妥当性(件数・timestamp 形式・必須キー)は引き続き `validate-plan-progress.py --schema` の検査対象外(`.harness/CLAUDE.harness.md` 同節)。本節が足すのは「orchestrator が動く限り書き忘れない」経路であって、書込自体を machine-enforce するものではない。
+
+**共通の書込手続き**(`ledger_write` の適用手続きと同型・別ファイル書込で行う。1 tick 内で複数 step を処理する場合、この手続きは step ごとに個別実行する): 各ロール節が outcome を解決し `ledger_write` を適用した**直後**、対象 step の `reports[]` へ 1 件追記する。追記は「書込方式」節の Statuses API 自己申告より**前**に行う(`commands/harness-review-pr.md` 手順 6 の「追記は上の status 書込に隣接させ、下記『台帳検証の自己申告』より前に行う」と同じ順序)。`<step id>` は対象 step、`<author>`/`<role>` は下表の値、`<body>` は各ロール節が組み立てた 1〜数文のサマリ。timestamp は UTC・`Z` 終端で生成する(`.harness/CLAUDE.harness.md` が明記する `date -u +%Y-%m-%dT%H:%M:%SZ` と同じ形式を python 側で生成する — macOS/BSD の `date +%z` はコロン無しオフセットを返し schema の timestamp pattern に不一致になるため使わない):
+
+```
+PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
+python3 - "$PLAN" "<step id>" "<author>" "<role>" "<body>" <<'PY'
+import datetime, json, os, sys
+plan_path, step_id, author, role, body = sys.argv[1:6]
+with open(plan_path, encoding="utf-8") as f:
+    plan = json.load(f)
+step = next(s for s in plan["steps"] if s["id"] == step_id)
+ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+report = {"author": author, "role": role, "timestamp": ts, "body": body}
+step["reports"] = ((step.get("reports") or []) + [report])[-10:]  # FIFO trim (schema maxItems:10 は超過を拒否するだけで自動削除しないため、append と trim を一体で行う)
+plan["updatedAt"] = datetime.date.today().isoformat()
+with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(plan, f, ensure_ascii=False, indent=2)
+os.replace(plan_path + ".tmp", plan_path)
+PY
+```
+
+**7 ロールの配線点(名指し。`.harness/CLAUDE.harness.md`「作業レポートの書込」節の表と対応させる — DoD (iv') が要求する「7 ロール各々の代筆点が名指しされていること」を満たす)**:
+
+| 作業ロール(`author` / `role`) | 配線点(outcome) | 本ファイルでの位置 |
+|---|---|---|
+| `main developer (実装役)` / `developer` | `pr_evidence_pass` または `pr_evidence_fail`(いずれも PR は実在するため対象。`no_pr`/`ambiguous`/`subjective_escalate`/`timeout` は PR 未実在・作業未完のため対象外) | 「developer(実装役)」手順 7 |
+| `main developer (対応役)` / `developer` | `evidence_pass` または `evidence_fail`(いずれも対応作業(採用/却下の判断・修正試行)が実際に行われた事実を伴うため対象。`subjective_escalate` は対応未完了のため対象外) | 「developer(対応役)」手順 6 |
+| `pr reviewer` / `reviewer` | `clean_pass` / `blockers` / `escalate` / `subjective_escalate`(いずれも判定が確定し `pr.status` が遷移するため対象。`invalid` は dispatch 結果失敗で判定物が無いため対象外) | 「pr reviewer」outcome 実行部 |
+| `issue reviewer` / `issue review worker` | 対象外(v1・PR ライフサイクルのみ。issue フェーズの自動化は「orchestrator の性質」節冒頭・「既知の制限・拡張ポイント」節で明記済みのスコープ外 — 本コマンドはこれらのロールを dispatch しない) | — |
+| `pr review worker` | 対象外(本コマンドが dispatch しないロール。`developer(対応役)` と機能は近いが、本コマンド経由ではなく個人 skill `working-triaged-pr-for-loop` 経由で手動 / loop 起動される独立ロールであり、本ファイルの配線対象ではない) | — |
+| `orchestrator` | 対象外(上記 3 ロール分の代筆行為そのものが単一 writer = 本コマンドの実行として行われるため、別途 `author="orchestrator"` の重複 report は持たない) | — |
+
+**`<body>` の組み立て方(ロールごと)**:
+- 実装役: dispatch 応答(`commands/harness-dispatch-implementer.md` の返り値)に含まれる `summary`(実装内容の 1〜2 文要約)をそのまま使う。空・欠損なら `"issue #<N> の実装(PR #<pr_number>)"` にフォールバックする(observed-fact のみを書く原則により、無い情報を捏造しない)。
+- 対応役: dispatch 応答(`commands/harness-dispatch-responder.md` の返り値)に含まれる `summary`(対応内訳の 1〜2 文要約)をそのまま使う。空・欠損なら `"PR #<n> のレビュー指摘対応"` にフォールバックする。
+- pr reviewer: 手順内で既に取得済みの判定結果(`ledger_write` が書く遷移先 `pr.status`)と、dispatch 応答の `has_blocker` / `blocker_count` から組み立てる(例: `"判定 <遷移先 status> / has_blocker=<has_blocker> / blocker_count=<blocker_count>"`)。追加の `gh` 呼出は不要 — `blocker_count` は集計済みの blocker 件数であり finding 総数ではない点に注意(正直な明記。finding 総数を取りたければ `review_markdown` の解析が要るが、v1 では行わない)。
 
 ## 既知のリスク(明示)
 
@@ -587,7 +659,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
 
 ## 既知の制限・拡張ポイント
 
-- **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等)の kit 同梱が前提になるため別途対応が必要(現行は個人 skill 依存または `/code-review` 単体のみ)。
+- **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等・review-mode=multi-angle のみ)の kit 同梱が前提になるため別途対応が必要(review-mode=code-review(既定)は issue #49 以降 `commands/harness-dispatch-review-finders.md`(kit 同梱・個人 skill 不要)による 8 角度 finder 収集のみに依存する)。
 - **issue #11 の F案は実装済み**: 上記「既知のリスク」節参照。orchestrator の単一書込は ローカルファイル編集 + Statuses API 自己申告へ追従済み(main への直接 commit/push はしない)。
 - **issue サイド(issue reviewer / issue review worker)の自動化は対象外**: v1 は PR ライフサイクルのみ。issue フェーズの配車は別 issue の範囲。
 - **git-status ガードの限界と設計境界(部分的バックストップ・正直な明記)**: 台帳保護には次の点がある。
@@ -608,3 +680,4 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
 - **ラベル同期ロジックの複製(drift リスク)**: 本コマンドのラベル同期ロジック(「ルーティング判定」節の `label_action の実行`)は `commands/harness-review-pr.md` 手順 6 の内容を単一書込の都合上複製している。将来どちらかの label 定義(色・説明・名称)を変更する場合は両ファイルを同時に更新すること(自動で同期されない、既知の drift リスク)。
 - **developer(実装役・対応役)の dispatch prompt 外出し(issue #38・毎 tick の実効トークン削減)**: 両ロールの dispatch prompt 本文(旧版で本ファイルへ直接埋め込まれていた `> 「...」` の巨大な引用ブロック)を `commands/harness-dispatch-implementer.md` / `commands/harness-dispatch-responder.md` へ抽出した(pr reviewer 節が `commands/harness-review-pr.md` を参照する既存パターンと同型)。抽出後は複製ではなく単一ソース化(旧「ラベル同期ロジックの複製」のような drift リスクは生じない)。**この参照ファイルは dispatch された subagent 自身が(自分の Read ツールで)読む設計であり、orchestrator 自身は読まない** — したがって当該ロールの dispatch が 0 件の tick では orchestrator はもとより誰もこれらのファイルを読まず、毎 tick の実効トークンが無条件に(dispatch の有無を判定する分岐無しで)削減される。実装役・対応役それぞれの evidence gate worktree 手続き(`git worktree add` の残骸掃除・実行・後始末)も、両ロールでほぼ同一だったロジックを `scripts/run-orchestrator-evidence-gate.sh` へ dedup 抽出した(こちらは全 tick で無条件に本体の行数を下げる。「developer(実装役)」節 手順 5・「developer(対応役)」節 手順 5 参照)。
 - **委譲先の返り値は独立検証できない(正直な明記・意図的に塞がない。issue #37・欠落 7)**: pr reviewer の `has_blocker` / `escalate`、および 3 role 共通の `escalate_to_human` は、いずれも委譲先 subagent の自己申告であり、orchestrator 側で機械的に裏取りする手段が無い。evidence gate(`evidence.done` の独立再実行)は実装役・対応役の**作業結果**を独立検証しているが、reviewer の**判定そのもの**(diff を実際に見て finding を出したか)は検証できない — 捏造する reviewer が `clean_pass` を返せば `ready for merge` まで進んでしまう。緩和策は各ロール委譲プロンプト**冒頭**の「観測していないことを書くな。『エラー』と『処理中』を区別せよ。分からないことは未観測と書け」という L1 文言のみで(「dispatch 先ごとの委譲方式」節 各ロールの冒頭注記を参照)、実測では捏造後に自己訂正が起きたことはあるが、これは検証の代替ではない。`.harness/CLAUDE.harness.md` が明記する「doer ≠ judge の実質はほぼ別セッションの PR reviewer が実際の diff/状態を初見で読むこと単独に依存する」という設計は、その reviewer 自身のレイヤでは担保されないまま残る既知の限界であり、現時点で構造的な解決策は無い(塞げないものを塞いだことにしない)。
+- **作業レポート代筆(`reports[]`)は machine-enforce されていない(既知のギャップ・issue #52 症状2)**: 「作業レポートの代筆」節の配線は、実装役 / 対応役 / pr reviewer の 3 ロールについて `ledger_write` 適用直後に `reports[]` へ追記する経路を追加するが、これは `tests/smoke/run-smoke.sh` の検証対象ではない(schema/drift 検証の対象外という `.harness/CLAUDE.harness.md` の既存の best-effort 方針をそのまま引き継ぐ)。したがって配線コード自体に typo や欠落があっても smoke は緑のまま通りうる — 発見は目視レビューか、ダッシュボードの `WorkFeed` で report が欠落していることの事後観測に依存する。issue reviewer / issue review worker / pr review worker / orchestrator 自身の 4 ロールは、本コマンドが dispatch しない(issue フェーズは v1 スコープ外・`pr review worker` は独立 skill)ため配線対象外であることを「作業レポートの代筆」節の表で明示した(DoD (iv') が要求する「7 ロール各々の代筆点の名指し」は、この「対象外である」という明記も含めて満たす)。

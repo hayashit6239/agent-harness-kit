@@ -23,7 +23,7 @@ PR #<N> に投稿された最新の `# PR Reviewer` コメントを `gh pr view 
 3. **保留(follow-up)**: merge 後の対応でよいと判断した場合(ただし最終判断は reviewer の責務であり、対応役はここで `ready for merge` を提案してはならない — `.harness/CLAUDE.harness.md` の doer ≠ judge 規約通り)
 4. **保留(解消不可)**: 環境依存の実測値が要る等、対応不能な場合(理由を明記)
 
-対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review"}` を JSON で返せ。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。
+対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review", summary}` を JSON で返せ(`summary` は対応内訳を 1〜2 文で要約したもの — orchestrator が単一 writer として `reports[]` へ代筆する際の `body` に使う。issue #52 症状2)。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。
 
 **人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない・固定値の DoD が達成不能と判断した等)は、代わりに `{escalate_to_human: {reason}}` を返してよい。**
 

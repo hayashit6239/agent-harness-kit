@@ -31,7 +31,10 @@
 #    妥当性検証の各項目 (型崩れ・負値・deadline<dispatched・dispatched>current の未来矛盾)、
 #    不正入力 exit 2 の境界を含む)。加えて選別(jq) 実装役 / 対応役 / pr reviewer 各ブロックの
 #    dispatchMarker / reviewLock(issue #37)ガードを、commands/harness-orchestrate.md と同一の
-#    jq を直接実行して固定する。
+#    jq を直接実行して固定する。同じ実装役ブロックの jq で dependsOn ガード(issue #51・
+#    スループット)の 6 種の境界(全依存終端 / 一部未終端 / 空配列 / キー欠損 /
+#    存在しない id(fail-closed) / 依存先が discuss 型)と、DoD (ii-a)(依存の無い step が
+#    同一 tick で 2 件以上 eligible として返る)も固定する。
 #    さらに「ルーティング判定」節の ledger_write 適用手続き(marker 削除 + ledger_write の原子適用。
 #    issue #37 で削除対象フィールド名を汎化する 6 番目の引数 `<marker_field>` を追加)を同一ロジックで
 #    直接実行し、lw=null でも clear_marker=true なら marker 単独削除される・lw 非 null 時の原子適用・
@@ -195,6 +198,14 @@ elif mode == "evidence-blank":
     # (xiii) ready 系 status ありで evidence.test が空文字列 (null 素通しの双子経路)
     step["pr"] = {"number": 1, "status": "ready for merge", "githubState": "open"}
     d["evidence"]["test"] = ""
+elif mode == "dependson-missing":
+    # (xvi) dependsOn (issue #51) が存在しない step id を指している (authoring-time fail-closed 検知。
+    # S1 が唯一の step のため "NOPE" はどの step の id とも一致しない)
+    step["dependsOn"] = ["NOPE"]
+elif mode == "dependson-selfloop":
+    # (xvii) dependsOn (issue #57 round 2 🔴1) が自分自身を指している (self-loop の循環参照)。
+    # S1 が唯一の step のため "S1" は自分自身の id と一致する
+    step["dependsOn"] = ["S1"]
 else:
     raise SystemExit(f"unknown mode: {mode}")
 d["steps"] = [step]
@@ -234,6 +245,8 @@ FAIL_CASES=(
   "(xii) issue drift 食い違い|issue-drift|drift|台帳は 'open' だが GitHub (issue #1) は 'closed'"
   "(xiii) evidence-gate 空文字列|evidence-blank|schema|evidence.test が null または空白のみ"
   "(xiv) --drift 単独の主張規則違反|ghstate-null|drift|number (1) があるのに githubState が null"
+  "(xvi) dependsOn 存在しない id (issue #51)|dependson-missing|schema|存在しない step id を指している"
+  "(xvii) dependsOn self-loop 循環 (issue #57 round 2)|dependson-selfloop|schema|dependsOn に循環参照がある"
 )
 
 for row in "${FAIL_CASES[@]}"; do
@@ -257,6 +270,36 @@ for row in "${FAIL_CASES[@]}"; do
   esac
   echo "[4/13] $label -> non-zero + 期待文言"
 done
+
+# (xviii) dependsOn A⇄B 循環 (issue #57 round 2 🔴1): 2 step にまたがる循環は make_broken の
+#         「S1 単独 step」の型に収まらないため、表に入れず個別に台帳を組み立てる。
+#         A.dependsOn=["B"] / B.dependsOn=["A"] は「存在しない step id」チェックだけでは
+#         検知できず (B も A も実在する)、有向グラフの循環検知でのみ拾える境界
+CYCLE_AB_PLAN="$TMP/broken-dependson-cycle-ab.json"
+python3 - "$PLAN" "$CYCLE_AB_PLAN" <<'PY'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as f:
+    d = json.load(f)
+d["steps"] = [
+    {"id": "A", "title": "cycle A",
+     "issue": {"number": None, "status": None, "githubState": None},
+     "pr": {"number": None, "status": None, "githubState": None},
+     "dependsOn": ["B"]},
+    {"id": "B", "title": "cycle B",
+     "issue": {"number": None, "status": None, "githubState": None},
+     "pr": {"number": None, "status": None, "githubState": None},
+     "dependsOn": ["A"]},
+]
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
+PY
+expect_fail_with "(xviii) dependsOn A⇄B 循環 (issue #57 round 2)" \
+  "dependsOn に循環参照がある" \
+  python3 "$VALIDATOR" --schema "$CYCLE_AB_PLAN"
+echo "[4/13] (xviii) dependsOn A⇄B 循環 (issue #57 round 2) -> non-zero + 期待文言"
 
 # --- 以下は形が特殊で表に入れない個別ケース (無理に畳むと可読性が落ちる)。
 #     番号は据え置きのため、出力順は表 → 個別の順になり通し番号どおりではない ---
@@ -827,14 +870,20 @@ printf '%s' '["not","an","object"]' | python3 "$RECONCILE" >/dev/null 2>&1 || re
 [ "$recon_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $recon_rc"
 echo "[9/13] reconcile-dispatch-marker 不正入力 exit 2 境界 OK"
 
-# 選別(jq) 実装役の dispatchMarker ガード。
+# 選別(jq) 実装役の dispatchMarker / dependsOn ガード。
 # commands/harness-orchestrate.md 選別(jq) 実装役ブロックと同一の jq をここで直接実行し、
 # `dispatchMarker` が残っている step (wait 決着で締切未到達、または redispatch が同 tick 内で
 # 再試行して再び marker が残った場合) が候補から除外されることを固定する。このガードが無いと
 # issue.status/pr.number が不変のまま選別に再度乗り、同一 issue へ二重 dispatch されうる。
-SELECT_IMPLEMENTER_JQ='[ .steps[]
-  | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
-  | {id, issueNumber: .issue.number} ]'
+# dependsOn ガード(issue #51・スループット)も同じ jq に含まれる — `dependsOn` の全要素が
+# 終端(`issue.status == "closed issue"`)の step だけを候補にする。
+SELECT_IMPLEMENTER_JQ='
+  ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
+  | [ .steps[]
+      | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
+      | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
+      | {id, issueNumber: .issue.number} ]
+'
 SELECT_IMPLEMENTER_INPUT='{"steps":[
   {"id":"X1","issue":{"status":"ready for implementation","number":1},"pr":{"number":null}},
   {"id":"X2","issue":{"status":"ready for implementation","number":2},"pr":{"number":null},
@@ -846,7 +895,42 @@ SELECT_IMPLEMENTER_GOT="$(printf '%s' "$SELECT_IMPLEMENTER_INPUT" | jq -c "$SELE
 SELECT_IMPLEMENTER_WANT='[{"id":"X1","issueNumber":1}]'
 [ "$SELECT_IMPLEMENTER_GOT" = "$SELECT_IMPLEMENTER_WANT" ] \
   || fail "選別(jq) 実装役: dispatchMarker が残る step (X2) が候補から除外されず二重 dispatch ガードが機能していない (got: $SELECT_IMPLEMENTER_GOT / want: $SELECT_IMPLEMENTER_WANT)"
-echo "[9/13] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外)"
+echo "[9/13] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外・後方互換: dependsOn 無しの step は従来どおり配車)"
+
+# 選別(jq) 実装役の dependsOn ガード(issue #51・スループット)。
+# 6 種の境界(全依存終端 / 一部未終端 / 空配列 / キー欠損 / 存在しない id(fail-closed) /
+# 依存先が discuss 型)を SELECT_IMPLEMENTER_JQ (上記と同一・commands/harness-orchestrate.md と
+# 同一の jq) で直接固定する。T-TERM1 は discuss 型の終端(PR を持たず issue.status のみで
+# 終端に到達した想定・実台帳 P11 が実例)、T-TERM2 は PR を持つ型(merge 経由で終端に到達した想定)。
+SELECT_DEPENDSON_INPUT='{"steps":[
+  {"id":"T-TERM1","issue":{"status":"closed issue","number":90},"pr":{"number":null}},
+  {"id":"T-TERM2","issue":{"status":"closed issue","number":91},"pr":{"number":99}},
+  {"id":"T-NOTTERM","issue":{"status":"starting review","number":92},"pr":{"number":null}},
+  {"id":"W1","issue":{"status":"ready for implementation","number":101},"pr":{"number":null},
+   "dependsOn":["T-TERM1","T-TERM2"]},
+  {"id":"W2","issue":{"status":"ready for implementation","number":102},"pr":{"number":null},
+   "dependsOn":["T-TERM1","T-NOTTERM"]},
+  {"id":"W3","issue":{"status":"ready for implementation","number":103},"pr":{"number":null},
+   "dependsOn":[]},
+  {"id":"W4","issue":{"status":"ready for implementation","number":104},"pr":{"number":null}},
+  {"id":"W5","issue":{"status":"ready for implementation","number":105},"pr":{"number":null},
+   "dependsOn":["T-GHOST"]},
+  {"id":"W6","issue":{"status":"ready for implementation","number":106},"pr":{"number":null},
+   "dependsOn":["T-TERM1"]}
+]}'
+SELECT_DEPENDSON_GOT="$(printf '%s' "$SELECT_DEPENDSON_INPUT" | jq -c "$SELECT_IMPLEMENTER_JQ")"
+# 期待 eligible: W1(全依存終端)/ W3(空配列)/ W4(キー欠損)/ W6(依存先discuss型)。
+# 除外: W2(一部未終端の T-NOTTERM を含む)/ W5(存在しない id T-GHOST を指し fail-closed)。
+SELECT_DEPENDSON_WANT='[{"id":"W1","issueNumber":101},{"id":"W3","issueNumber":103},{"id":"W4","issueNumber":104},{"id":"W6","issueNumber":106}]'
+[ "$SELECT_DEPENDSON_GOT" = "$SELECT_DEPENDSON_WANT" ] \
+  || fail "選別(jq) 実装役: dependsOn ガードの判定が期待と不一致 (got: $SELECT_DEPENDSON_GOT / want: $SELECT_DEPENDSON_WANT)"
+# DoD (ii-a): 依存の無い(または依存が全て終端した)step が選別 jq から同一 tick で 2 件以上
+# eligible として返ることを機械検証する(同時配車の前提条件。実行時の並列 Agent 呼出そのもの
+# (DoD (ii-b)) は bash smoke では検証できないため対象外 — 「developer(実装役)」節「実行ループ」参照)。
+DEPENDSON_COUNT="$(printf '%s' "$SELECT_DEPENDSON_GOT" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+[ "$DEPENDSON_COUNT" -ge 2 ] \
+  || fail "選別(jq) 実装役: DoD (ii-a) — 同一 tick で 2 件以上 eligible を期待したが $DEPENDSON_COUNT 件しか返らなかった (got: $SELECT_DEPENDSON_GOT)"
+echo "[9/13] 選別(jq) 実装役の dependsOn ガード OK (issue #51・全依存終端/一部未終端/空配列/キー欠損/存在しないid(fail-closed)/依存先discuss型の6境界 + DoD(ii-a) 同一tick 2件以上eligible)"
 
 # 選別(jq) 対応役 / pr reviewer の reviewLock ガード(issue #37)。
 # commands/harness-orchestrate.md 選別(jq) 対応役 / pr reviewer ブロックと同一の jq をここで
