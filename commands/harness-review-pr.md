@@ -1,7 +1,7 @@
 ---
 description: 対象 repo の .harness/plan-progress.json の PR フェーズ status を選別源に、pr.status が 'created pr' または 'waiting for review' の PR をレビューし(既定 review-mode=code-review では 8 角度 finder が収集した候補(orchestrator が事前収集 / 単体起動時は自身が `commands/harness-dispatch-review-finders.md` 経由で収集)を独立検証、opt-in review-mode=multi-angle では `reviewing-multi-angle` skill 経由で 3 観点並列)、dedup + 優先度付け済みの統合 findings を 1 件の PR コメントとして投稿。`has_blocker` は wrapper 側で再集計(`scripts/reaggregate-has-blocker.py`)し、真偽で pr.status を自動進行(false→'ready for merge'(+ `ready for merge` ラベル付与) / true→'completed review'(+ ラベル除去))する reviewer ロール。round 上限・blocker 傾向による停止条件(escalate)も判定し、マーカーとしてコメントに埋め込むとともに、escalate=true なら pr.status を 'need for human review' に遷移させ `need for human review` ラベルを付与する(2026-07-10 決定事項。escalate=false に戻ればラベルは除去)。台帳の状態遷移はローカル編集(commit/push しない)+ 対象 PR の head SHA へ Statuses API 自己申告(issue #11 F案)。別セッションで手動起動 or /loop。
 argument-hint: "[owner/repo] [effort] [review-mode]  省略時: CWD の origin から自動判定 / medium(低い順 low/medium/high/max/ultra) / code-review(opt-in: multi-angle)"
-allowed-tools: [Bash, Skill, Read, Write]
+allowed-tools: [Bash, Skill, Read, Write, Agent]
 ---
 
 # /harness-review-pr — レビュー待ち PR の自動コードレビュー(reviewer ロール / wrapper / policy 層)
