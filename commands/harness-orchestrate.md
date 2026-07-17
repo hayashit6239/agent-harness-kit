@@ -42,6 +42,8 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
   **PRE 計測タイミングの明確化**: 上記の PRE は「tick 開始時点」を指すのではなく、**「dispatch 直前・orchestrator 自身の直近の書込が完了した直後」**を指す。tick 冒頭の `orchestratorTick` インクリメント(「tick 冒頭 reconciliation」節)や、実装役手順 1 の `dispatchMarker` 書込は、いずれも orchestrator 自身が行う正当な書込であり、**PRE を控えるより前に完了させる**(PRE 計測をこれらの書込の後まで遅らせる、と言い換えてもよい)。この順序を守れば PRE→POST 間に挟まるのは「dispatch 中に subagent が加えた変更」だけになり、tick カウンタや `dispatchMarker` の書込自体を subagent の改変と誤検知することはない。具体的には、実装役の手順としては **手順 1(marker 書込)の直後・手順 2(dispatch)の直前に PRE を再計測する**(tick 冒頭で 1 度だけ控えて使い回さない — 使い回すと手順 1 の marker 書込自体が PRE→POST 間に挟まり、実装役 dispatch の正常系まで含めて毎回誤検知することになる)。
 
+  **同時配車(issue #51)下での一般化(dispatch 単位ではなく「各書込の直前直後」で運用する)**: 「実行ループ(同時配車)」節のとおり同一 tick 内で複数候補の手順 1〜8 が独立に進む場合、PRE/POST ガードは**候補ごとに個別**に運用する。tick 冒頭で 1 度だけ控えた PRE、あるいは他候補向けに控えた PRE を同一 tick 内の複数候補で使い回さない — 使い回すと、後述のとおり台帳書込自体は候補間で逐次実行されるため、**別候補の正当な書込(その候補自身の手順 1 の marker 書込や手順 7 の `ledger_write` 適用)が自分の PRE→POST 間に挟まり、それを subagent の改変と誤検知してしまう**。適用する原則は 1 件処理時と同一(「その候補自身の直前の正当な書込が完了した直後に PRE を控え直す」)であり、これを**候補ごとに個別**に行うだけである: 各候補について、その候補自身の手順 1(marker 書込)が完了した直後にその候補専用の PRE を控え、その候補自身の手順 6/7(marker 削除・`ledger_write` の適用)の直前に POST を照合する。台帳書込そのものを候補間でどう逐次化するかは「実行ループ(同時配車)」節を参照(規則の重複を避けるため、ここでは PRE/POST ガードの運用細則のみを扱う)。
+
 ## 失敗経路(単一の need for human review sink)
 
 **原則: orchestrator が step を安全に前進させられない状況は、原因を問わず単一の失敗経路に集約する。** すなわち **`need for human review` ラベル付与 + `PushNotification` + 事実に即した台帳書込(あれば)→ 以後その step は人間がラベルを外すまで配車テーブルで無条件スキップ**。実装役・対応役・reviewer 経路すべてで**対称に**扱う(どのロールでも「前進不能 = この sink に到達」であり、片方だけ有界停止・片方は無界ループ、という非対称を作らない)。**どの状況が sink に落ちるかは「ルーティング判定」節の decision script が `route=sink` として決める**(下表はその sink 経路を人間向けに列挙したもので、規則そのものは script が正)。
@@ -331,9 +333,21 @@ REVIEW_MODE="${2:-code-review}"
 # 節が返す `redispatch` 候補(dispatchMarker が既にある既存 in-flight step)。両者を合算した
 # ものが実装役枠の母集団になる(redispatch を合算せず jq 側だけで 5 件上限を
 # 適用すると、redispatch が無制限に別枠で実行されてしまう)。
-jq -c '[ .steps[]
-  | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
-  | {id, issueNumber: .issue.number} ]' "$PLAN"
+#
+# dependsOn ガード(issue #51・スループット): `dependsOn` の全要素が終端(`issue.status ==
+# "closed issue"` の step。PR の有無は問わない — discuss 型 step は PR を持たず直接この状態に
+# 至る)である step だけを候補にする。空配列/欠損は「依存なし」として常に eligible(後方互換・
+# `(.dependsOn // [])` が `[]` になり `all` は空配列に対し恒真)。存在しない step id を指す要素は
+# $terminal 集合に含まれえないため、自動的に fail-closed で未解決として除外される
+# (`.harness/plan-progress.schema.json` の整合規則が authoring-time に同じ違反を検知する
+# 2 段目の安全網 — この jq は selection-time の安全網)。
+jq -c '
+  ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
+  | [ .steps[]
+      | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
+      | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
+      | {id, issueNumber: .issue.number} ]
+' "$PLAN"
 
 # 対応役 dispatch 対象(issue #37: `.reviewLock == null` で in-flight な step を除外。
 # 実装役の `.dispatchMarker == null` ガードと同型 — 無いと重複配車が起きる)
@@ -349,9 +363,9 @@ jq -c '[ .steps[]
   | {id, number: .pr.number} ] | unique_by(.number)' "$PLAN"
 ```
 
-**実装役カテゴリの候補集合は、上記 jq が返す新規 eligible 対象と、「tick 冒頭 reconciliation」節が返す `redispatch` 候補(既存 in-flight step の再試行)を合算したもの**とする。
+**実装役カテゴリの候補集合は、上記 jq が返す新規 eligible 対象と、「tick 冒頭 reconciliation」節が返す `redispatch` 候補(既存 in-flight step の再試行)を合算したもの**とする(dependsOn ガード(issue #51)は上記 jq 自身が新規 eligible 対象に既に適用済み — 依存未解決の候補はここに含まれない。`redispatch` 候補は元々 eligible 判定を経て dispatch 済みだった step の再試行であり、dependsOn ガードを再適用しない)。
 
-**ファイル衝突検知(issue #37・欠落 3)**: 実装役カテゴリの候補が 1 件以上ある場合、各候補の対象 issue の Implementation Scope から対象ファイルを抽出する(バッククォートで囲まれたファイルパスのみを対象ファイルとして収集し、地の文中の通りすがり言及(例:「`decide-orchestrator-route.py` と同型」)は除外する — この抽出規則自体は script が判定しないため prose 側の責務。Implementation Scope の記載が無い/抽出 0 件なら `files: []` とする)。集めた `[{id, files}]` を `scripts/detect-dispatch-collision.py` へ渡す:
+**ファイル衝突検知(issue #37・欠落 3)**: dependsOn ガードとは直交する 2 段目のフィルタ(依存順序ではなくファイル単位の衝突を見る)。実装役カテゴリの候補が 1 件以上ある場合、各候補の対象 issue の Implementation Scope から対象ファイルを抽出する(バッククォートで囲まれたファイルパスのみを対象ファイルとして収集し、地の文中の通りすがり言及(例:「`decide-orchestrator-route.py` と同型」)は除外する — この抽出規則自体は script が判定しないため prose 側の責務。Implementation Scope の記載が無い/抽出 0 件なら `files: []` とする)。集めた `[{id, files}]` を `scripts/detect-dispatch-collision.py` へ渡す:
 ```
 COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/detect-dispatch-collision.py")
 # -> {"groups": [["<id>", ...], ...], "safe": ["<id>", ...]}
@@ -365,6 +379,16 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 各ロールは **dispatch → 状況を outcome トークンに解決 → 判定器(「ルーティング判定」節)→ route / label_action 実行**。dispatch prompt(委譲の中身)は転写せず参照させる方式を維持する。**ルーティング規則は判定器 script が正**なので、各ロール節は「どう outcome に解決するか」だけを書き、書込・sink・ラベルの規則は複製しない。
 
 ### developer(実装役)
+
+**実行ループ(同時配車。issue #51)**: 下記の手順 1〜8 は **1 候補ぶんの outcome 解決を記述している**。「選別(jq)」節の実装役 dispatch 対象(dependsOn ガード通過済みの新規 eligible + `redispatch` 候補、上限 5 件切り詰め後)が 2 件以上ある場合、orchestrator は **同一 tick 内で候補ごとに手順 1〜8 を独立に(並列に)実行する** — 候補を 1 件ずつ逐次処理しない。候補が 1 件以下の tick では従来どおり単体で実行する(挙動不変)。
+
+「同時配車」の定義はこの実行ループの挙動そのものを指す — 選別 jq の出力サイズ(何件 eligible か)と、実行時に何件の `Agent` 呼出を同一 tick で発行するか、の**両方**が揃って初めて成立する。選別だけを直しても実行ループが逐次のままなら同時配車は成立しない。この 2 つの性質は検証手段の性質が異なる:
+- **選別 jq の出力サイズ**: 決定論的な jq の入出力であり、`tests/smoke/run-smoke.sh` で機械検証できる(DoD (ii-a)。「選別(jq) 実装役の dependsOn ガード」ブロック参照)。
+- **実行時の並列 `Agent` 呼出**: orchestrator セッションの実行時ふるまいであり、bash の smoke script では原理的に検証できない(DoD (ii-b)。実運用の `/goal` 実行観測でのみ確認できる — 本 repo が既に「自己申告は便宜シグナル」「reports は best-effort で機械強制されない」と検証手段の限界を正直に書いている前例に倣う)。
+
+**台帳書込(marker 書込・`ledger_write` の適用)は並列化しない(issue #51・PR #57 round 1 レビュー対応)**: 同時配車で並列に実行されるのは手順 2 の `Agent` 呼出(dispatch call = subagent の実行そのもの)だけである。台帳(`.harness/plan-progress.json`)への書込主体は orchestrator という単一プロセスのままであり、書込そのものは本質的に逐次にしかなり得ない。したがって手順 1(in-flight マーカー書込)・手順 6/7(`dispatchMarker` の削除・`ledger_write` の適用)は、複数候補が同一 tick で処理されていても**候補ごとに 1 件ずつ逐次実行し、2 候補分の書込を同時に(重ねて)行わない**。複数候補の `Agent` 呼出が並列に走っている間に subagent の返答が interleave して戻ってきても、ある候補の返答を受けて台帳へ書き込む処理は、別候補の書込処理が進行中であればその完了を待ってから行う(実装上は「1 候補ぶんの書込処理をひとまとめの直列区間として扱い、この区間だけは複数候補間で重ねない」と読み替えてよい — 区間の外側(dispatch call の待ち時間や evidence gate の実行)は引き続き並列でよい)。**PRE/POST ガードをこの逐次書込に沿って候補ごとに個別運用する具体手順は「単一書込」節『PRE 計測タイミングの明確化』の同時配車向け一般化を参照**(規則の重複を避けるため、ここでは繰り返さない)。
+
+これは `.harness/CLAUDE.harness.md`『developer / reviewer は同一マシンの同一ローカル台帳ファイルを共有する。書込主体をモードごとに単一に保つことで、ローカルファイルへの競合書込を避ける』という規約と矛盾しない — 同規約が禁じるのは「複数の書込主体(モード)が同じ台帳へ競合して書くこと」であり、本節が定める「単一の書込主体(orchestrator)の内部で、複数候補ぶんの書込を時間的に直列化する」こととは水準が異なる。書込主体はこの並列化の前後で orchestrator のまま変わらず、並列化されるのは書込そのものではなく dispatch call の実行時間だけである。
 
 **outcome 解決(判定器の implementer 行に渡すトークンを決める)**:
 
