@@ -269,6 +269,13 @@ def check_schema(errors, data, enums):
         if not isinstance(steps, list):
             err(errors, "steps", "配列でない。", "steps を [] にする")
         else:
+            # dependsOn 整合規則 (issue #51) で使う実在 step id 集合を先に集める。
+            # dependsOn は配列順に関わらず前後どちらの step も参照しうるため、
+            # 本ループより前に走査順非依存で収集する。
+            step_ids = {
+                s.get("id") for s in steps
+                if isinstance(s, dict) and isinstance(s.get("id"), str) and s.get("id")
+            }
             for i, step in enumerate(steps):
                 if not isinstance(step, dict):
                     err(errors, f"steps[{i}]", "オブジェクトでない。", "step を {...} にする")
@@ -281,6 +288,21 @@ def check_schema(errors, data, enums):
                     if k in step and not isinstance(step[k], str):
                         err(errors, f"{where}.{k}", f"文字列でない ({step[k]!r})。",
                             "文字列にするか削除する")
+
+                # dependsOn 整合規則 (issue #51・authoring-time の早期検知):
+                # 全要素が実在する step id でなければならない (fail-closed の前段防御。
+                # ここをすり抜けた場合も選別 jq 側が selection-time に fail-closed で未解決扱いする)
+                if "dependsOn" in step:
+                    deps = step["dependsOn"]
+                    if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+                        err(errors, f"{where}.dependsOn", f"文字列配列でない ({deps!r})。",
+                            "依存 step の id を文字列配列で指定する")
+                    else:
+                        for dep_id in deps:
+                            if dep_id not in step_ids:
+                                err(errors, f"{where}.dependsOn",
+                                    f"存在しない step id を指している ({dep_id!r})。",
+                                    "実在する step id に修正するか dependsOn から削除する")
 
                 issue = check_phase(errors, step, where, "issue", issue_status_enum, issue_gh_enum)
                 pr = check_phase(errors, step, where, "pr", pr_status_enum, pr_gh_enum)

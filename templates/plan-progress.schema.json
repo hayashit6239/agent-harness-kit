@@ -104,6 +104,11 @@
           "maxItems": 10,
           "description": "作業レポートの履歴 (任意・後方互換。issue #25)。step あたり最新 10 件を上限 (maxItems)、超えたら古いものから削除する (FIFO・要約なし。全履歴は git history に残る)。書込は v1 では best-effort",
           "items": { "$ref": "#/definitions/report" }
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "この step が実装役の配車選別で eligible になるために終端していなければならない依存 step の id 一覧 (任意・後方互換。issue #51)。終端の定義は issue.status == \"closed issue\" (PR の有無は問わない)。空配列/欠損は「依存なし」= 常に eligible。存在しない step id を指す要素は selection-time (選別 jq) で fail-closed に未解決として扱われる — authoring-time (validate-plan-progress.py --schema) の整合規則でも同じ違反を検知する (2 段の安全網)"
         }
       }
     }

@@ -331,9 +331,21 @@ REVIEW_MODE="${2:-code-review}"
 # 節が返す `redispatch` 候補(dispatchMarker が既にある既存 in-flight step)。両者を合算した
 # ものが実装役枠の母集団になる(redispatch を合算せず jq 側だけで 5 件上限を
 # 適用すると、redispatch が無制限に別枠で実行されてしまう)。
-jq -c '[ .steps[]
-  | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
-  | {id, issueNumber: .issue.number} ]' "$PLAN"
+#
+# dependsOn ガード(issue #51・スループット): `dependsOn` の全要素が終端(`issue.status ==
+# "closed issue"` の step。PR の有無は問わない — discuss 型 step は PR を持たず直接この状態に
+# 至る)である step だけを候補にする。空配列/欠損は「依存なし」として常に eligible(後方互換・
+# `(.dependsOn // [])` が `[]` になり `all` は空配列に対し恒真)。存在しない step id を指す要素は
+# $terminal 集合に含まれえないため、自動的に fail-closed で未解決として除外される
+# (`.harness/plan-progress.schema.json` の整合規則が authoring-time に同じ違反を検知する
+# 2 段目の安全網 — この jq は selection-time の安全網)。
+jq -c '
+  ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
+  | [ .steps[]
+      | select(.issue.status == "ready for implementation" and .pr.number == null and .dispatchMarker == null)
+      | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
+      | {id, issueNumber: .issue.number} ]
+' "$PLAN"
 
 # 対応役 dispatch 対象(issue #37: `.reviewLock == null` で in-flight な step を除外。
 # 実装役の `.dispatchMarker == null` ガードと同型 — 無いと重複配車が起きる)
@@ -349,9 +361,9 @@ jq -c '[ .steps[]
   | {id, number: .pr.number} ] | unique_by(.number)' "$PLAN"
 ```
 
-**実装役カテゴリの候補集合は、上記 jq が返す新規 eligible 対象と、「tick 冒頭 reconciliation」節が返す `redispatch` 候補(既存 in-flight step の再試行)を合算したもの**とする。
+**実装役カテゴリの候補集合は、上記 jq が返す新規 eligible 対象と、「tick 冒頭 reconciliation」節が返す `redispatch` 候補(既存 in-flight step の再試行)を合算したもの**とする(dependsOn ガード(issue #51)は上記 jq 自身が新規 eligible 対象に既に適用済み — 依存未解決の候補はここに含まれない。`redispatch` 候補は元々 eligible 判定を経て dispatch 済みだった step の再試行であり、dependsOn ガードを再適用しない)。
 
-**ファイル衝突検知(issue #37・欠落 3)**: 実装役カテゴリの候補が 1 件以上ある場合、各候補の対象 issue の Implementation Scope から対象ファイルを抽出する(バッククォートで囲まれたファイルパスのみを対象ファイルとして収集し、地の文中の通りすがり言及(例:「`decide-orchestrator-route.py` と同型」)は除外する — この抽出規則自体は script が判定しないため prose 側の責務。Implementation Scope の記載が無い/抽出 0 件なら `files: []` とする)。集めた `[{id, files}]` を `scripts/detect-dispatch-collision.py` へ渡す:
+**ファイル衝突検知(issue #37・欠落 3)**: dependsOn ガードとは直交する 2 段目のフィルタ(依存順序ではなくファイル単位の衝突を見る)。実装役カテゴリの候補が 1 件以上ある場合、各候補の対象 issue の Implementation Scope から対象ファイルを抽出する(バッククォートで囲まれたファイルパスのみを対象ファイルとして収集し、地の文中の通りすがり言及(例:「`decide-orchestrator-route.py` と同型」)は除外する — この抽出規則自体は script が判定しないため prose 側の責務。Implementation Scope の記載が無い/抽出 0 件なら `files: []` とする)。集めた `[{id, files}]` を `scripts/detect-dispatch-collision.py` へ渡す:
 ```
 COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/detect-dispatch-collision.py")
 # -> {"groups": [["<id>", ...], ...], "safe": ["<id>", ...]}
@@ -365,6 +377,12 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 各ロールは **dispatch → 状況を outcome トークンに解決 → 判定器(「ルーティング判定」節)→ route / label_action 実行**。dispatch prompt(委譲の中身)は転写せず参照させる方式を維持する。**ルーティング規則は判定器 script が正**なので、各ロール節は「どう outcome に解決するか」だけを書き、書込・sink・ラベルの規則は複製しない。
 
 ### developer(実装役)
+
+**実行ループ(同時配車。issue #51)**: 下記の手順 1〜8 は **1 候補ぶんの outcome 解決を記述している**。「選別(jq)」節の実装役 dispatch 対象(dependsOn ガード通過済みの新規 eligible + `redispatch` 候補、上限 5 件切り詰め後)が 2 件以上ある場合、orchestrator は **同一 tick 内で候補ごとに手順 1〜8 を独立に(並列に)実行する** — 候補を 1 件ずつ逐次処理しない。候補が 1 件以下の tick では従来どおり単体で実行する(挙動不変)。
+
+「同時配車」の定義はこの実行ループの挙動そのものを指す — 選別 jq の出力サイズ(何件 eligible か)と、実行時に何件の `Agent` 呼出を同一 tick で発行するか、の**両方**が揃って初めて成立する。選別だけを直しても実行ループが逐次のままなら同時配車は成立しない。この 2 つの性質は検証手段の性質が異なる:
+- **選別 jq の出力サイズ**: 決定論的な jq の入出力であり、`tests/smoke/run-smoke.sh` で機械検証できる(DoD (ii-a)。「選別(jq) 実装役の dependsOn ガード」ブロック参照)。
+- **実行時の並列 `Agent` 呼出**: orchestrator セッションの実行時ふるまいであり、bash の smoke script では原理的に検証できない(DoD (ii-b)。実運用の `/goal` 実行観測でのみ確認できる — 本 repo が既に「自己申告は便宜シグナル」「reports は best-effort で機械強制されない」と検証手段の限界を正直に書いている前例に倣う)。
 
 **outcome 解決(判定器の implementer 行に渡すトークンを決める)**:
 
