@@ -93,8 +93,19 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 各ロール節の post-dispatch 処理は、**状況を outcome トークンに解決 → `${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py` を呼ぶ → 返った `{ledger_write, route, label_action}` を実行**、という構造に統一する。**ルーティング規則(どの (role, outcome) がどう書くか・どの route か・ラベルをどう操作するか)は script が唯一の正**であり、prose に決定表を複製しない(`evaluate-stop-condition.py` / `reaggregate-has-blocker.py` と同じ「規則は script・prose は I/O」境界)。prose が担うのは (1) 状況を outcome へ解決する方法(各ロール節)と (2) 返った route / label_action の**実行方法**(本節)だけ。
 
-- **呼び方(`observation` を含む。issue #50 A1)**: 解決した outcome の route が `sink` になる(下記 outcome トークン一覧のうち sink 系 — 各ロール節で個別に列挙する)場合、判定入力に `observation`(観測した事実: 実行したコマンド・終了コード・出力要約)を必須で添える。**無いと判定器は exit 2 で拒否する(fail-closed)** — 詳細・spoof 可能性の正直な明記は `scripts/decide-orchestrator-route.py` のモジュール docstring「観測必須フィールド (A1)」を参照(規則はそちらが正・ここに複製しない)。sink でない outcome には `observation` は不要(渡さない)。呼び方はロール共通で次の 1 手続きに統一する(`<command>` を空文字で渡すと `observation` 自体を省略する — sink でない outcome を解決したときはこちらを使う):
+- **呼び方(`observation` を含む。issue #50 A1)**: 解決した outcome の route が `sink` になる(下記 outcome トークン一覧のうち sink 系 — 各ロール節で個別に列挙する)場合、判定入力に `observation`(観測した事実: 実行したコマンド・終了コード・出力要約)を必須で添える。**無いと判定器は exit 2 で拒否する(fail-closed)** — 詳細・spoof 可能性の正直な明記は `scripts/decide-orchestrator-route.py` のモジュール docstring「観測必須フィールド (A1)」を参照(規則はそちらが正・ここに複製しない)。sink でない outcome には `observation` は不要(渡さない)。呼び方はロール共通で次の 1 手続きに統一する。
+
+  **`<command>`/`<summary>` はシェル変数へ heredoc 経由で代入してから渡す(issue #59 round1 🔴1)**: `<command>`(例: `gh pr list --search '"Closes #<N>" in:body' ...` のような二重引用符入りの値)・`<summary>` は自由文であり、任意の引用符を含みうる。これを下の呼出テンプレートの引数位置へ**文字列として直接書き込む**(例: `"gh pr list --search '"Closes #<N>" in:body' ..."` とテンプレートの `"<command か空文字>"` を置換する)と、値の中の `"` がテンプレート側の外側引用符を早期に閉じてしまい、(1) `python3 -c` の argv 分解が壊れて `ValueError` で例外終了する、または (2) bash 変数代入位置で埋め込むと構文が壊れ値が無言で切り詰められる(いずれも実測済み)。**これを避けるため、`<command>`/`<summary>` は先に quoted heredoc でシェル変数へ代入し、呼出には `"$OBS_CMD"` / `"$OBS_SUMMARY"`(変数展開)だけを使う** — heredoc の delimiter を単一引用符で囲む(`<<'OBS_CMD_EOF'`)と本文中の `$` `` ` `` `"` `'` はすべて非展開のリテラル文字として扱われるため、値に何が入っていてもエスケープ不要になる(`"$VAR"` 展開自体は bash の基本動作として、変数の中身をどんな文字が入っていても単一の引数としてそのまま渡す — 壊れるのは値をテンプレートへ literal に書き写す手順の側であって、変数展開そのものではない)。`<role>`/`<outcome>` は固定トークン(`implementer`/`ambiguous` 等)、`<exit_code>` は整数のみなので、引用符を含まずこの保護は不要 — 従来どおりテンプレートへ直接書いてよい。sink でない outcome を解決したときは `<command>` が空文字なので heredoc は使わず `OBS_CMD=""` `OBS_SUMMARY=""` と直接代入すればよい(空文字に引用符崩壊のリスクは無い):
   ```
+  # sink 系 outcome を解決したときだけ実行する(sink でなければ OBS_CMD="" / OBS_SUMMARY="" でよい)
+  OBS_CMD=$(cat <<'OBS_CMD_EOF'
+  <command か空文字>
+  OBS_CMD_EOF
+  )
+  OBS_SUMMARY=$(cat <<'OBS_SUMMARY_EOF'
+  <summary か空文字>
+  OBS_SUMMARY_EOF
+  )
   ROUTE=$(python3 -c '
   import json, sys
   role, outcome, cmd, code, summary = sys.argv[1:6]
@@ -102,12 +113,12 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   if cmd:
       payload["observation"] = {"command": cmd, "exit_code": int(code), "summary": summary}
   print(json.dumps(payload))
-  ' "<role>" "<outcome>" "<command か空文字>" "<exit_code か 0>" "<summary か空文字>" \
+  ' "<role>" "<outcome>" "$OBS_CMD" "<exit_code か 0>" "$OBS_SUMMARY" \
     | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py")
   # -> {"ledger_write": <null|{...}>, "route": "normal|skip|sink",
   #     "label_action": "null|add_ready_for_merge|remove_ready_for_merge"}
   ```
-  **各ロール節が定義するのは `<command>/<exit_code>/<summary>` に何を渡すかだけ**(sink 系 outcome ごとに、その outcome を解決した手順で既に確定している値を使う — この判定のために新たに何かを実行観測する必要は無い)。script が exit 2(`observation` 欠落・不備を含む)を返した場合の扱いは下記のとおり。
+  **各ロール節が定義するのは `<command>/<exit_code>/<summary>` に何を渡すかだけ**(sink 系 outcome ごとに、その outcome を解決した手順で既に確定している値を使う — この判定のために新たに何かを実行観測する必要は無い)。**この呼び方(heredoc → `OBS_CMD`/`OBS_SUMMARY` → `"$OBS_CMD"`/`"$OBS_SUMMARY"` 展開)はロール共通の唯一の正であり、各ロール節(実装役手順 7 を含む)はこれを複製せずここを参照する。** script が exit 2(`observation` 欠落・不備を含む)を返した場合の扱いは下記のとおり。
 
   outcome トークン(role ごと。全網羅は `tests/smoke/run-smoke.sh` [8] が決定論検証):
   - **implementer**: `no_pr`(返答不正 かつ 復旧検索 0 件)/ `ambiguous`(復旧検索 複数件)/ `pr_evidence_pass`(pr_number 確定 かつ evidence exit 0)/ `pr_evidence_fail`(pr_number 確定 かつ evidence 非 0)/ `timeout`(issue #26: 「tick 冒頭 reconciliation」節の in-flight マーカーが締切超過でリトライ上限 N=2 に到達、またはマーカーが壊れている/不整合)/ `subjective_escalate`(issue #31・PR 未作成のまま `escalate_to_human` を返した)
@@ -422,18 +433,7 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
    - `ambiguous`: `<command>`=手順 4 の復旧検索コマンド(`gh pr list --search '"Closes #<N>" in:body' ...`)/ `<exit_code>`=0(検索コマンド自体は成功している)/ `<summary>`=再照合後の一致件数(例:「2 件一致」)。
    - `pr_evidence_fail`: `<command>`=手順 5 で呼んだ `run-orchestrator-evidence-gate.sh` の呼出文字列 / `<exit_code>`=`$EVIDENCE_EXIT` / `<summary>`=evidence gate 失敗の要約(1 行)。
    - `subjective_escalate`: `<command>`="dispatch 応答の escalate_to_human 検出" / `<exit_code>`=0 / `<summary>`=委譲先が返した `reason` をそのまま。
-   `no_pr` / `pr_evidence_pass`(sink でない)は `<command>` を空文字で渡し `observation` を省略する。`timeout` はこの手順を通らない(「tick 冒頭 reconciliation」節で別途解決・後述)。
-   ```
-   ROUTE=$(python3 -c '
-   import json, sys
-   role, outcome, cmd, code, summary = sys.argv[1:6]
-   payload = {"role": role, "outcome": outcome}
-   if cmd:
-       payload["observation"] = {"command": cmd, "exit_code": int(code), "summary": summary}
-   print(json.dumps(payload))
-   ' "implementer" "<解決した outcome>" "<command か空文字>" "<exit_code か 0>" "<summary か空文字>" \
-     | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py")
-   ```
+   `no_pr` / `pr_evidence_pass`(sink でない)は `<command>` を空文字で渡し `observation` を省略する。`timeout` はこの手順を通らない(「tick 冒頭 reconciliation」節で別途解決・後述)。**呼出し自体(heredoc → `OBS_CMD`/`OBS_SUMMARY` → `"$OBS_CMD"`/`"$OBS_SUMMARY"` 展開)は「ルーティング判定」節「呼び方」の共通手続きをそのまま使う(ここでは複製しない)** — `<role>`="implementer"、`<outcome>`=上記で解決した outcome、`<command>/<exit_code>/<summary>` は上記の値を渡す。
    - `pr_evidence_pass` / `pr_evidence_fail`: 判定器の `ledger_write`(`pr.number`=true / `pr.githubState`="open" / `pr.status`="created pr")を「ルーティング判定」節の **`ledger_write` の適用**手続きで**1 回のローカルファイル書込で書く**(`<pr_number>` に確定番号、`<clear_marker>`="true" を渡す — 手順 6 のとおり `dispatchMarker` の削除もこの同一書込に含める。**status リテラルは prose に複製せず `$ROUTE.ledger_write` から書く**)。evidence を書込より前に実行済みで、`ledger_write` の全キー(number/githubState/status)と `dispatchMarker` 削除を 1 回のファイル書込で適用するため、`pr.number` だけ書いて `pr.status` 未書込という中間状態や、marker だけ消えて `pr.number` 未書込という中間状態は生じない(非原子的多段書込を排除)。書込後は「書込方式」節に従いローカルファイル編集のみで完結させ(commit/push しない)、Statuses API 自己申告を行う。
      - `pr_evidence_pass` → route=normal。上記のローカル書込で完了。次 tick で pr reviewer に dispatch される。
      - `pr_evidence_fail` → route=sink。上記のローカル書込を行った**うえで**「失敗経路(単一の need for human review sink)」へ。書かれる `pr.status` は `ledger_write` のとおり `created pr`(`"completed review"` にはしない — reviewer が一度も走っていない PR には `# PR Reviewer` コメントが存在せず、対応役 dispatch しても直す finding が無い)。need for human review ラベル付与後は次 tick から無条件スキップされ安全に停止する。
