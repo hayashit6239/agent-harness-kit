@@ -20,7 +20,10 @@
 #    timeout 分岐 (issue #26) + 3 role 共通の主観的エスカレーション
 #    (issue #31・subjective_escalate) の存在を機械保証 /
 #    網羅ケース数と DECISION_TABLE のエントリ総数を突き合わせる行数ガード /
-#    不正入力 exit 2 の境界を含む)
+#    不正入力 exit 2 の境界 /
+#    A1 (issue #50): route=sink への解決には observation (観測した事実) が必須で、
+#    無ければ fail-closed で exit 2 になる境界・非 sink outcome は observation 無しでも
+#    従来通り成立する境界を含む)
 # 9. reconcile-dispatch-marker (dispatch in-flight マーカーの tick 冒頭 reconciliation 判定・
 #    issue #26) の単体判定が期待通り (marker 不在→eligible / 進捗確認→clear / 締切未到達→wait /
 #    締切超過でリトライ余地あり→redispatch(retry_count 加算) / リトライ上限到達→sink /
@@ -648,11 +651,23 @@ DECIDE="$ROOT/scripts/decide-orchestrator-route.py"
 
 # $1=ラベル $2=role $3=outcome $4=期待する出力 JSON (キー順・空白を正規化して比較。
 #   full 一致にすることで ledger_write / route / label_action の過不足も 1 度に検出する)
+# $5=省略可・observation JSON (A1・issue #50)。sink 系 outcome のケースはこれを渡す
+#   (渡さないと route=sink の判定入力が観測必須フィールドを欠き fail-closed で exit 2 になる —
+#   下の (r)/(s) が exit 2 になる境界そのものを別途検証する)。非 sink outcome では従来通り省略する。
 # 各呼出で ROUTE_CASES を 1 加算し、後段の行数ガードで DECISION_TABLE のエントリ総数と突き合わせる
 ROUTE_CASES=0
 assert_route() {
-  local label="$1" role="$2" outcome="$3" want="$4" out got wantc
-  out="$(printf '{"role":"%s","outcome":"%s"}' "$role" "$outcome" | python3 "$DECIDE")" \
+  local label="$1" role="$2" outcome="$3" want="$4" obs="${5:-}" out got wantc payload
+  if [ -n "$obs" ]; then
+    payload="$(python3 -c '
+import json, sys
+role, outcome, obs_json = sys.argv[1], sys.argv[2], sys.argv[3]
+print(json.dumps({"role": role, "outcome": outcome, "observation": json.loads(obs_json)}))
+' "$role" "$outcome" "$obs")"
+  else
+    payload="$(printf '{"role":"%s","outcome":"%s"}' "$role" "$outcome")"
+  fi
+  out="$(printf '%s' "$payload" | python3 "$DECIDE")" \
     || fail "$label: decide-orchestrator-route の実行に失敗した"
   got="$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False))')"
   wantc="$(printf '%s' "$want" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False))')"
@@ -662,41 +677,46 @@ assert_route() {
   ROUTE_CASES=$((ROUTE_CASES + 1))
 }
 
+# A1 (issue #50) の観測フィールド。sink 系 outcome の assert_route はこれを $5 に渡す
+# (中身は固定 fixture でよい — 本 script が検証するのは存在・型のみで内容の真偽は見ない。
+# モジュール docstring 「観測必須フィールド (A1)」に spoof 可能性を明記済み)
+OBS='{"command":"smoke fixture observation","exit_code":1,"summary":"smoke fixture summary"}'
+
 # implementer (6 outcome)
 assert_route "(a) implementer/no_pr" implementer no_pr \
   '{"ledger_write":null,"route":"skip","label_action":null}'
 assert_route "(b) implementer/ambiguous" implementer ambiguous \
-  '{"ledger_write":null,"route":"sink","label_action":null}'
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 assert_route "(c) implementer/pr_evidence_pass" implementer pr_evidence_pass \
   '{"ledger_write":{"pr.number":true,"pr.githubState":"open","pr.status":"created pr"},"route":"normal","label_action":null}'
 assert_route "(d) implementer/pr_evidence_fail (書いてから sink)" implementer pr_evidence_fail \
-  '{"ledger_write":{"pr.number":true,"pr.githubState":"open","pr.status":"created pr"},"route":"sink","label_action":null}'
+  '{"ledger_write":{"pr.number":true,"pr.githubState":"open","pr.status":"created pr"},"route":"sink","label_action":null}' "$OBS"
 # (d2) implementer/timeout (issue #26: in-flight マーカーがリトライ上限到達 or 不整合 -> sink。
 #   PR は実在しない (ambiguous と同型で書込なし))
 assert_route "(d2) implementer/timeout (issue #26 マーカー有界化 -> sink)" implementer timeout \
-  '{"ledger_write":null,"route":"sink","label_action":null}'
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 assert_route "(k) implementer/subjective_escalate (issue #31・PR 未作成 -> 書込なしで sink)" implementer subjective_escalate \
-  '{"ledger_write":null,"route":"sink","label_action":null}'
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 # responder (3 outcome)
 assert_route "(e) responder/evidence_pass" responder evidence_pass \
   '{"ledger_write":{"pr.status":"waiting for review"},"route":"normal","label_action":null}'
 assert_route "(f) responder/evidence_fail" responder evidence_fail \
-  '{"ledger_write":null,"route":"sink","label_action":null}'
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 assert_route "(l) responder/subjective_escalate (issue #31・書いてから sink)" responder subjective_escalate \
-  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}'
+  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
 # reviewer (全 5 outcome — invalid/escalate/clean_pass/blockers/subjective_escalate を必ず網羅する。
 #   invalid は dispatch 結果失敗を単一 sink に落とす分岐で、この行が抜けると reviewer だけ
 #   sink をすり抜ける — 全網羅で「表に invalid 行が在る」ことを機械保証する)
 assert_route "(g) reviewer/invalid (dispatch 失敗 -> sink)" reviewer invalid \
-  '{"ledger_write":null,"route":"sink","label_action":null}'
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 assert_route "(h) reviewer/escalate (停止条件 -> need for human review へ書いてから sink)" reviewer escalate \
-  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}'
+  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
 assert_route "(i) reviewer/clean_pass" reviewer clean_pass \
   '{"ledger_write":{"pr.status":"ready for merge"},"route":"normal","label_action":"add_ready_for_merge"}'
 assert_route "(j) reviewer/blockers" reviewer blockers \
   '{"ledger_write":{"pr.status":"completed review"},"route":"normal","label_action":"remove_ready_for_merge"}'
 assert_route "(m) reviewer/subjective_escalate (issue #31・客観 escalate とは別トリガーだが同じ sink)" reviewer subjective_escalate \
-  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}'
+  '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
 
 # 行数ガード: DECISION_TABLE の全エントリ数 (role×outcome の全組み合わせ) と assert_route で
 # 網羅したケース数 (ROUTE_CASES) が一致することを機械的に確認する。手動列挙は「行削除」は
@@ -733,7 +753,30 @@ printf '%s' '{"role":"reviewer"}' | python3 "$DECIDE" >/dev/null 2>&1 || route_r
 route_rc=0
 printf '%s' '["not","an","object"]' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
 [ "$route_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $route_rc"
-echo "[8/13] decide-orchestrator-route 判定ケース OK (全 role×outcome 14 行を網羅 + 不正入力 exit 2 境界)"
+
+# A1 (issue #50 round1 決定 🔴1): route=sink への解決は observation (観測した事実) が
+# 必須で、無ければ fail-closed で exit 2 になる。normal/skip 系の outcome は従来通り
+# observation 無しで成立する (上の (a)/(c)/(e)/(i)/(j) が既にこれを検証済み)。
+# (r) sink outcome (implementer/ambiguous) で observation 欠落 -> exit 2 (fail-closed)
+route_rc=0
+printf '%s' '{"role":"implementer","outcome":"ambiguous"}' | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
+[ "$route_rc" -eq 2 ] || fail "(r) sink outcome で observation 欠落なのに exit 2 にならなかった (exit $route_rc)"
+# (s) sink outcome (reviewer/invalid) で observation はあるが必須キー欠損 (exit_code 無し) -> exit 2
+route_rc=0
+printf '%s' '{"role":"reviewer","outcome":"invalid","observation":{"command":"x","summary":"y"}}' \
+  | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
+[ "$route_rc" -eq 2 ] || fail "(s) observation の必須キー欠損で exit 2 を期待したが exit $route_rc"
+# (t) sink outcome (responder/evidence_fail) で observation.exit_code が非整数 (文字列) -> exit 2
+route_rc=0
+printf '%s' '{"role":"responder","outcome":"evidence_fail","observation":{"command":"x","exit_code":"1","summary":"y"}}' \
+  | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
+[ "$route_rc" -eq 2 ] || fail "(t) observation.exit_code が非整数で exit 2 を期待したが exit $route_rc"
+# (u) sink outcome (implementer/timeout) で observation.summary が空文字 -> exit 2
+route_rc=0
+printf '%s' '{"role":"implementer","outcome":"timeout","observation":{"command":"x","exit_code":1,"summary":""}}' \
+  | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
+[ "$route_rc" -eq 2 ] || fail "(u) observation.summary が空文字で exit 2 を期待したが exit $route_rc"
+echo "[8/13] decide-orchestrator-route 判定ケース OK (全 role×outcome 14 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
 
 # --- 9. reconcile-dispatch-marker (dispatch in-flight マーカーの reconciliation 判定・issue #26) --
 # decide-orchestrator-route / evaluate-stop-condition / reaggregate-has-blocker と同型の
