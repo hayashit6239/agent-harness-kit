@@ -199,6 +199,10 @@ elif mode == "dependson-missing":
     # (xvi) dependsOn (issue #51) が存在しない step id を指している (authoring-time fail-closed 検知。
     # S1 が唯一の step のため "NOPE" はどの step の id とも一致しない)
     step["dependsOn"] = ["NOPE"]
+elif mode == "dependson-selfloop":
+    # (xvii) dependsOn (issue #57 round 2 🔴1) が自分自身を指している (self-loop の循環参照)。
+    # S1 が唯一の step のため "S1" は自分自身の id と一致する
+    step["dependsOn"] = ["S1"]
 else:
     raise SystemExit(f"unknown mode: {mode}")
 d["steps"] = [step]
@@ -239,6 +243,7 @@ FAIL_CASES=(
   "(xiii) evidence-gate 空文字列|evidence-blank|schema|evidence.test が null または空白のみ"
   "(xiv) --drift 単独の主張規則違反|ghstate-null|drift|number (1) があるのに githubState が null"
   "(xvi) dependsOn 存在しない id (issue #51)|dependson-missing|schema|存在しない step id を指している"
+  "(xvii) dependsOn self-loop 循環 (issue #57 round 2)|dependson-selfloop|schema|dependsOn に循環参照がある"
 )
 
 for row in "${FAIL_CASES[@]}"; do
@@ -262,6 +267,36 @@ for row in "${FAIL_CASES[@]}"; do
   esac
   echo "[4/13] $label -> non-zero + 期待文言"
 done
+
+# (xviii) dependsOn A⇄B 循環 (issue #57 round 2 🔴1): 2 step にまたがる循環は make_broken の
+#         「S1 単独 step」の型に収まらないため、表に入れず個別に台帳を組み立てる。
+#         A.dependsOn=["B"] / B.dependsOn=["A"] は「存在しない step id」チェックだけでは
+#         検知できず (B も A も実在する)、有向グラフの循環検知でのみ拾える境界
+CYCLE_AB_PLAN="$TMP/broken-dependson-cycle-ab.json"
+python3 - "$PLAN" "$CYCLE_AB_PLAN" <<'PY'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding="utf-8") as f:
+    d = json.load(f)
+d["steps"] = [
+    {"id": "A", "title": "cycle A",
+     "issue": {"number": None, "status": None, "githubState": None},
+     "pr": {"number": None, "status": None, "githubState": None},
+     "dependsOn": ["B"]},
+    {"id": "B", "title": "cycle B",
+     "issue": {"number": None, "status": None, "githubState": None},
+     "pr": {"number": None, "status": None, "githubState": None},
+     "dependsOn": ["A"]},
+]
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
+PY
+expect_fail_with "(xviii) dependsOn A⇄B 循環 (issue #57 round 2)" \
+  "dependsOn に循環参照がある" \
+  python3 "$VALIDATOR" --schema "$CYCLE_AB_PLAN"
+echo "[4/13] (xviii) dependsOn A⇄B 循環 (issue #57 round 2) -> non-zero + 期待文言"
 
 # --- 以下は形が特殊で表に入れない個別ケース (無理に畳むと可読性が落ちる)。
 #     番号は据え置きのため、出力順は表 → 個別の順になり通し番号どおりではない ---

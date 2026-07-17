@@ -223,6 +223,55 @@ def check_phase(errors, step, where, phase, status_enum, gh_enum):
     return p
 
 
+def find_dependson_cycle(steps, step_ids):
+    """dependsOn の有向グラフに循環 (self-loop 含む) があれば、循環を構成する id の並び
+    (例: ["A", "B", "A"]) を返す。無ければ None (issue #57 round 2 🔴1)。
+
+    存在しない step id への依存は check_schema 側で既に個別検知しており、循環は実在する
+    ノード同士でしか成立しないためここでは無視する。dependsOn が不正な型 (list でない等) の
+    step も同様に無視する (型崩れも check_schema が別途検知済み)。DFS の白 (未訪問) /
+    灰 (探索中の経路上) / 黒 (完了) 三色法で検知する: 灰の頂点へ再訪したら経路上に循環がある。
+    """
+    graph = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        sid = step.get("id")
+        if not isinstance(sid, str) or not sid:
+            continue
+        deps = step.get("dependsOn")
+        if deps is None:
+            deps = []
+        if not isinstance(deps, list):
+            continue
+        graph[sid] = [d for d in deps if isinstance(d, str) and d in step_ids]
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {sid: WHITE for sid in graph}
+
+    def visit(sid, path):
+        color[sid] = GRAY
+        path.append(sid)
+        for dep in graph.get(sid, []):
+            if color.get(dep) == GRAY:
+                idx = path.index(dep)
+                return path[idx:] + [dep]
+            if color.get(dep) == WHITE:
+                found = visit(dep, path)
+                if found is not None:
+                    return found
+        path.pop()
+        color[sid] = BLACK
+        return None
+
+    for sid in graph:
+        if color.get(sid) == WHITE:
+            found = visit(sid, [])
+            if found is not None:
+                return found
+    return None
+
+
 def check_schema(errors, data, enums):
     issue_status_enum, pr_status_enum, issue_gh_enum, pr_gh_enum = enums
 
@@ -330,6 +379,19 @@ def check_schema(errors, data, enums):
                     ready_exists = True
                 if pr and pr.get("status") == READY_PR_STATUS:
                     ready_exists = True
+
+            # dependsOn 整合規則 (issue #57 round 2 🔴1・循環検知):
+            # 「存在しない step id」しか検知しない上のループでは、A⇄B (self-loop 含む) の
+            # 循環 dependsOn を見逃す。循環があると選別 jq (`commands/harness-orchestrate.md`)
+            # は循環に絡む step を永久に eligible にせず (全依存終端条件が永久に不成立)、
+            # validator --schema は緑のまま = 無音の永久デッドロックになる。ここで有向グラフの
+            # 循環を検知し authoring-time に fail-closed で reject する (2 段の安全網の穴を塞ぐ)。
+            cycle = find_dependson_cycle(steps, step_ids)
+            if cycle is not None:
+                err(errors, "steps[*].dependsOn",
+                    f"dependsOn に循環参照がある ({' -> '.join(cycle)})。",
+                    "循環している dependsOn のいずれかを削除するか依存方向を見直す"
+                    " (self-loop の場合は自分自身への依存を削除する)")
 
     # evidence-gate: ready 系 status の step があるなら evidence.test は non-null
     # (init 忘れ・削除を防ぐ「床」。test が実際に走った保証ではない)
