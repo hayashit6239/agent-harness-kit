@@ -1,13 +1,13 @@
 ---
-description: レビュー候補収集(8 角度 finder)への dispatch prompt 本体。review-mode=code-review の候補収集フェーズで、finder を「このファイルの実行者自身」の直接の子として起動するための指示(issue #49)。`commands/harness-orchestrate.md`「pr reviewer」節(orchestrator モードでは orchestrator 自身が実行)、および `commands/harness-review-pr.md` 手順 4-b(orchestrator 未経由の単体起動では pr reviewer セッション自身が実行)から Read されて実行される内部フラグメントであり、単体で `/harness-dispatch-review-finders` として直接呼び出すことは想定しない(既存 `commands/harness-dispatch-implementer.md` / `commands/harness-dispatch-responder.md` と対称の配置・命名)。
+description: レビュー候補収集(8 角度 finder)への dispatch prompt 本体。review-mode=code-review の候補収集フェーズで、finder を「このファイルの実行者自身」の直接の子として起動するための指示(issue #49)。`commands/harness-orchestrate.md`「pr reviewer」節(orchestrator 自身が実行)から Read されて実行される role 規約ファイルであり、単体で直接呼び出すことは想定しない(既存 `${CLAUDE_PLUGIN_ROOT}/roles/developer-implementer.md` / `${CLAUDE_PLUGIN_ROOT}/roles/developer-responder.md` と対称の配置・命名。issue #61 で `commands/` から `roles/` へ移動)。
 allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
 ---
 
 # レビュー候補収集(8 角度 finder)dispatch prompt
 
-`commands/harness-orchestrate.md`「pr reviewer」節、または `commands/harness-review-pr.md` 手順 4-b が review-mode=code-review の候補収集で Read して実行する指示本体。**転写しない** — 必ずこのファイルを Read してから、以下をそのまま実行すること。
+`commands/harness-orchestrate.md`「pr reviewer」節が review-mode=code-review の候補収集で Read して実行する指示本体。**転写しない** — 必ずこのファイルを Read してから、以下をそのまま実行すること。
 
-**このファイルを実行している主体自身が、finder の直接の親になる**(issue #49 の核心)。orchestrator モードでは orchestrator 自身がこのファイルを実行するため finder は orchestrator の直接の子になる。単体起動(orchestrator 未経由・手動 / `/loop` 直接実行)では pr reviewer セッション自身がこのファイルを実行するため finder はそのセッションの直接の子になる。**どちらの経路でも finder が「孫」(orchestrator から見て孫、または誰からも観測できない世代)にならない**。対象 PR 番号 `<N>` / リポジトリ `<repo>` / 出力先ディレクトリ `<OUT_DIR>` は呼出元(orchestrator または pr reviewer 手順 4-b)から渡される(`<OUT_DIR>` 省略時は `mktemp -d` 等で一時ディレクトリを自分で用意してよい)。
+**このファイルを実行している主体自身が、finder の直接の親になる**(issue #49 の核心)。orchestrator が `review-mode=code-review` の候補収集フェーズでこのファイルを実行するため、finder は orchestrator の直接の子になる(orchestrator から見て「孫」、または誰からも観測できない世代にはならない)。対象 PR 番号 `<N>` / リポジトリ `<repo>` / 出力先ディレクトリ `<OUT_DIR>` は呼出元(orchestrator)から渡される(`<OUT_DIR>` 省略時は `mktemp -d` 等で一時ディレクトリを自分で用意してよい)。
 
 **★最重要★ 手順を読む前に頭に入れておくこと(issue #49・PR #40/#41 の実測に基づく対策)**:
 
@@ -67,4 +67,4 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
    git worktree remove --force "$WORKTREE"
    ```
 
-6. **呼出元へ返す**: 統合ファイルのパス `<OUT_DIR>/findings.json` と、未応答の角度があればその一覧(手順 3)を返す。**findings の中身そのものを呼出元へ再掲しない**(呼出元は必要になったときにファイルを Read する — このファイルの実行者が orchestrator の場合、findings 本文をここで自分の応答に含めて context に載せない)。呼出元(orchestrator または pr reviewer)はこのパスを使って独立検証(候補ごとの CONFIRMED/PLAUSIBLE/REFUTED 判定 + severity 付与。手順は `commands/harness-review-pr.md` 手順 4-b 参照)を行う — **その検証はこのファイルの範囲外**(finder は候補を機械的に集めるだけで判定しない)。
+6. **呼出元へ返す**: 統合ファイルのパス `<OUT_DIR>/findings.json` と、未応答の角度があればその一覧(手順 3)を返す。**findings の中身そのものを呼出元へ再掲しない**(呼出元(orchestrator)は必要になったときにファイルを Read する — findings 本文をここで自分の応答に含めて context に載せない)。この後 orchestrator が dispatch する pr reviewer(`${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)がこのパスを使って独立検証(候補ごとの CONFIRMED/PLAUSIBLE/REFUTED 判定 + severity 付与。手順は同ファイル手順 4-b 参照)を行う — **その検証はこのファイルの範囲外**(finder は候補を機械的に集めるだけで判定しない)。

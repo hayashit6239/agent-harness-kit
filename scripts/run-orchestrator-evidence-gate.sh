@@ -9,7 +9,7 @@
 #
 # subagent が dispatch 中に作った worktree は削除済みの可能性があり参照できないため、orchestrator
 # 自身が独立して PR の head ブランチを取得し専用の一時 worktree を作って実行する
-# (commands/harness-review-pr.md 手順 4 の per-PR worktree パターンと同じ)。
+# (roles/pr-reviewer.md 手順 4 の per-PR worktree パターンと同じ)。
 #
 # 使い方:
 #   run-orchestrator-evidence-gate.sh <owner/repo> <pr_number>

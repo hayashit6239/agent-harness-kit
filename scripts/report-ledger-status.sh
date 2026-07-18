@@ -11,7 +11,7 @@
 # 実際の diff/状態を初見で読むことが担う。設計上の位置づけと限界は
 # .harness/CLAUDE.harness.md「台帳の書込経路」節を参照。
 #
-# commands/harness-orchestrate.md と commands/harness-review-pr.md の両方から呼ぶ単一の実体。
+# commands/harness-orchestrate.md と roles/pr-reviewer.md の両方から呼ぶ単一の実体。
 # 報告ロジックを散文に複製せず script を唯一の正とする (scripts/*.py と同じ境界)。
 #
 # 使い方:

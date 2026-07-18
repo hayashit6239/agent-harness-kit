@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """has_blocker の再集計 (harness-kit 定義)。python3 標準ライブラリのみの 1 ファイル。
 
-/harness-review-pr 手順 5.5 の判定器。LLM の解釈で判定させず、ここで決定論的に判定する。
+roles/pr-reviewer.md 手順 5.5 の判定器。LLM の解釈で判定させず、ここで決定論的に判定する。
 
 使い方:
     stdin に findings JSON 配列を渡す:

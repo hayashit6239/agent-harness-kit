@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """停止条件 (round_flag / trend_flag / escalate) の判定器。python3 標準ライブラリのみの 1 ファイル。
 
-/harness-review-pr 手順 5.6 の判定器。LLM の解釈で判定させず、ここで決定論的に判定する。
+roles/pr-reviewer.md 手順 5.6 の判定器。LLM の解釈で判定させず、ここで決定論的に判定する。
 `reaggregate-has-blocker.py` (has_blocker 再集計) と対をなす存在で、同じ設計境界を守る:
 「severity タグ付け・意味判断は LLM 側 / 集約と停止条件の判定は script 側で決定論」。
 
