@@ -16,9 +16,9 @@
 #    has_blocker=false 抑止 / round<3 短絡 / round_flag+trend_flag 同時成立 / round=3 境界 /
 #    不正入力 exit 2 の境界を含む)
 # 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定が期待通り
-#    (決定表の全 role×outcome 14 行を網羅 = reviewer の invalid 分岐 + implementer の
-#    timeout 分岐 (issue #26) + 3 role 共通の主観的エスカレーション
-#    (issue #31・subjective_escalate) の存在を機械保証 /
+#    (決定表の全 role×outcome 16 行を網羅 = reviewer の invalid 分岐 + implementer の
+#    timeout 分岐 (issue #26) + reviewer/responder の timeout 分岐 (issue #71・reviewLock hang) +
+#    3 role 共通の主観的エスカレーション (issue #31・subjective_escalate) の存在を機械保証 /
 #    網羅ケース数と DECISION_TABLE のエントリ総数を突き合わせる行数ガード /
 #    不正入力 exit 2 の境界 /
 #    A1 (issue #50): route=sink への解決には observation (観測した事実) が必須で、
@@ -640,9 +640,10 @@ echo "[7/13] evaluate-stop-condition 判定ケース OK (round 上限・trend・
 
 # --- 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定 ----
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
-# 決定表の全 (role × outcome) 14 行を網羅検証する — この網羅により、reviewer の "invalid"
+# 決定表の全 (role × outcome) 16 行を網羅検証する — この網羅により、reviewer の "invalid"
 # 分岐 (dispatch 結果失敗 -> sink)、implementer の "timeout" 分岐 (issue #26・in-flight
-# マーカーのリトライ上限到達/不整合 -> sink)、および 3 role 共通の主観的エスカレーション
+# マーカーのリトライ上限到達/不整合 -> sink)、reviewer/responder の "timeout" 分岐 (issue #71・
+# reviewLock hang -> sink)、および 3 role 共通の主観的エスカレーション
 # (issue #31・"subjective_escalate") が存在し正しく sink に落ちることが機械的に保証される
 # (orchestrator の散文分岐が毎 round どこかずれる問題を構造的に止める)。さらに網羅ケース数と
 # DECISION_TABLE のエントリ総数を突き合わせる行数ガードで「行追加時の assert 書き忘れ」を塞ぐ。
@@ -717,6 +718,12 @@ assert_route "(j) reviewer/blockers" reviewer blockers \
   '{"ledger_write":{"pr.status":"completed review"},"route":"normal","label_action":"remove_ready_for_merge"}'
 assert_route "(m) reviewer/subjective_escalate (issue #31・客観 escalate とは別トリガーだが同じ sink)" reviewer subjective_escalate \
   '{"ledger_write":{"pr.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
+# reviewer/responder timeout (issue #71: reviewLock 締切超過 = hang -> sink)。実装役 timeout と対称に
+# ledger_write=null (hang は検証不能なので status 遷移を捏造しない)。reviewer の invalid とは別 outcome
+assert_route "(m2) reviewer/timeout (issue #71・reviewLock hang -> 書込なし sink)" reviewer timeout \
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
+assert_route "(m3) responder/timeout (issue #71・reviewLock hang -> 書込なし sink)" responder timeout \
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 
 # 行数ガード: DECISION_TABLE の全エントリ数 (role×outcome の全組み合わせ) と assert_route で
 # 網羅したケース数 (ROUTE_CASES) が一致することを機械的に確認する。手動列挙は「行削除」は
@@ -776,7 +783,7 @@ route_rc=0
 printf '%s' '{"role":"implementer","outcome":"timeout","observation":{"command":"x","exit_code":1,"summary":""}}' \
   | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
 [ "$route_rc" -eq 2 ] || fail "(u) observation.summary が空文字で exit 2 を期待したが exit $route_rc"
-echo "[8/13] decide-orchestrator-route 判定ケース OK (全 role×outcome 14 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
+echo "[8/13] decide-orchestrator-route 判定ケース OK (全 role×outcome 16 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
 
 # --- 9. reconcile-dispatch-marker (dispatch in-flight マーカーの reconciliation 判定・issue #26) --
 # decide-orchestrator-route / evaluate-stop-condition / reaggregate-has-blocker と同型の
@@ -845,7 +852,15 @@ assert_reconcile "(k) 未来矛盾 marker (dispatched>current) -> sink" \
 assert_reconcile "(l) bool 混入 marker (retry_count=true) -> sink" \
   '{"marker":{"dispatched_tick":1,"deadline_tick":3,"retry_count":true},"current_tick":4,"progressed":false}' \
   '{"action":"sink","reason":"invalid_marker"}'
-echo "[9/13] reconcile-dispatch-marker 判定ケース OK (eligible/clear/wait/redispatch/sink 全 action・境界・fail-closed を含む)"
+# (r) max_retries:0 (reviewLock 用途・issue #71) -> 締切超過で redispatch を経ず即 sink。
+#     (d) と同一の marker + current_tick (deadline 超過・retry_count=0) で max_retries だけ 0 に
+#     すると、(d) の redispatch(retry_count=1)ではなく即 sink(retries_exhausted・retry_count=1)に
+#     なる。max_retries 引数の分岐を (d) と対比して切り分けて固定する(既定 N=2 の (d)/(e)/(f) は
+#     max_retries 未指定のまま回帰不変であることも同時に担保 = dispatchMarker の後方互換)。
+assert_reconcile "(r) max_retries:0 (reviewLock) 締切超過 -> redispatch を経ず即 sink" \
+  '{"marker":{"dispatched_tick":1,"deadline_tick":3,"retry_count":0},"current_tick":4,"progressed":false,"max_retries":0}' \
+  '{"action":"sink","reason":"retries_exhausted","retry_count":1}'
+echo "[9/13] reconcile-dispatch-marker 判定ケース OK (eligible/clear/wait/redispatch/sink 全 action・境界・fail-closed・max_retries:0 即 sink (issue #71) を含む)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — 他の decision script と同じ流儀)
 # (m) marker キー欠損 -> exit 2
@@ -868,7 +883,12 @@ printf '%s' '{"marker":null,"current_tick":1,"progressed":"no"}' | python3 "$REC
 recon_rc=0
 printf '%s' '["not","an","object"]' | python3 "$RECONCILE" >/dev/null 2>&1 || recon_rc=$?
 [ "$recon_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $recon_rc"
-echo "[9/13] reconcile-dispatch-marker 不正入力 exit 2 境界 OK"
+# (s) max_retries が非負整数でない (負値) -> exit 2 (issue #71・任意フィールドの入力検証。
+#     不正値のまま reconcile へ渡して TypeError で落とさず fail-closed で早期に弾く)
+recon_rc=0
+printf '%s' '{"marker":null,"current_tick":1,"progressed":false,"max_retries":-1}' | python3 "$RECONCILE" >/dev/null 2>&1 || recon_rc=$?
+[ "$recon_rc" -eq 2 ] || fail "(s) max_retries 負値で exit 2 を期待したが exit $recon_rc"
+echo "[9/13] reconcile-dispatch-marker 不正入力 exit 2 境界 OK (max_retries 非負検証を含む)"
 
 # 選別(jq) 実装役の dispatchMarker / dependsOn ガード。
 # commands/harness-orchestrate.md 選別(jq) 実装役ブロックと同一の jq をここで直接実行し、

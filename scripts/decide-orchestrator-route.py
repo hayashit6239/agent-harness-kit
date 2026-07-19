@@ -22,8 +22,8 @@ DECISION_TABLE。
          "observation": <sink 系 outcome のみ必須。下記「観測必須フィールド (A1)」参照>}
     outcome トークン (role ごとに定義。orchestrator prose が状況をこのトークンに解決してから渡す):
       - implementer: no_pr / ambiguous / pr_evidence_pass / pr_evidence_fail / timeout / subjective_escalate
-      - responder:   evidence_pass / evidence_fail / subjective_escalate
-      - reviewer:    invalid / escalate / clean_pass / blockers / subjective_escalate
+      - responder:   evidence_pass / evidence_fail / timeout / subjective_escalate
+      - reviewer:    invalid / escalate / clean_pass / blockers / timeout / subjective_escalate
 
 観測必須フィールド (A1・issue #50 round1 決定 🔴1 + owner 決定 (b)):
     `route=sink` に解決する (role, outcome) の組は、判定入力に `observation`
@@ -56,6 +56,15 @@ DECISION_TABLE。
 (完了したが PR 未作成) は独立に観測できる枝ではなく、締切超過と同じリトライカウンタに畳み込まれる**
 — したがって `no_pr` の連続発生が `reconcile-dispatch-marker.py` でリトライ上限に到達した場合も
 この `timeout` outcome に解決する (`no_pr` outcome 自体は 1 回ごとの skip 判定のまま変更しない)。
+
+`timeout` (reviewer / responder・issue #71): reviewer / 対応役の `reviewLock` が
+`reconcile-dispatch-marker.py` (max_retries=0) で締切超過 (hang) と判定されたときに解決する
+outcome。reviewLock は正常時 dispatch した同一 tick 内で削除されるため、次 tick 以降まで残ること
+自体が「dispatch call がセッションを止めた真の hang」のシグナルになる。実装役 timeout と対称に
+`ledger_write=null` (hang は無状態 tick では検証不能なので status 遷移を捏造しない)・route=sink。
+reviewer の `invalid` (不正 JSON = dispatch 結果失敗) とは別事象のため別 outcome にする
+(observation で混同させない)。役割 (reviewer か responder か) は reconciliation 側が pr.status から
+解決する (`commands/harness-orchestrate.md`「tick 冒頭 reconciliation」節)。
     stdout に判定結果 JSON を返す:
         {"ledger_write": <null|{...}>, "route": "<normal|skip|sink>",
          "label_action": "<null|add_ready_for_merge|remove_ready_for_merge>"}
@@ -145,6 +154,12 @@ DECISION_TABLE = {
         "subjective_escalate": {
             "ledger_write": {"pr.status": "need for human review"},
             "route": "sink", "label_action": None},
+        # reviewLock が締切超過 (hang) と判定された (issue #71): 対応役 dispatch が
+        # セッションを止めたため判定物が無い。hang は検証不能なので status 遷移を捏造せず
+        # 書込なしで sink (実装役 timeout の ledger_write=null と対称)。reviewLock 自体は
+        # reconciliation 側の変則手続きで削除せず notified で永続化する (reviewer/timeout と同型)
+        "timeout": {
+            "ledger_write": None, "route": "sink", "label_action": None},
     },
     "reviewer": {
         # dispatch 結果失敗 (返答が JSON でない / escalate を読めない): 書込なしで sink
@@ -169,6 +184,11 @@ DECISION_TABLE = {
         "subjective_escalate": {
             "ledger_write": {"pr.status": "need for human review"},
             "route": "sink", "label_action": None},
+        # reviewLock が締切超過 (hang) と判定された (issue #71): reviewer dispatch が hang。
+        # invalid (不正 JSON = dispatch 結果失敗) とは別事象で observation を混同させないため
+        # 別 outcome にする。hang は検証不能なので書込なしで sink (実装役 timeout と対称)
+        "timeout": {
+            "ledger_write": None, "route": "sink", "label_action": None},
     },
 }
 
