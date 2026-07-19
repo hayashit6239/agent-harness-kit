@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orchestrator-route.schema.json",
+  "title": "orchestrator-route",
+  "description": "scripts/decide-orchestrator-route.py の入出力(実行時 IPC)の形を規定する。orchestrator が状況を (role, outcome) トークンへ解決して stdin に渡し、script が (ledger_write, route, label_action) を stdout に返す — この 2 つのメッセージ形を definitions.input / definitions.output に置く。呼出のたびに使われて捨てられる純粋 IPC であり台帳(.harness/plan-progress.json)には永続しないため、台帳の永続構造(reports / marker は plan-progress.schema.json)ではなく contracts/ に置く(置き場の判断基準は contracts/README.md「置き場の判断基準」節・issue #68 C 案)。この形は元々 decide-orchestrator-route.py の docstring「使い方」にあった入出力形を単一の正として抽出したもの — script/手順書側は今後ここを参照し二重定義しない。ルーティング規則(どの (role, outcome) がどの結果に解決するか)の正は decide-orchestrator-route.py の DECISION_TABLE、結果の適用手順(台帳への原子書込・ラベル同期・sink)の正は commands/harness-orchestrate.md「ルーティング判定」節(いずれもここでは複製しない)。この schema は型/形の記述に留める。",
+  "definitions": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "outcome"],
+      "description": "decide-orchestrator-route.py の stdin。orchestrator prose が状況を解決したトークンを渡す。",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["implementer", "responder", "reviewer"],
+          "description": "委譲先ロールの区分。DECISION_TABLE の第 1 キー。"
+        },
+        "outcome": {
+          "type": "string",
+          "description": "role ごとに定義された outcome トークン(orchestrator prose が状況をこれに解決してから渡す)。実際の (role, outcome) の対応の正は decide-orchestrator-route.py の DECISION_TABLE(ここでは列挙しない)。"
+        },
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command", "exit_code", "summary"],
+          "description": "(任意)route=sink に解決する (role, outcome) の組にのみ必須(issue #50 A1・fail-closed。それ以外の組では渡されても無視される)。存在・型のみ検証し内容の真偽は検証しない(spoof 可能・独立検証ではなく捏造コストを上げるだけ)。詳細は decide-orchestrator-route.py docstring「観測必須フィールド (A1)」。",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "description": "観測を得たコマンド(非空)。"
+            },
+            "exit_code": {
+              "type": "integer",
+              "description": "コマンドの終了コード(整数・bool 不可)。"
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "description": "観測した事実の要約(非空)。"
+            }
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ledger_write", "route", "label_action"],
+      "description": "decide-orchestrator-route.py の stdout。判定結果。route の値によらず script は exit 0 で返す。",
+      "properties": {
+        "ledger_write": {
+          "type": ["object", "null"],
+          "description": "台帳へ書くフィールドの集合、または null(書込なし)。非 null ならその中のキーだけを台帳へ書く。キーは step 相対のドット表記(例: \"pr.status\" / \"pr.githubState\")。\"pr.number\": true は「呼出側 orchestrator が保持する確定 pr_number を書く」ことを示す真偽フラグ(script は具体番号を知らないため真偽で返し、番号埋め込みは prose 側が行う)。他キー(\"pr.githubState\" / \"pr.status\")は書き込むリテラル値そのもの。適用手順の正は commands/harness-orchestrate.md「ルーティング判定」節『ledger_write の適用』。"
+        },
+        "route": {
+          "type": "string",
+          "enum": ["normal", "skip", "sink"],
+          "description": "副作用の分岐。normal=台帳書込のみ / skip=書込なし・次 tick 再試行 / sink=失敗経路(need for human review ラベル + PushNotification)。各 route の適用手順の正は commands/harness-orchestrate.md「ルーティング判定」節。"
+        },
+        "label_action": {
+          "enum": [null, "add_ready_for_merge", "remove_ready_for_merge"],
+          "description": "PR ラベル操作。null=なし / add_ready_for_merge=付与 / remove_ready_for_merge=除去。適用は commands/harness-orchestrate.md「ルーティング判定」節。"
+        }
+      }
+    }
+  }
+}

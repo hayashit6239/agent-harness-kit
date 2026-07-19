@@ -45,6 +45,27 @@
         "body": { "type": "string", "description": "作業レポート本文 (人間可読)" }
       }
     },
+    "dispatchMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatched_tick", "deadline_tick", "retry_count"],
+      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形のみをここで規定する — tick 計測・締切オフセット K・有界リトライ・notified 付与などの手続き (K/N 等のチューニング可能な具体値を含む) の正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない)。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (この宣言を足しても validate-plan-progress.py --schema / --drift / smoke の検査挙動は不変。issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)",
+      "properties": {
+        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (台帳 top-level の transient カウンタ由来)" },
+        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K)。K の具体値・計算は marker 書込側 (prose) が行う" },
+        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数 (初回 0、再 dispatch で reconciliation が返す値を引き継ぐ)。上限 N の具体値は prose 側が定める" },
+        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の復旧検索・reconciliation をスキップする (通知の無限反復防止)" }
+      }
+    },
+    "reviewLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatched_tick"],
+      "description": "pr reviewer / developer (対応役) dispatch の in-flight ロック (transient・lock-only・issue #37)。deadline_tick / retry_count は持たない (締切・有界リトライは不要 — dispatch は同一 tick 内で outcome まで同期完結するため)。書込・解除・選別ガードの手続きの正は commands/harness-orchestrate.md「reviewer / 対応役の in-flight ロック」節 (ここでは複製しない)。dispatchMarker と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変。issue #68 で optional 宣言に変更)",
+      "properties": {
+        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick を共有)" }
+      }
+    },
     "issueStatus": {
       "enum": [
         null,
@@ -109,7 +130,9 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "この step が実装役の配車選別で eligible になるために終端していなければならない依存 step の id 一覧 (任意・後方互換。issue #51)。終端の定義は issue.status == \"closed issue\" (PR の有無は問わない)。空配列/欠損/null はいずれも「依存なし」= 常に eligible (selection-time の選別 jq は `(.dependsOn // [])` で null を [] と同一視する。authoring-time の validate-plan-progress.py --schema も同じ扱いに揃える。PR #57 round 1 レビュー対応)。存在しない step id を指す要素は selection-time (選別 jq) で fail-closed に未解決として扱われる — authoring-time (validate-plan-progress.py --schema) の整合規則でも同じ違反を検知する (2 段の安全網)。dependsOn の有向グラフに循環参照 (A⇄B や self-loop) があると、選別 jq は循環に絡む step を永久に eligible にできず無音の永久デッドロックになるため、authoring-time (validate-plan-progress.py --schema) は循環を検知して exit 1 で reject する (循環は selection-time では検知しない・fail-closed の前段防御。PR #57 round 2 レビュー対応)"
-        }
+        },
+        "dispatchMarker": { "$ref": "#/definitions/dispatchMarker" },
+        "reviewLock": { "$ref": "#/definitions/reviewLock" }
       }
     }
   }

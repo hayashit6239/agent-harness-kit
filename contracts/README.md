@@ -12,15 +12,27 @@ harness の各エージェント(orchestrator / developer / pr reviewer / collec
 | `collector-angle.schema.json` | `collectors/angles/*.md`(kit デフォルト)・`.harness/collectors/angles/*.md`(導入先追加。issue #65)の frontmatter | collector 機構(`collectors/strategy.md`。読取) / 観点を書くユーザー |
 | `collector-angle.template.md` | 上記 angle を新規作成するときの雛形 | 観点を追加するユーザー |
 | `reviewer-return.schema.json` | pr reviewer が orchestrator へ返す判定結果 `{has_blocker,blocker_count,escalate,review_markdown,escalate_to_human?}`(issue #66・round2) | pr reviewer(出力) / orchestrator(入力・検証) |
+| `orchestrator-route.schema.json` | `scripts/decide-orchestrator-route.py` の入出力(実行時 IPC)。入力 `{role,outcome,observation?}` / 出力 `{ledger_write,route,label_action}`(issue #68。`definitions.input` / `definitions.output`) | orchestrator(input 産出・output 消費) / decide-orchestrator-route.py(input 消費・output 産出) |
 
-**スコープ外(follow-up)**: `dispatchMarker` / `reviewLock`(in-flight マーカー)、`decide-orchestrator-route.py` の入出力、`reports[]` は本 PR(#66)の対象外(`.harness/plan-progress.schema.json` との二重定義解消が別途要るため)。
+**別ファイルに置く契約(意図的・issue #68 で解消)**: `dispatchMarker` / `reviewLock`(in-flight マーカー)と `reports[]`(作業レポート)は、実行時 IPC ではなく**台帳(`.harness/plan-progress.json`)の step に永続する構造**なので、`contracts/` ではなく `.harness/plan-progress.schema.json` に定義する(`definitions.dispatchMarker` / `definitions.reviewLock` / `definitions.report`)。判断基準は下記「置き場の判断基準」節を参照(PR #66 時点では「follow-up」だったが、本 issue #68 で置き場を確定して解消済み)。
+
+## 置き場の判断基準(`contracts/` か `plan-progress.schema.json` か・issue #68 C 案)
+
+エージェント間契約のスキーマを新設するとき、置き場は契約の**性質**で決める(将来また同じ議論を繰り返さないための明文化):
+
+- **台帳の step に書き込まれず、実行時にのみ流れて捨てられる値**(呼出のたびに使われる純粋 IPC)→ **`contracts/`**。
+  例: `orchestrator-route.schema.json`(decide-orchestrator-route.py の入出力)、`reviewer-return.schema.json`、`findings.schema.json`。
+- **台帳(`.harness/plan-progress.json`)の step オブジェクトに書き込まれる値** → **`.harness/plan-progress.schema.json`**。真の弁別子は「**step に書き込まれるか**」であって永続の長さではない(tick を跨いで残るか、同一 tick 内で書込・削除が完結するかは問わない)。
+  例: `reports[]`(作業レポート)、`dispatchMarker` / `reviewLock`(in-flight マーカー)。`reviewLock` は `commands/harness-orchestrate.md`「reviewer / 対応役の in-flight ロック」節のとおり同一 tick 内で書込・削除が完結する(tick を跨がない)が、step に書き込まれる点でこちらに置く。
+  - マーカーは issue #26 決定により validator/drift/smoke の**検査対象外**に留める。schema には optional(`step.required` 非追加・`step` の `additionalProperties` 不変)で宣言し、型/形のみを規定する(検査挙動は不変)。手続き(tick 計測・有界リトライ等)の正は `commands/harness-orchestrate.md` 側。
 
 ## 方針
 
 - **機械検証の正はここ**。手順書側はここを参照し、形式を二重定義しない。
 - `.schema.json` = 機械検証用(JSON Schema)。`.template.md` = 人が copy して埋める雛形。
-- 新しいエージェント間契約(例: orchestrator の in-flight マーカー形式)を規定したくなったら、
-  まずここに `<name>.schema.json` を足す。
+- 新しいエージェント間契約(実行時 IPC の例: 判定 script の入出力・reviewer の返り値形式)を規定したくなったら、
+  上記「置き場の判断基準」節で `contracts/` 側(台帳 step に書き込まれない純粋 IPC)であることを確認したうえで、ここに `<name>.schema.json` を足す
+  (台帳 step に書き込まれる値 — orchestrator の in-flight マーカー等 — は `.harness/plan-progress.schema.json` 側に置く)。
 - **doer≠judge を形式で守る**: 収集フェーズが出すもの(`findings.schema.json`)には
   severity・合否を持たせない。判定は pr reviewer が付ける。angle(`collector-angle.schema.json`)も
   収集専任(パターン A)に限定し、判定を伴う skill を受け付けない。
