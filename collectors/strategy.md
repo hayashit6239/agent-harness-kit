@@ -13,14 +13,22 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
 
 **候補の出力形式は `contracts/findings.schema.json` を正とする**(`{file, line, summary, failure_scenario}` の配列。severity・sources 等の判定用フィールドは持たせない — doer≠judge の境界を形式でも守る。issue #64)。**角度(observation point)定義の frontmatter 形式は `contracts/collector-angle.schema.json` を正とする**(`id` / `label` / `skill?` / `enabled?`。新規角度を追加するときの雛形は `contracts/collector-angle.template.md`)。
 
-**★最重要★ 手順を読む前に頭に入れておくこと(issue #49・PR #40/#41 の実測に基づく対策)**:
+**★最重要★ 手順を読む前に頭に入れておくこと**:
 
-1. すべての finder は `subagent_type: "general-purpose"` で起動せよ(**`fork` を禁止**。fork は呼出元の会話文脈を丸ごと継承する設計のため、finder が「この角度だけ見ろ」という狭い directive を無視し、継承した文脈から呼出元の最上位タスクを再実行する — 実測で 6/6 逸脱・1 件も findings を返せなかった)。
-2. 各 finder への指示に **「`SendMessage` を使うな。結果は最終メッセージとして直接出力せよ」を必ず明示する**(実測で生死を分けた対策 — `SendMessage` で返す finder は宛先解決に失敗して結果を失うが、最終メッセージで直接出力した finder は 100% 到達した)。
-3. `gh auth switch` を実行するな(active アカウントを変えると呼出元の `gh` 操作が壊れる)。
-4. 角度ごとに担当領域が排他な独立タスクなので、可能な限り 1 メッセージ内で並列起動する(順番に 1 体ずつ起動しない)。
-5. **収集は機械的**(角度は下記手順 2 の解決ロジックで確定し、以降は選択の余地なし)。ここでは判定(severity 付与・CONFIRMED/PLAUSIBLE/REFUTED の検証・集計・投稿)を行わない — それは呼出元(pr reviewer)の独立検証の役目であり、finder が担うのは候補の列挙だけ(doer ≠ judge を壊さないための境界)。
-6. **判定を伴う skill を角度の `skill:` に指定させない**(下記手順 2 参照。観点の frontmatter は収集専任のみを許す — issue #65)。
+**全ロール共通コア(issue #52 Phase B・症状1)** — 下記 5 項目は全 dispatch ファイル(実装役 / 対応役 / pr reviewer / collectors)で**文言一致**の単一コア。単一ソースは `tests/smoke/run-smoke.sh` の `CANONICAL_CORE` 配列であり、同 script が各 dispatch ファイル冒頭ブロックへの presence を機械検査する(逐語部分一致)。**文言を変えるときは単一ソースと全 dispatch ファイルを一括更新すること**(1 箇所だけ直すと drift 検査で落ちる):
+
+1. **fork を使うな(fan-out は `general-purpose`)**: 作業中に subagent を fan-out する場面では `subagent_type: "general-purpose"` で起動せよ(`fork` は呼出元の会話文脈を丸ごと継承し、狭い directive を無視して呼出元の最上位タスクを再実行する)。文脈は各 subagent に自己完結する形で渡す。
+2. **`SendMessage` を使うな**: 結果は最終メッセージで直接返せ(`SendMessage` は宛先解決に失敗して結果が消失する)。
+3. **`gh auth switch` を実行するな**: active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる。
+4. **台帳(`.harness/plan-progress.json`)に触れるな**: Read も編集もするな。`git stash` / `git checkout` / `git reset` で戻そうともするな(作業ツリー上で dirty なのは F案の正常な状態)。
+5. **観測していないことを書くな**: 『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。
+
+**collectors(候補収集)固有**:
+
+- **各 finder への指示にも共通コア 1・2(fork 禁止・`SendMessage` 禁止)を必ず明示せよ**: finder は起動主体から見て孫になりうるため、finder 自身への指示にも二重に釘を刺す(実測: `SendMessage` で返す finder は宛先解決に失敗して結果を失い、最終メッセージで直接出力した finder は 100% 到達した / `fork` は 6/6 逸脱・1 件も findings を返せなかった)。
+- **角度ごとに 1 メッセージ内で並列起動する**(担当領域が排他な独立タスクなので、順番に 1 体ずつ起動しない)。
+- **収集は機械的**(角度は下記手順 2 の解決ロジックで確定し、以降は選択の余地なし)。ここでは判定(severity 付与・CONFIRMED/PLAUSIBLE/REFUTED の検証・集計・投稿)を行わない — それは呼出元(pr reviewer)の独立検証の役目であり、finder が担うのは候補の列挙だけ(doer ≠ judge を壊さないための境界)。
+- **判定を伴う skill を角度の `skill:` に指定させない**(下記手順 2 参照。観点の frontmatter は収集専任のみを許す — issue #65)。
 
 ---
 
