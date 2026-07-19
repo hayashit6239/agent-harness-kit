@@ -116,7 +116,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 ## ルーティング判定(`scripts/decide-orchestrator-route.py`)
 
-各ロール節の post-dispatch 処理は、**状況を outcome トークンに解決 → `${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py` を呼ぶ → 返った `{ledger_write, route, label_action}` を実行**、という構造に統一する。**ルーティング規則(どの (role, outcome) がどう書くか・どの route か・ラベルをどう操作するか)は script が唯一の正**であり、prose に決定表を複製しない(`evaluate-stop-condition.py` / `reaggregate-has-blocker.py` と同じ「規則は script・prose は I/O」境界)。prose が担うのは (1) 状況を outcome へ解決する方法(各ロール節)と (2) 返った route / label_action の**実行方法**(本節)だけ。
+各ロール節の post-dispatch 処理は、**状況を outcome トークンに解決 → `${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py` を呼ぶ → 返った `{ledger_write, route, label_action}` を実行**、という構造に統一する。**ルーティング規則(どの (role, outcome) がどう書くか・どの route か・ラベルをどう操作するか)は script が唯一の正**であり、prose に決定表を複製しない(`evaluate-stop-condition.py` / `reaggregate-has-blocker.py` と同じ「規則は script・prose は I/O」境界)。prose が担うのは (1) 状況を outcome へ解決する方法(各ロール節)と (2) 返った route / label_action の**実行方法**(本節)だけ。**この I/O の形(入力 `{role, outcome, observation?}` / 出力 `{ledger_write, route, label_action}`)の型/形の正は `contracts/orchestrator-route.schema.json`**(issue #68 で抽出。ルーティング規則そのもの = どの outcome がどう解決するかは引き続き script の `DECISION_TABLE` が正で、schema は形のみを規定する)。
 
 - **呼び方(`observation` を含む。issue #50 A1)**: 解決した outcome の route が `sink` になる(下記 outcome トークン一覧のうち sink 系 — 各ロール節で個別に列挙する)場合、判定入力に `observation`(観測した事実: 実行したコマンド・終了コード・出力要約)を必須で添える。**無いと判定器は exit 2 で拒否する(fail-closed)** — 詳細・spoof 可能性の正直な明記は `scripts/decide-orchestrator-route.py` のモジュール docstring「観測必須フィールド (A1)」を参照(規則はそちらが正・ここに複製しない)。sink でない outcome には `observation` は不要(渡さない)。呼び方はロール共通で次の 1 手続きに統一する。
 
@@ -264,7 +264,7 @@ PY
 ```
 - `K` = 締切オフセット(v1: **K=2** tick。校正根拠は無い best-effort 値 — 「loop 間隔が実装役の想定所要時間より十分長い」という前提を置く。健全だが遅い dispatch を誤って timeout 判定しうるリスクは観測に応じて見直す)。
 - `retry_count` は初回 dispatch では 0、再 dispatch では下記 reconciliation が返す値を引き継ぐ。
-- **schema には宣言しない**(issue #26 決定: transient なフィールドは validator/drift/smoke の検査対象外に留める。`plan-progress.schema.json` の `step` は `additionalProperties` を制限していないため、宣言しない追加キーがあっても `--schema` は壊れない)。
+- **形の正は schema・検査対象外は維持**(issue #68 で issue #26 の「schema 非宣言」から変更): このマーカーの型/形は `plan-progress.schema.json` の `definitions.dispatchMarker`(`step.properties.dispatchMarker` から `$ref`)を単一の正とする(ここでは二重定義しない)。宣言は **optional**(`step.required` に含めない)で、`step` の `additionalProperties` も制限しないため、issue #26 決定「transient なフィールドは validator/drift/smoke の検査対象外に留める」の実効はそのまま維持される(この宣言を足しても `--schema` / `--drift` / smoke の検査挙動は不変)。
 - 消去は `step` から `dispatchMarker` キーそのものを取り除く(`null` を書くのではなくキー削除。「マーカーが無い」= `eligible` の判定と一致させるため)。
 
 **reconciliation(各 tick・選別より前に実行)**: `dispatchMarker` を持つ全 step について、次の手順で処理する。
@@ -293,7 +293,7 @@ PY
 
 **目的**: pr reviewer / developer(対応役)の dispatch にも、実装役の `dispatchMarker`(issue #26)と同じ「重複配車防止」が要る(欠落 1)。ただし目的は選別排他ロックのみで、実装役が持つ締切・有界リトライ(`deadline_tick`/`retry_count`)は要らない — reviewer/対応役には `no_pr` 相当の無界駆動因(dispatch 後の完了未確認状態が跨 tick で残る)が無く、dispatch は `Agent` ツールの blocking call として同一 tick 内で outcome まで解決するため、liveness/timeout の機構を持ち込むと over-engineering になる。実装役の `dispatchMarker` をそのまま転用しない理由もここにある。
 
-**`reviewLock`(transient・schema 非宣言)**: pr reviewer / developer(対応役)が dispatch する直前に、対象 step へ次を書く(実装役の `dispatchMarker` とは**別フィールド**で持つ — 「tick 冒頭 reconciliation」節の reconciliation はこのフィールドを走査しない。同一フィールドを共有すると `deadline_tick` を必須とする `marker_is_valid()` に `invalid_marker` として拾われ sink されてしまうため):
+**`reviewLock`(transient・型の正は `plan-progress.schema.json` の `definitions.reviewLock`。issue #68 で optional 宣言に変更・検査対象外は維持)**: pr reviewer / developer(対応役)が dispatch する直前に、対象 step へ次を書く(実装役の `dispatchMarker` とは**別フィールド**で持つ — 「tick 冒頭 reconciliation」節の reconciliation はこのフィールドを走査しない。同一フィールドを共有すると `deadline_tick` を必須とする `marker_is_valid()` に `invalid_marker` として拾われ sink されてしまうため):
 ```json
 {"dispatched_tick": <TICK>}
 ```
