@@ -6,7 +6,7 @@ label: 観点の名前
 # (任意・パターン A)この観点を skill に委譲する場合の skill 名。
 # 指定すると finder は general-purpose で起動したうえで Skill ツールでこの skill を起動して従う。
 # 省略時は下の本文の指示だけで探す。判定を伴う skill は置かない(収集専任のみ)。
-# skill: architecture-review
+# skill: my-angle-skill
 # (任意)false でこの観点を無効化(既定 true)。kit 同梱観点を導入先で切りたいとき。
 # enabled: true
 ---

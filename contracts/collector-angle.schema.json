@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/hayashit6239/agent-harness-kit/contracts/collector-angle.schema.json",
+  "$id": "collector-angle.schema.json",
   "title": "Collector Angle (レビュー観点)",
   "description": "collectors/angles/*.md(kit デフォルト)・.harness/collectors/angles/*.md(導入先追加。issue #65)の YAML frontmatter を規定する。本文(frontmatter 外の Markdown)は finder への指示で、別途「空でない」ことだけを規約とする(JSON Schema の対象外)。パターン A(収集専任)のみを対象とし、判定(severity・合否)は含めない — それは pr reviewer(judge)の責務。詳細な扱いは contracts/README.md を参照。",
   "type": "object",

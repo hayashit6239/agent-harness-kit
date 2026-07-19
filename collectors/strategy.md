@@ -1,5 +1,5 @@
 ---
-description: レビュー候補収集(角度別 finder)への dispatch prompt 本体。review-mode=code-review の候補収集フェーズで、finder を「このファイルの実行者自身」の直接の子として起動するための指示(issue #49)。`commands/harness-orchestrate.md`「pr reviewer」節(orchestrator 自身が実行)から Read されて実行される機構ファイルであり、単体で直接呼び出すことは想定しない(issue #63 で `roles/review-finders.md` から `collectors/strategy.md` へ移設・角度定義を `collectors/angles/*.md` へ分解。issue #65 でユーザーが `.harness/collectors/angles/` に観点を追加できるようにプラガブル化)。
+description: レビュー候補収集(角度別 finder)への dispatch prompt 本体。review-mode=code-review の候補収集フェーズで、finder を「このファイルの実行者自身」の直接の子として起動するための指示(issue #49)。`commands/harness-orchestrate.md`「pr reviewer」節(orchestrator 自身が実行)から Read されて実行される機構ファイルであり、単体で直接呼び出すことは想定しない(issue #63 で `roles/review-finders.md` から `collectors/strategy.md` へ移設・角度定義を `collectors/angles/*.md` へ分解。issue #65 でユーザーが `.harness/collectors/angles/` に観点を追加できるように拡張可能にした)。
 allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
 ---
 
@@ -38,13 +38,15 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
    `add` が残骸で失敗したら `git worktree remove --force "$WORKTREE"` → `git worktree prune` → 再度 `add` を試みる(`scripts/run-orchestrator-evidence-gate.sh` の残骸掃除パターンと同型)。それでも失敗したら候補収集を中止し、呼出元へ「worktree 作成に失敗した」と報告する(0 件を偽って返さない)。
 
 2. **角度(observation point)を解決する(issue #65・kit デフォルト ∪ 導入先追加のユニオン)**。角度は `collectors/angles/*.md` の frontmatter(`contracts/collector-angle.schema.json` 準拠)で定義される。2 つの置き場を突き合わせ、**同名ファイルは導入先が kit を上書き**、**`enabled: false` の角度は除外**、判定を伴う `skill:` を混入させない(角度は収集専任のみ):
-   - **kit デフォルト**: `${CLAUDE_PLUGIN_ROOT}/collectors/angles/*.md`(kit 同梱の 9 角度 — line-scan / removed-behavior / cross-file / reuse / simplify / efficiency / altitude / conventions / architecture)
+   - **kit デフォルト**: `${CLAUDE_PLUGIN_ROOT}/collectors/angles/*.md`(kit 同梱のデフォルト角度群。角度の追加・削除に伴う本ファイルの更新は不要 — 一覧はこのディレクトリの `*.md` 自体を単一の正とする)
    - **導入先追加**: `<repo>/.harness/collectors/angles/*.md`(ユーザーが独自観点を追加する置き場。無くてもよい)
 
    解決ロジック(ファイル名基準の union + override。実行例):
    ```
    python3 - "${CLAUDE_PLUGIN_ROOT}/collectors/angles" "<repo の絶対パス>/.harness/collectors/angles" <<'PY'
    import glob, os, re, sys, json
+
+   MAX_ANGLES = 20  # 暴走防止の上限(超過分は fail-open で切り詰める。既存の dispatch 上限パターンに倣った目安値)
 
    def parse_frontmatter(path):
        text = open(path, encoding="utf-8").read()
@@ -61,26 +63,47 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
        return fm
 
    kit_dir, target_dir = sys.argv[1], sys.argv[2]
+
+   # 必須項目・enabled 既定値は contracts/collector-angle.schema.json を実行時に読んで取得する
+   # (schema 側の変更にここが追随する。読み込みに失敗した場合のみ fail-open でハードコード値へフォールバック)
+   required_fields, enabled_default = ["id", "label"], True
+   try:
+       schema_path = os.path.join(os.path.dirname(os.path.dirname(kit_dir)), "contracts", "collector-angle.schema.json")
+       with open(schema_path, encoding="utf-8") as f:
+           schema = json.load(f)
+       required_fields = schema.get("required", required_fields)
+       enabled_default = schema.get("properties", {}).get("enabled", {}).get("default", enabled_default)
+   except Exception:
+       pass
+
    resolved = {}  # basename -> (path, frontmatter, source)
    for d, src in [(kit_dir, "kit"), (target_dir, "target")]:
        if not d or not os.path.isdir(d):
            continue
        for path in sorted(glob.glob(os.path.join(d, "*.md"))):
            fm = parse_frontmatter(path)
-           if fm is None or "id" not in fm or "label" not in fm:
+           if fm is None or any(k not in fm for k in required_fields):
                continue  # frontmatter 不正な角度ファイルは fail-open で無視(収集を止めない)
            resolved[os.path.basename(path)] = (path, fm, src)  # target が後で回るため kit を上書き
 
    angles = []
    for base, (path, fm, src) in sorted(resolved.items()):
-       if fm.get("enabled", "true").lower() == "false":
+       enabled_str = fm.get("enabled", "true" if enabled_default else "false")
+       if enabled_str.lower() == "false":
            continue
        angles.append({"path": path, "id": fm["id"], "label": fm["label"], "skill": fm.get("skill"), "source": src})
+
+   if len(angles) > MAX_ANGLES:
+       dropped = [a["id"] for a in angles[MAX_ANGLES:]]
+       angles = angles[:MAX_ANGLES]
+       print(f"WARNING: 角度数が上限({MAX_ANGLES})を超過。省略した角度: {dropped}", file=sys.stderr)
+
    print(json.dumps(angles, ensure_ascii=False, indent=2))
    PY
    ```
-   - `id` が全角度(kit + 導入先)を通してユニークであること自体は `contracts/collector-angle.schema.json` の規約であり、この収集フェーズでは強制検証しない(issue #64 のスコープ外 = 検証の強制は follow-up)。重複 `id` があっても収集は止めない(fail-open)。
+   - `id` の全角度(kit + 導入先)を通したユニーク性は、この収集フェーズでは強制検証しない(fail-open。詳細は下記「既知の制限・拡張ポイント」参照)。
    - 角度が 1 件も解決できなかった場合(kit デフォルトの読み込みにも失敗)は候補収集を中止し、呼出元へ「角度を 1 件も解決できなかった」と報告する(0 件を偽って返さない)。
+   - 解決した角度数が `MAX_ANGLES`(既定 20)を超える場合、超過分は fail-open で切り詰める(角度数だけ並列 finder が増えコストが膨らむのを防ぐ。1 tick あたりの dispatch 上限 5 件など、本コマンド群が他の fan-out に課す暴走防止パターンに倣った目安値)。切り詰めが発生すると標準エラー出力に警告が出るので、手順 7 の返り値に「角度数上限により省略した角度: `<id>` 一覧」として含める。
 
 3. **解決した角度ごとに finder を起動する**。各 finder には次を**自己完結する形で**渡す(`general-purpose` は呼出元の文脈を継承しないため): 対象 worktree の絶対パス・diff の見方(`cd <worktree> && git diff "origin/$BASE_REF"...HEAD`)・角度の frontmatter 外の本文(その角度が探すものの指示)・出力形式(`contracts/findings.schema.json`)・出力先ファイルパス・「SendMessage 禁止・直接返せ」の指示。
 
@@ -92,7 +115,7 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
 
    `skill:` が指す skill が見つからない・起動に失敗した場合、その finder は当該角度を候補 0 件として扱ってよい(fail-open。判定は不要な収集専任のため、skill 欠落で候補収集全体を止めない)。
 
-4. **全 finder の完了を待ち、出力ファイルの存在を確認する**。Write していない角度(クラッシュ・タイムアウト等)があれば、その角度は候補 0 件として扱う(fail-open)。**ただし「0 件」と「未応答」を混同しない** — 未応答の角度があれば、後段(呼出元の報告)に「`<id>` 未応答」と 1 行残せるよう、未応答一覧を手順 6 の返り値に含める。
+4. **全 finder の完了を待ち、出力ファイルの存在を確認する**。Write していない角度(クラッシュ・タイムアウト等)があれば、その角度は候補 0 件として扱う(fail-open)。**ただし「0 件」と「未応答」を混同しない** — 未応答の角度があれば、後段(呼出元の報告)に「`<id>` 未応答」と 1 行残せるよう、未応答一覧を手順 7 の返り値に含める。
 
 5. **統合 findings ファイルを組み立てる**(角度ごとの個別ファイルは残したまま、統合版を追加で書く。**呼出元の context には個々の findings 本文を持ち込まない** — 統合は `jq` のファイル操作で行い、LLM が読んで転記しない):
    ```
@@ -105,10 +128,11 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
    git worktree remove --force "$WORKTREE"
    ```
 
-7. **呼出元へ返す**: 統合ファイルのパス `<OUT_DIR>/findings.json` と、未応答の角度があればその一覧(手順 4)を返す。**findings の中身そのものを呼出元へ再掲しない**(呼出元(orchestrator)は必要になったときにファイルを Read する — findings 本文をここで自分の応答に含めて context に載せない)。この後 orchestrator が dispatch する pr reviewer(`${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)がこのパスを使って独立検証(候補ごとの CONFIRMED/PLAUSIBLE/REFUTED 判定 + severity 付与。手順は同ファイル手順 4-b 参照)を行う — **その検証はこのファイルの範囲外**(finder は候補を機械的に集めるだけで判定しない)。
+7. **呼出元へ返す**: 統合ファイルのパス `<OUT_DIR>/findings.json` と、未応答の角度があればその一覧(手順 4)・角度数上限により省略した角度があればその一覧(手順 2)を返す。**findings の中身そのものを呼出元へ再掲しない**(呼出元(orchestrator)は必要になったときにファイルを Read する — findings 本文をここで自分の応答に含めて context に載せない)。この後 orchestrator が dispatch する pr reviewer(`${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)がこのパスを使って独立検証(候補ごとの CONFIRMED/PLAUSIBLE/REFUTED 判定 + severity 付与。手順は同ファイル手順 4-b 参照)を行う — **その検証はこのファイルの範囲外**(finder は候補を機械的に集めるだけで判定しない)。
 
 ## 既知の制限・拡張ポイント(issue #65)
 
 - **`id` の全域ユニーク性は未検証(fail-open)**: 手順 2 は同名 `id` が kit デフォルトと導入先追加(または導入先内の複数ファイル)で衝突しても収集を止めない。衝突すると `findings.json` 上で角度の由来が曖昧になりうるが、悪化が観測されたら validator 側(follow-up)で検証を追加する。
 - **`enabled: false` の対象**: 現状は kit デフォルト・導入先追加のどちらのファイルにも書ける(frontmatter 単位の無効化。config ファイルでの一括無効化は本 issue のスコープ外)。
-- **skill 委譲は収集専任のみ**: `contracts/collector-angle.schema.json` の `skill` フィールドの説明どおり、判定(severity・合否)を行う skill を角度に割り当ててはいけない。この制約は形式(schema)では強制できない(自然文の skill 名から判定を伴うかどうかは機械判定できないため)ため、運用(角度を追加するユーザー自身の遵守)に委ねる。
+- **skill 委譲は収集専任のみ**: `contracts/collector-angle.schema.json` の `skill` フィールドの説明どおり、判定(severity・合否)を行う skill を角度に割り当ててはいけない。この制約は形式(schema)では強制できない(自然文の skill 名から判定を伴うかどうかは機械判定できないため)ため、運用(角度を追加するユーザー自身の遵守)に委ねる。kit 同梱のデフォルト角度自身もこの制約を守り、`skill:` を使わず本文の指示のみで収集する。
+- **角度数の上限(`MAX_ANGLES=20`・fail-open)**: 手順 2 は解決した角度数が上限を超えると超過分を切り詰める。値は kit デフォルト(9)に導入先追加分の余裕を見込んだ目安であり、実運用で不足/過剰が観測されたら見直す。
