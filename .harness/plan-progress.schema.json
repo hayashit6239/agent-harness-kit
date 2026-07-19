@@ -49,11 +49,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["dispatched_tick", "deadline_tick", "retry_count"],
-      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形のみをここで規定する — tick 計測・締切オフセット K・有界リトライ (N=2)・notified 付与などの手続きの正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない)。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (この宣言を足しても validate-plan-progress.py --schema / --drift / smoke の検査挙動は不変。issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)",
+      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形のみをここで規定する — tick 計測・締切オフセット K・有界リトライ・notified 付与などの手続き (K/N 等のチューニング可能な具体値を含む) の正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない)。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (この宣言を足しても validate-plan-progress.py --schema / --drift / smoke の検査挙動は不変。issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)",
       "properties": {
         "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (台帳 top-level の transient カウンタ由来)" },
-        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K、v1: K=2)。K の計算は marker 書込側 (prose) が行う" },
-        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数 (初回 0、再 dispatch で reconciliation が返す値を引き継ぐ)。上限 N=2" },
+        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K)。K の具体値・計算は marker 書込側 (prose) が行う" },
+        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数 (初回 0、再 dispatch で reconciliation が返す値を引き継ぐ)。上限 N の具体値は prose 側が定める" },
         "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の復旧検索・reconciliation をスキップする (通知の無限反復防止)" }
       }
     },
