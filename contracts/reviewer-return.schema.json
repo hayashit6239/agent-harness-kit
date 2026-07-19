@@ -18,7 +18,7 @@
     },
     "escalate": {
       "type": "boolean",
-      "description": "停止条件(round_flag/trend_flag)による客観的エスカレーション(`scripts/evaluate-stop-condition.py` の出力)。true の場合 orchestrator は pr.status を『need for human review』へ遷移させる。escalate_to_human(主観的エスカレーション)とは独立のシグナル。"
+      "description": "停止条件(round_flag/trend_flag)による客観的エスカレーション(`scripts/evaluate-stop-condition.py` の出力)。true 時の orchestrator 側の遷移手順は `commands/harness-orchestrate.md`「ルーティング判定」節が唯一の正(ここでは複製しない)。escalate_to_human(主観的エスカレーション)とは独立のシグナル。"
     },
     "review_markdown": {
       "type": "string",
@@ -33,8 +33,7 @@
       "properties": {
         "reason": {
           "type": "string",
-          "minLength": 1,
-          "description": "人間の判断を仰ぎたい理由。空文字列不可。"
+          "description": "人間の判断を仰ぎたい理由。空文字列不可の検証は `commands/harness-orchestrate.md`「主観的エスカレーション(issue #31・A案)」節の『最小の形式検証(A案)』が唯一の正(prose 側で行う。ここでは複製しない)。"
         }
       }
     }
