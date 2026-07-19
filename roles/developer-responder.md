@@ -1,5 +1,5 @@
 ---
-description: developer(対応役)への dispatch prompt 本体。`commands/harness-orchestrate.md`「developer(対応役)」節の手順 2 から Read されて実行される内部フラグメントであり、単体で `/harness-dispatch-responder` として直接呼び出すことは想定しない(issue #38・毎 tick の実効トークン削減のための外出し。`commands/harness-review-pr.md` を pr reviewer 節が参照する構造と同型)。
+description: developer(対応役)への dispatch prompt 本体。`commands/harness-orchestrate.md`「developer(対応役)」節の手順 2 から Read されて実行される role 規約ファイルであり、単体で直接呼び出すことは想定しない(issue #38・毎 tick の実効トークン削減のための外出し。`${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md` を pr reviewer 節が参照する構造と同型。issue #61 で `commands/` から `roles/` へ移動)。
 allowed-tools: [Read, Skill, Bash, Grep, Glob]
 ---
 
@@ -25,6 +25,6 @@ PR #<N> に投稿された最新の `# PR Reviewer` コメントを `gh pr view 
 
 対応内訳を PR コメントとして投稿し、`{proposed_status: "waiting for review", summary}` を JSON で返せ(`summary` は対応内訳を 1〜2 文で要約したもの — orchestrator が単一 writer として `reports[]` へ代筆する際の `body` に使う。issue #52 症状2)。**`ready for merge` を提案することは絶対に禁止**(採否に関わらず、対応後の提案は常に `waiting for review` 固定)。
 
-**人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない・固定値の DoD が達成不能と判断した等)は、代わりに `{escalate_to_human: {reason}}` を返してよい。**
+**人間の判断が必要と感じた場合(指摘の採否が判断できない・対応方針が確定できない・固定値の DoD が達成不能と判断した等)の返り値の形は `${CLAUDE_PLUGIN_ROOT}/rules/escalate-to-human.md` の契約に従う(対応役固有の使い分け: 代わりに `{escalate_to_human: {reason}}` を返す。issue #61 で集約)。**
 
 台帳ファイル(`.harness/plan-progress.json`)には一切触れるな。
