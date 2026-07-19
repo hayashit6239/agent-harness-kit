@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "collector-angle.schema.json",
+  "title": "collector-angle",
+  "description": "collectors/angles/*.md(kit デフォルト)・.harness/collectors/angles/*.md(導入先追加。issue #65)の YAML frontmatter を規定する。本文(frontmatter 外の Markdown)は finder への指示で、別途「空でない」ことだけを規約とする(JSON Schema の対象外)。パターン A(収集専任)のみを対象とし、判定(severity・合否)は含めない — それは pr reviewer(judge)の責務。詳細な扱いは contracts/README.md を参照。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "label"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "観点の識別子。kebab-case。全 angle でユニーク(kit 同梱 + 導入先追加を通して)。finder のラベルと findings の分類に使う。"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "description": "人間可読な観点名(日本語可)。作業レポート・ダッシュボード表示用。"
+    },
+    "skill": {
+      "type": "string",
+      "minLength": 1,
+      "description": "(任意・パターン A)この観点を委譲する Claude Code skill 名。指定時、finder は general-purpose で起動したうえで Skill ツールでこの skill を起動して従う。省略時は本文の指示だけで探す。判定を伴う skill をここに置いてはいけない(収集専任のみ)。"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "(任意)false でこの観点を無効化する。kit 同梱観点を導入先で無効化する用途(前段の設計『無効化は config/frontmatter』論点の受け皿)。省略時 true。"
+    }
+  }
+}
