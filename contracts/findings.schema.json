@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/hayashit6239/agent-harness-kit/contracts/findings.schema.json",
+  "title": "Finder Findings (収集された候補)",
+  "description": "収集フェーズ(collector の finder)が出力する候補の配列。1 要素 = 1 候補。severity・sources・has_blocker は含めない — それらは判定フェーズ(pr reviewer = judge)が付与する(doer≠judge の境界)。空配列 [] は『候補なし』を表す正当な値。この形は元々 roles/review-finders.md(issue #63 で collectors/strategy.md へ移設)と roles/pr-reviewer.md の散文にあった {file,line,summary,failure_scenario} を単一の正として抽出したもの — 手順書側は今後ここを参照し二重定義しない。",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["file", "line", "summary", "failure_scenario"],
+    "properties": {
+      "file": {
+        "type": "string",
+        "minLength": 1,
+        "description": "repo 相対パス。候補が該当するファイル。"
+      },
+      "line": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "1-indexed の行番号。候補が該当する箇所。"
+      },
+      "summary": {
+        "type": "string",
+        "minLength": 1,
+        "description": "問題の 1 文記述。"
+      },
+      "failure_scenario": {
+        "type": "string",
+        "minLength": 1,
+        "description": "具体的な入力/状態 → 誤った出力/クラッシュ。候補の再現筋(pr reviewer が CONFIRMED/PLAUSIBLE/REFUTED を判定する材料)。"
+      }
+    }
+  }
+}

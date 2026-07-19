@@ -500,7 +500,7 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 
 ### pr reviewer
 
-**候補収集(review-mode=code-review のときのみ・issue #49・reviewLock 書込より前に行う)**: `$REVIEW_MODE == "code-review"`(既定)の場合、pr reviewer を dispatch する**前**に、**orchestrator 自身**が `${CLAUDE_PLUGIN_ROOT}/roles/review-finders.md` を Read し、そこに書かれた指示をそのまま実行する(対象 PR は #<N>、出力先ディレクトリは orchestrator が用意する一時ディレクトリ、effort は `$EFFORT` を目安として渡す)。手順本体は転写しない。この実行により 8 角度 finder が **orchestrator 自身の直接の子**として起動する(pr reviewer の子にしない — これが issue #49 の核心。orchestrator から見た「孫」を構造的に無くす)。finder は各自の findings をファイルへ直接 Write し、orchestrator へは短い確認メッセージしか返さないため、**findings 本文は orchestrator の context に載らない**。収集完了後に返る統合ファイルのパスを `$FINDINGS_PATH` として控える(未応答の角度があれば tick 報告に 1 行残す)。`$REVIEW_MODE == "multi-angle"` のときはこの手順を**行わない**(4-a 経路は本 issue のスコープ外・pr reviewer が引き続き内部で fan-out する現状維持)。
+**候補収集(review-mode=code-review のときのみ・issue #49・reviewLock 書込より前に行う)**: `$REVIEW_MODE == "code-review"`(既定)の場合、pr reviewer を dispatch する**前**に、**orchestrator 自身**が `${CLAUDE_PLUGIN_ROOT}/collectors/strategy.md` を Read し、そこに書かれた指示をそのまま実行する(対象 PR は #<N>、出力先ディレクトリは orchestrator が用意する一時ディレクトリ、effort は `$EFFORT` を目安として渡す)。手順本体は転写しない。この実行により角度別 finder(kit デフォルト 9 角度 ∪ 導入先 `.harness/collectors/angles/` の追加観点 — `collectors/strategy.md` 手順 2 が解決。issue #63・#65)が **orchestrator 自身の直接の子**として起動する(pr reviewer の子にしない — これが issue #49 の核心。orchestrator から見た「孫」を構造的に無くす)。finder は各自の findings をファイルへ直接 Write し、orchestrator へは短い確認メッセージしか返さないため、**findings 本文は orchestrator の context に載らない**。収集完了後に返る統合ファイルのパスを `$FINDINGS_PATH` として控える(未応答の角度があれば tick 報告に 1 行残す)。`$REVIEW_MODE == "multi-angle"` のときはこの手順を**行わない**(4-a 経路は本 issue のスコープ外・pr reviewer が引き続き内部で fan-out する現状維持)。
 
 **dispatch 直前の `reviewLock` 書込**: 対象 step へ「reviewer / 対応役の in-flight ロック」節の書込手続きで `reviewLock` を書く(選別 jq は既に `.reviewLock == null` で除外済み)。
 
@@ -659,7 +659,7 @@ PY
 
 ## 既知の制限・拡張ポイント
 
-- **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等・review-mode=multi-angle のみ)の kit 同梱が前提になるため別途対応が必要(review-mode=code-review(既定)は issue #49 以降 `${CLAUDE_PLUGIN_ROOT}/roles/review-finders.md`(kit 同梱・個人 skill 不要)による 8 角度 finder 収集のみに依存する)。
+- **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等・review-mode=multi-angle のみ)の kit 同梱が前提になるため別途対応が必要(review-mode=code-review(既定)は issue #49 以降 `${CLAUDE_PLUGIN_ROOT}/collectors/strategy.md`(kit 同梱・個人 skill 不要)による角度別 finder 収集のみに依存する。導入先が `.harness/collectors/angles/` に `skill:` 付き角度を追加した場合はその skill にも依存する)。
 - **issue #11 の F案は実装済み**: 上記「既知のリスク」節参照。orchestrator の単一書込は ローカルファイル編集 + Statuses API 自己申告へ追従済み(main への直接 commit/push はしない)。
 - **issue サイド(issue reviewer / issue review worker)の自動化は対象外**: v1 は PR ライフサイクルのみ。issue フェーズの配車は別 issue の範囲。
 - **git-status ガードの限界と設計境界(部分的バックストップ・正直な明記)**: 台帳保護には次の点がある。
