@@ -1,12 +1,35 @@
 ---
-description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。
-argument-hint: "[owner/repo] [review-mode]  省略時: CWD の origin から自動判定 / code-review(opt-in: multi-angle)"
+description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。**第 3 引数にゴール文言を渡すと、本コマンドの手順書内容を context にロード済みの状態で、失敗経路の 10 トリガーを反映した `/goal <文言>` コマンド文字列を組み立てて提示する(issue #60)。`/goal` の実行そのものは技術的制約により本コマンドから起動できないため、提示のみに留まる**。
+argument-hint: "[owner/repo] [review-mode] [ゴール文言]  省略時: CWD の origin から自動判定 / code-review(opt-in: multi-angle) / 通常 tick 実行。ゴール文言(第3引数)指定時は /goal 起動文字列の組み立てのみを行う(review-mode を既定のままにしたい場合は $2 に \"\" を渡す)"
 allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 ---
 
 # /harness-orchestrate — developer / pr reviewer を配車する orchestrator(v1 walking skeleton)
 
 これは **運用(policy)** の層であり、minimal 構成の上に乗る **orchestrator ロール**(Phase 1 の中核機構の最初の増分)。対象は **developer(実装役・対応役)と pr reviewer の 2 ロール、PR ライフサイクルのみ**(issue reviewer 側の自動化は対象外)。
+
+## `/goal` 起動文字列の組み立て(issue #60)
+
+実運用では、本コマンドの定期実行を `/loop` に任せるのではなく、Claude Code CLI の `/goal`(Stop hook 機構。各ターン終了時に小さい高速モデルがゴール条件の充足を判定し、未充足ならブロックして続行を強制する仕組み。https://code.claude.com/docs/en/goal )に「本コマンドの手順書を読み込んで停止条件つきで繰り返し実行する」文言を手打ちする運用へ実質移行している。この手打ちは (a) 本コマンドの手順書ロード指示と (b) 停止条件の列挙、の 2 手を毎回繰り返す無駄があり、かつ (b) は下記「失敗経路(単一の need for human review sink)」節がすでに持つ包括的なトリガー一覧の narrow な re-implementation になりがちで drift しやすい。本コマンドは第 3 引数にゴール文言を渡すことでこの 2 手を 1 手(組み立て結果のコピー&ペースト)へ縮める。
+
+**技術的制約(正直な明記)**: 本コマンドは `/goal` を完全にはラップできない。skill/command の実行は 1 ラウンドで完結し、そこから hook 設定を動的に書き換えてターン継続を強制する公式な経路が無い(claude-code-guide エージェントが公式ドキュメントを参照して確認済みの制約)。したがって本コマンドが行えるのは「`/goal` に渡す文字列の組み立てと提示」までであり、**`/goal` の実行そのものは引き続きユーザーの手操作を要する**(2 手が 1 手になるだけで 0 手にはならない)。
+
+**引数**: `$1`=owner/repo(省略時 CWD の origin から自動判定)、`$2`=review-mode(省略時 `code-review`)、`$3`=ゴール文言。bash の位置引数は途中を省略できないため、review-mode を既定のまま `$3` だけ渡したい場合は `$2` に空文字を明示する(例: `/harness-orchestrate owner/repo "" "issue #42 を ready for implementation になるまでレビュー・対応を繰り返して"`)。空文字であれば「配車テーブル」節の既存展開 `REVIEW_MODE="${2:-code-review}"` がそのまま既定値にフォールバックするため、既存の展開ロジックの変更は不要。
+
+**`$3` が与えられた場合**: 本コマンドは通常の tick(下記「配車テーブル」以降の手順)を実行**しない**。代わりに次を行う:
+
+1. 本ファイル(このコマンドの手順書)は、このコマンド自体の実行によって既に context にロード済みである。追加のファイル読込は不要。
+2. 下記「失敗経路(単一の need for human review sink)」節の**この sink にルーティングされるトリガー**表(decision script 経由の sink 9 種 + git-status ガード 1 種 = 合計 10 種)を、簡潔な自然文の停止条件へ変換する。表の `role/outcome` トークンや書込 status 列はそのまま `/goal` 文字列へ転記しない — 表の「トリガー(状況)」列の文言を平易な日本語で言い換える。
+3. `$3` のゴール文言と、変換した 10 個の停止条件を、次のサンプルと同じ構造で 1 つの `/goal` コマンド文字列に組み立てる:
+
+   ```
+   /goal 「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して。次のいずれかに該当したら停止して人間に報告して: reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ 実装役 dispatch 後の evidence gate 失敗 / 対応役 dispatch 後の evidence gate 失敗 / 実装役の pr_number 復旧検索が複数一致(曖昧)/ 実装役の in-flight マーカーが締切超過でリトライ上限到達(timeout)/ 実装役・対応役・reviewer いずれかが主観的エスカレーションを返した / git-status ガードが .harness/ への意図しない変更を検知した」
+   ```
+
+   サンプルの「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して」の部分を `$3` の内容に差し替え、停止条件の並びはサンプルの粒度(10 トリガーを 8 文で言い換えた簡潔な自然文の列挙 — `subjective_escalate` は実装役・対応役・reviewer の 3 経路をまとめて 1 文にできる)に揃える。
+4. 組み立てた `/goal <文言>` をそのままコピー&ペーストできる形で提示して終了する。**このコマンド自身は `/goal` を実行しない**(実行はユーザーの操作)。
+
+**`$3` が省略された場合**: 従来どおり、本コマンドは 1 回の orchestrator tick を実行する(以下の手順)。
 
 ## orchestrator の性質(判断を持たない調整層)
 
@@ -656,6 +679,7 @@ PY
 - 試行: `/loop 15m /harness-orchestrate`(review-mode=code-review 既定、15 分間隔)。
 - review-mode を明示したい場合: `/loop 15m /harness-orchestrate owner/repo multi-angle`。
 - `/loop` は起動時の引数をそのまま毎 tick 再実行するため、review-mode は起動時の引数が毎 tick 引き継がれる。追加の状態保持は不要。
+- **ゴール文言(`$3`)を渡すモードは `/loop` と併用しない**: `/loop` は起動時の引数をそのまま毎 tick 再実行するため、`$3` 付きで `/loop` に渡すと「`/goal` 文字列を組み立てて提示するだけ」の処理(通常 tick を実行しない)が毎 tick 繰り返され、実質的に何も進まない。`$3` 付き起動は 1 回限りの単発呼出として使い、提示された `/goal <文言>` をユーザーが実行することで初めて継続実行が始まる(上記「`/goal` 起動文字列の組み立て」節参照)。
 
 ## 既知の制限・拡張ポイント
 
