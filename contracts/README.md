@@ -11,14 +11,16 @@ harness の各エージェント(orchestrator / developer / pr reviewer / collec
 | `findings.schema.json` | collector の finder が出す候補配列 `{file,line,summary,failure_scenario}` | finder(出力) / pr reviewer(入力・検証) |
 | `collector-angle.schema.json` | `collectors/angles/*.md`(kit デフォルト)・`.harness/collectors/angles/*.md`(導入先追加。issue #65)の frontmatter | collector 機構(`collectors/strategy.md`。読取) / 観点を書くユーザー |
 | `collector-angle.template.md` | 上記 angle を新規作成するときの雛形 | 観点を追加するユーザー |
+| `reviewer-return.schema.json` | pr reviewer が orchestrator へ返す判定結果 `{has_blocker,blocker_count,escalate,review_markdown,escalate_to_human?}`(issue #66・round2) | pr reviewer(出力) / orchestrator(入力・検証) |
+
+**スコープ外(follow-up)**: `dispatchMarker` / `reviewLock`(in-flight マーカー)、`decide-orchestrator-route.py` の入出力、`reports[]` は本 PR(#66)の対象外(`.harness/plan-progress.schema.json` との二重定義解消が別途要るため)。
 
 ## 方針
 
 - **機械検証の正はここ**。手順書側はここを参照し、形式を二重定義しない。
 - `.schema.json` = 機械検証用(JSON Schema)。`.template.md` = 人が copy して埋める雛形。
-- 新しいエージェント間契約(例: reviewer の返り値 `{has_blocker, escalate, ...}`・
-  orchestrator の in-flight マーカー形式)を規定したくなったら、まずここに
-  `<name>.schema.json` を足す。
+- 新しいエージェント間契約(例: orchestrator の in-flight マーカー形式)を規定したくなったら、
+  まずここに `<name>.schema.json` を足す。
 - **doer≠judge を形式で守る**: 収集フェーズが出すもの(`findings.schema.json`)には
   severity・合否を持たせない。判定は pr reviewer が付ける。angle(`collector-angle.schema.json`)も
   収集専任(パターン A)に限定し、判定を伴う skill を受け付けない。

@@ -19,7 +19,7 @@ developer(実装役)・developer(対応役)・pr reviewer の 3 role が dispatc
 
 - **developer(実装役)**: PR を作成した場合は通常どおり `{pr_number, proposed_status, summary}` を返す。人間の判断が必要と感じた場合は **PR を作らずに** 代わりに `{escalate_to_human: {reason}}` を返す(両方を返す必要がある状況は無い — v1 は「完了 or 主観エスカレーション」の二択。issue #31 set1 Implementation Scope 6 の決定)。
 - **developer(対応役)**: 対応内訳を投稿した場合は通常どおり `{proposed_status: "waiting for review", summary}` を返す。人間の判断が必要と感じた場合は代わりに `{escalate_to_human: {reason}}` を返す。
-- **pr reviewer**: 判定確定時は通常どおり `{has_blocker, blocker_count, escalate, review_markdown}` を返す。レビュー中に人間の判断が必要と感じた場合は、**加えて** `escalate_to_human: {reason}` を返してよい(他フィールドとの共存可 — 客観的な `escalate`(round/blocker trend の停止条件)とは独立のシグナル)。
+- **pr reviewer**: 判定確定時は通常どおり `contracts/reviewer-return.schema.json` が規定する形(`{has_blocker, blocker_count, escalate, review_markdown}`)を返す。レビュー中に人間の判断が必要と感じた場合は、**加えて** `escalate_to_human: {reason}`(同 schema の任意プロパティ)を返してよい(他フィールドとの共存可 — 客観的な `escalate`(round/blocker trend の停止条件)とは独立のシグナル)。
 
 ## orchestrator 側の扱い(参照のみ・ここでは複製しない)
 

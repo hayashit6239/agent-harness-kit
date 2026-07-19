@@ -73,8 +73,8 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
            schema = json.load(f)
        required_fields = schema.get("required", required_fields)
        enabled_default = schema.get("properties", {}).get("enabled", {}).get("default", enabled_default)
-   except Exception:
-       pass
+   except Exception as e:
+       print(f"WARNING: schema 読込に失敗しハードコード値へフォールバック: {e}", file=sys.stderr)
 
    resolved = {}  # basename -> (path, frontmatter, source)
    for d, src in [(kit_dir, "kit"), (target_dir, "target")]:
@@ -91,7 +91,13 @@ allowed-tools: [Read, Skill, Bash, Agent, Grep, Glob, Write]
        enabled_str = fm.get("enabled", "true" if enabled_default else "false")
        if enabled_str.lower() == "false":
            continue
-       angles.append({"path": path, "id": fm["id"], "label": fm["label"], "skill": fm.get("skill"), "source": src})
+       # required_fields は schema 実行時読込の結果次第で id/label を含まなくなりうるため、
+       # ここで改めて .get() + 明示チェックする(無条件アクセスの KeyError を避ける。round2 finding 1)
+       angle_id, label = fm.get("id"), fm.get("label")
+       if angle_id is None or label is None:
+           print(f"WARNING: {path} は id/label を持たないため角度解決をスキップ", file=sys.stderr)
+           continue
+       angles.append({"path": path, "id": angle_id, "label": label, "skill": fm.get("skill"), "source": src})
 
    if len(angles) > MAX_ANGLES:
        dropped = [a["id"] for a in angles[MAX_ANGLES:]]
