@@ -1,6 +1,6 @@
 ---
-description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)/ pr reviewer に加え、issue フェーズの issue reviewer / issue review worker(issue #88)を配車する orchestrator(v1 walking skeleton)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。**第 1 引数にゴール文言を渡すと、本コマンドの手順書内容を context にロード済みの状態で、失敗経路の 12 トリガーを反映した `/goal <文言>` コマンド文字列を組み立てて提示する(issue #60)。`/goal` の実行そのものは技術的制約により本コマンドから起動できないため、提示のみに留まる**。
-argument-hint: "[ゴール文言] [review-mode] [owner/repo]  省略時: 通常 tick 実行 / code-review(opt-in: multi-angle) / CWD の origin から自動判定。ゴール文言(第1引数)指定時は /goal 起動文字列の組み立てのみを行う"
+description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)/ pr reviewer に加え、issue フェーズの issue reviewer / issue review worker(issue #88)を配車する orchestrator(v1 walking skeleton)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。**第 1 引数にゴール文言を渡すと、本コマンドの手順書内容を context にロード済みの状態で、失敗経路のトリガーを反映した `/goal <文言>` コマンド文字列を組み立てて提示する(issue #60)。issue #89 で第 1 引数に `'pr <N>'` / `'issue <N>'` の構造化対象指定を渡すと、凍結雛形から verbatim(LLM パラフレーズ無し)で `/goal` 文字列を組み立てるモードを追加した。`/goal` の実行そのものは技術的制約により本コマンドから起動できないため、提示のみに留まる**。
+argument-hint: "[ゴール文言|'pr <N>'|'issue <N>'] [review-mode] [owner/repo]  省略時: 通常 tick 実行 / code-review(opt-in: multi-angle) / CWD の origin から自動判定。第1引数指定時は /goal 起動文字列の組み立てのみを行う(構造化指定=pr/issue モードは凍結雛形から組み立て)"
 allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 ---
 
@@ -14,9 +14,80 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 **技術的制約(正直な明記)**: 本コマンドは `/goal` を完全にはラップできない。skill/command の実行は 1 ラウンドで完結し、そこから hook 設定を動的に書き換えてターン継続を強制する公式な経路が無い(claude-code-guide エージェントが公式ドキュメントを参照して確認済みの制約)。したがって本コマンドが行えるのは「`/goal` に渡す文字列の組み立てと提示」までであり、**`/goal` の実行そのものは引き続きユーザーの手操作を要する**(2 手が 1 手になるだけで 0 手にはならない)。
 
-**引数**: `$1`=ゴール文言(省略時=通常 tick を実行 / 指定時=`/goal` 文言を組み立てて提示するモード)、`$2`=review-mode(省略時 `code-review`)、`$3`=owner/repo(省略時 CWD の origin から自動判定)。bash の位置引数は途中を省略できないため、repo(`$3`)を明示したい場合は先行する `$1`(ゴール文言)・`$2`(review-mode)を空文字で埋める必要がある(例: `/harness-orchestrate "" "" owner/repo`)。空文字であれば「配車テーブル」節の既存展開 `REVIEW_MODE="${2:-code-review}"` がそのまま既定値にフォールバックするため、既存の展開ロジックの変更は不要。
+**引数**: `$1`=第 1 引数(省略時=通常 tick を実行 / 指定時=`/goal` 文言を組み立てて提示するモード。自由文ゴール文言、または issue #89 の構造化対象指定 `'pr <N>'` / `'issue <N>'` を単一引用で載せる)、`$2`=review-mode(省略時 `code-review`)、`$3`=owner/repo(省略時 CWD の origin から自動判定)。bash の位置引数は途中を省略できないため、repo(`$3`)を明示したい場合は先行する `$1`・`$2`(review-mode)を空文字で埋める必要がある(例: `/harness-orchestrate "" "" owner/repo`)。空文字であれば「配車テーブル」節の既存展開 `REVIEW_MODE="${2:-code-review}"` がそのまま既定値にフォールバックするため、既存の展開ロジックの変更は不要。**構造化対象指定は既存の位置引数レイアウトを変えず単一引用の `$1` に載せる**(例: `/harness-orchestrate 'pr 36'`)ため、`$2`/`$3` の意味は不変。
 
-**`$1`(ゴール文言)が与えられた場合**(例: `/harness-orchestrate "issue #42 を ready for implementation になるまでレビュー・対応を繰り返して"`): 本コマンドは通常の tick(下記「配車テーブル」以降の手順)を実行**しない**。代わりに次を行う:
+**`$1` の解釈は 3 分岐**(issue #89・軸 3 = 併存・後方互換): `$1` をまず下記「モード判定マニフェスト」の strict 正規表現へ照合し、(1) **構造化モード**(`pr <N>` / `issue <N>` に完全一致)なら凍結雛形から `/goal` 文字列を組み立てる / (2) **near-miss**(引用符欠落・二重空白等)なら警告を添えて自由文フォールバック / (3) いずれでもなければ従来どおり**自由文モード**(#60)として扱う。判定順は「構造化を先に照合 → 非一致は自由文フォールバック」。
+
+### モード判定(issue #89)
+
+`$1` を次のマニフェスト(strict 受理 / near-miss 判定の**単一ソース**。値は bash `[[ ... =~ ... ]]` の ERE。smoke `[14]` が `[8]`/`[13]` 同型で単体テストする)へ照合する:
+
+<!-- MODE-DETECTION-MANIFEST:BEGIN -->
+```
+MODE-PR = ^pr [0-9]+$
+MODE-ISSUE = ^issue [0-9]+$
+NEAR-BARE = ^(pr|issue)$
+NEAR-LOOSE = ^(pr|issue)[[:space:]]+[0-9]+[[:space:]]*$
+```
+<!-- MODE-DETECTION-MANIFEST:END -->
+
+- **構造化モード**: `$1` が `MODE-PR` / `MODE-ISSUE` のいずれかに**完全一致**したら、その `<N>`(番号)を凍結雛形へ literal 置換して `/goal` 文字列を組み立てる(下記「構造化モードの雛形」)。**対象 PR/issue の実在は検証しない**(#60 と同じ「提示のみ」姿勢。`pr 99999` でも組み立てる。`issue abc` は `MODE-ISSUE` 不一致で自由文へ)。
+- **near-miss(警告 + 自由文フォールバック・hard error にしない)**: `$1` が strict のいずれにも一致せず、かつ `NEAR-BARE`(裸キーワードのみ = 引用符欠落で番号が `$2` へ流れた兆候)または `NEAR-LOOSE`(キーワード + 空白 + 番号だが単一空白でない = 二重空白・タブ・末尾空白)に一致したら、次の 1 行警告を提示に添えたうえで**自由文として扱う**(非破壊):
+  > 構造化モードの near-miss を検出しました(`$1`='…')。構造化モードは `'pr <N>'` / `'issue <N>'`(単一引用・単一空白・裸の番号)を厳密に要求します。今回は自由文ゴールとして扱いました — 構造化モードのつもりなら正しい形で再実行してください。
+
+  hard error にしないのは、本コマンドが `/goal` 文字列を提示するだけで破壊的作用が無く、人間が提示を読んで誤りに気付けるため + 後方互換(自由文ゴール)を壊さないため。
+- **自由文モード(#60・後方互換)**: 上記いずれにも該当しなければ、`$1` を従来どおり自由文ゴール文言として扱う(下記「自由文モード」)。現行の自由文例 `issue #42 を…` は `#42`(裸の数字でない)+ 番号後の助詞・文により strict にも near-miss にも一致せず、**警告を誤発火しない**。
+
+### 構造化モードの雛形(issue #89・verbatim 単一ソース・LLM パラフレーズ禁止)
+
+構造化モードでは、下記の凍結雛形から `<N>` を**文字列置換するだけ**で `/goal` 文字列を組み立てる。**#60 の自由文モードのような「平易な日本語で言い換える」パラフレーズ手順は構造化モードでは一切行わない**(同一入力 → 同一出力を構造的に担保する = DoD-1 決定性)。
+
+停止条件は次の「凍結停止条件マニフェスト」を単一ソースとする。**このマニフェストの 18 個の outcome トークンは `scripts/decide-orchestrator-route.py` の `route=="sink"` outcome(PR フェーズ 11 + issue フェーズ 6 = 17。issue #88)+ `git-status-guard`(decision script 外・1)= 18 にアンカーし、smoke `[14]` が集合一致を機械検証する**(散文表の行数ではなく decision script が単一の正)。人間可読な `/goal` 文字列はこのトークン付きソースからの literal 連結で組み立てる — その際 `subjective_escalate`(PR ×3 / issue ×2)と reviewLock / issueReviewLock `timeout`(PR ×2 / issue ×2)は雛形側で各フェーズ 1 文へ畳み込み済み(18 トークン → 13 文)であり、**組み立て時に LLM で畳み直さない**(畳み込みは凍結ソースに焼き込む):
+
+<!-- FROZEN-STOP-CONDITIONS:BEGIN -->
+```
+implementer/ambiguous | 実装役の pr_number 復旧検索が複数一致(曖昧)
+implementer/pr_evidence_fail | 実装役 dispatch 後の evidence gate 失敗
+implementer/timeout | 実装役の in-flight マーカーが締切超過でリトライ上限到達
+implementer/subjective_escalate | 実装役 dispatch が主観的エスカレーションを返した(PR 未作成)
+responder/evidence_fail | 対応役 dispatch 後の evidence gate 失敗
+responder/timeout | 対応役の reviewLock が締切超過(dispatch の hang)
+responder/subjective_escalate | 対応役 dispatch が主観的エスカレーションを返した
+reviewer/invalid | reviewer dispatch の返答が JSON でない(dispatch 結果失敗)
+reviewer/escalate | reviewer dispatch が escalate=true を返した(round/trend 停止条件)
+reviewer/timeout | reviewer の reviewLock が締切超過(dispatch の hang)
+reviewer/subjective_escalate | reviewer dispatch が主観的エスカレーションを返した
+issue-reviewer/invalid | issue reviewer dispatch の返答が JSON でない(dispatch 結果失敗)
+issue-reviewer/escalate | issue reviewer dispatch が escalate=true を返した(round/trend 停止条件)
+issue-reviewer/subjective_escalate | issue reviewer dispatch が主観的エスカレーションを返した
+issue-reviewer/timeout | issue reviewer の issueReviewLock が締切超過(dispatch の hang)
+issue-review-worker/subjective_escalate | issue review worker dispatch が主観的エスカレーションを返した
+issue-review-worker/timeout | issue review worker の issueReviewLock が締切超過(dispatch の hang)
+git-status-guard | git-status ガードが .harness/ への意図しない変更を検知(decision script 外)
+```
+<!-- FROZEN-STOP-CONDITIONS:END -->
+
+上の 18 トークンを 13 文へ畳んだ**停止条件の並び(凍結・verbatim・両モード共通)** `<STOP>`:
+
+> reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ 実装役 dispatch 後の evidence gate 失敗 / 対応役 dispatch 後の evidence gate 失敗 / 実装役の pr_number 復旧検索が複数一致(曖昧)/ 実装役の in-flight マーカーが締切超過でリトライ上限到達(timeout)/ reviewer・対応役の reviewLock が締切超過(dispatch の hang・timeout)/ 実装役・対応役・reviewer いずれかが主観的エスカレーションを返した / issue reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ issue reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ issue reviewer・issue review worker いずれかが主観的エスカレーションを返した / issue reviewer・issue review worker の issueReviewLock が締切超過(dispatch の hang・timeout)/ git-status ガードが .harness/ への意図しない変更を検知した
+
+**PR モード雛形**(`$1` = `pr <N>`。`<N>` を番号へ・`<STOP>` を上の 13 文へ literal 置換する):
+
+```
+/goal 「PR #<N> を ready for merge になるまでレビュー・対応を繰り返して。次のいずれかに該当したら停止して人間に報告して: <STOP>。人間のタッチポイントは (i) この /goal 実行の承認 (ii) 停止条件到達(sink)時 (iii) ready for merge 到達後の merge 代行判断、の 3 点のみで、それ以外の途中の人間確認は無い。ready for merge に到達したら、規約『終端の記録と merge 代行』節に従い人間が merge を代行してよい — この /goal 文言(委譲条項が見える状態)を人間が読んで実行した行為が同節の言う"明示指示"に相当する。merge 前提確認(status=ready for merge かつ CI 緑、外れたら拒否・エスカレーション)は同節が定める人間の手動ゲートであり、この goal ループの停止条件ではない(自動ループの到達点は ready for merge 止まり)。」
+```
+
+**issue モード雛形**(`$1` = `issue <N>`。一気通貫・v1):
+
+```
+/goal 「issue #<N> を issue レビュー → ready for implementation → PR 作成 → PR レビュー・対応 → ready for merge まで一気通貫で進めて。次のいずれかに該当したら停止して人間に報告して: <STOP>。人間のタッチポイントは (i) この /goal 実行の承認 (ii) 停止条件到達(sink)時 (iii) ready for merge 到達後の merge 代行判断、の 3 点のみで、それ以外の途中の人間確認は無い。ready for merge に到達したら、規約『終端の記録と merge 代行』節に従い人間が merge を代行してよい(提示された本文言を読んで実行した行為が同節の"明示指示"に相当。precheck: status=ready for merge かつ CI 緑・外れたら拒否)。なお本雛形が凍結する停止条件 `<STOP>` は上記 13 文(18 トークン)で issue 相・PR 相の両フェーズを覆う — issue #88 で issue フェーズの sink outcome(issue reviewer の escalate(round 上限 / blocker trend)・dispatch 結果失敗・主観的エスカレーション・issueReviewLock の hang / issue review worker の主観的エスカレーション・issueReviewLock の hang)を decision script に成文化したため、issue 相にもレビューが収束しない失敗モードを自動 halt する停止条件が備わり、本雛形はそれらを含めて組み立てる。」
+```
+
+**Phase 3(#85)再利用の境界(1 行制約)**: この「構造化対象指定 → verbatim goal 文字列」の展開部品は、入出力境界(入力 = `pr <N>` / `issue <N>` の構造化指定 / 出力 = 上記 verbatim goal 文字列)を、Phase 3(#85)の無人トリガーが人間の `/goal` 実行を置き換える際にそのまま食える形に保つ(この境界を崩す拡張をしない)。
+
+### 自由文モード(#60・後方互換)
+
+**`$1` が自由文の場合**(構造化モードにも near-miss にも該当しない。例: `/harness-orchestrate "issue #42 を ready for implementation になるまでレビュー・対応を繰り返して"`): 本コマンドは通常の tick(下記「配車テーブル」以降の手順)を実行**しない**。代わりに次を行う:
 
 1. 本ファイル(このコマンドの手順書)は、このコマンド自体の実行によって既に context にロード済みである。追加のファイル読込は不要。
 2. 下記「失敗経路(単一の need for human review sink)」節の**この sink にルーティングされるトリガー**表(decision script 経由の sink 17 種 = PR フェーズ 11 種 + issue フェーズ 6 種(issue #88)+ git-status ガード 1 種 = 合計 18 種)を、簡潔な自然文の停止条件へ変換する。うち `timeout` 系 5 種(実装役 `dispatchMarker` の hang + reviewer / 対応役 `reviewLock` の hang + issue reviewer / issue review worker `issueReviewLock` の hang。issue #26 / #71 / #88)は下表の行ではなく「tick 冒頭 reconciliation」節が検知する変則 sink だが、停止条件としては下記サンプルに含める。表の `role/outcome` トークンや書込 status 列はそのまま `/goal` 文字列へ転記しない — 表の「トリガー(状況)」列の文言を平易な日本語で言い換える。**ゴールが issue フェーズのみ(例: `created issue → ready for implementation`)なら issue フェーズの停止条件だけを、PR フェーズのみなら PR フェーズの停止条件だけを選んでよい**(ゴールに無関係なフェーズの停止条件は省ける)。
