@@ -45,41 +45,29 @@
         "body": { "type": "string", "description": "作業レポート本文 (人間可読)" }
       }
     },
-    "dispatchMarker": {
+    "lockBase": {
       "type": "object",
       "additionalProperties": false,
       "required": ["dispatched_tick", "deadline_tick", "retry_count"],
-      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形のみをここで規定する — tick 計測・締切オフセット K・有界リトライ・notified 付与などの手続き (K/N 等のチューニング可能な具体値を含む) の正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない)。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (この宣言を足しても validate-plan-progress.py --schema / --drift / smoke の検査挙動は不変。issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)",
+      "description": "in-flight ロック / マーカーの共有構造 (dispatchMarker / reviewLock / issueReviewLock が allOf で参照する型スケルトン・issue #88 round1 🟡12)。3 本は型/形が同一 (同じ required・同じ 4 property) で、K/N・締切・sink 手続き・role 解決といった意味論の違いは各定義の allOf 直下の description が持つ。ここへ property を足すと 3 本すべてへ lockstep で効くため、以前 6 箇所 (3 定義 × 2 ファイル) へ複製していた構造更新を 1 箇所へ畳む。dispatchMarker/reviewLock/issueReviewLock はいずれも validator/drift/smoke の検査対象外 (step.required 非追加・step の additionalProperties 不変) で、この共通化は検査挙動を変えない (validator は lock 定義を読まない)",
       "properties": {
-        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (台帳 top-level の transient カウンタ由来)" },
-        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K)。K の具体値・計算は marker 書込側 (prose) が行う" },
-        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数 (初回 0、再 dispatch で reconciliation が返す値を引き継ぐ)。上限 N の具体値は prose 側が定める" },
-        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の復旧検索・reconciliation をスキップする (通知の無限反復防止)" }
+        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick / 台帳 top-level の transient カウンタを共有)" },
+        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K)。K の具体値・計算は各ロックの description / prose が定める" },
+        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数 (初回 0)。上限 N の具体値・引き継ぎ規則は各ロックの description / prose が定める" },
+        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の reconciliation (dispatchMarker は復旧検索も) をスキップする (通知の無限反復防止)" }
       }
+    },
+    "dispatchMarker": {
+      "allOf": [{ "$ref": "#/definitions/lockBase" }],
+      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形は definitions.lockBase を allOf 参照 (issue #88 round1 🟡12 で共通化) — tick 計測・締切オフセット K・有界リトライ・notified 付与などの手続き (K/N 等のチューニング可能な具体値を含む) の正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない)。K=2・N=2 (締切超過で redispatch・上限到達で sink)。retry_count は初回 0、再 dispatch で reconciliation が返す値を引き継ぐ。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)"
     },
     "reviewLock": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["dispatched_tick", "deadline_tick", "retry_count"],
-      "description": "pr reviewer / developer (対応役) dispatch の in-flight ロック (transient・issue #37、issue #71 で dispatchMarker 同型へ拡張)。型/形のみをここで規定する — K_review・締切・sink 手続き (reviewLock は N=0・redispatch なしで初回の締切超過で即 sink) の正は commands/harness-orchestrate.md「reviewer / 対応役の in-flight ロック」節・「tick 冒頭 reconciliation」節 (ここでは複製しない)。dispatchMarker と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変。issue #68 で optional 宣言に変更)",
-      "properties": {
-        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick を共有)" },
-        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K_review)。issue #71: K_review=0 のため通常 dispatched_tick と一致する (dispatch は同一 tick 内で解決するため、次 tick 以降まで残っていること自体が hang のシグナル)" },
-        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数。reviewLock は N=0 (reconciliation へ max_retries=0 を渡す) で初回の締切超過で redispatch を経ず即 sink するため、書込時は常に 0" },
-        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の reconciliation をスキップする (通知の無限反復防止)" }
-      }
+      "allOf": [{ "$ref": "#/definitions/lockBase" }],
+      "description": "pr reviewer / developer (対応役) dispatch の in-flight ロック (transient・issue #37、issue #71 で dispatchMarker 同型へ拡張)。型/形は definitions.lockBase を allOf 参照 (issue #88 round1 🟡12)。K_review・締切・sink 手続き (reviewLock は N=0・redispatch なしで初回の締切超過で即 sink) の正は commands/harness-orchestrate.md「reviewer / 対応役の in-flight ロック」節・「tick 冒頭 reconciliation」節 (ここでは複製しない)。K_review=0 のため deadline_tick == dispatched_tick、retry_count は常に 0。dispatchMarker と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変。issue #68 で optional 宣言に変更)"
     },
     "issueReviewLock": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["dispatched_tick", "deadline_tick", "retry_count"],
-      "description": "issue reviewer / issue review worker dispatch の in-flight ロック (transient・issue #88)。PR フェーズの reviewLock (issue #37/#71) を issue フェーズへ対称に写したもので、型/形は同一。reviewLock との違いは reconciliation の role 解決だけ — reviewLock は残留ロックの role を pr.status から解決するが (completed review→responder 等)、issue フェーズには pr.status が無いため issueReviewLock は role を issue.status から解決する (created issue/waiting for review→issue reviewer、completed review→issue review worker)。K_review・締切・sink 手続き (N=0・redispatch なしで初回の締切超過で即 sink) の正は commands/harness-orchestrate.md「issue reviewer / issue review worker の in-flight ロック」節・「tick 冒頭 reconciliation」節 (ここでは複製しない)。dispatchMarker / reviewLock と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変)。issueReviewLock (hang 検知の transient) は重複配車防止の in-flight status マーカー (starting review / starting review work) とは役割が違う二枚看板である (status マーカーは選別 jq が自動 dedup・issueReviewLock は hang を有界に sink へ落とす)",
-      "properties": {
-        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick を共有)" },
-        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K_review)。reviewLock と同じく K_review=0 のため通常 dispatched_tick と一致する (dispatch は同一 tick 内で解決するため、次 tick 以降まで残っていること自体が hang のシグナル)" },
-        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数。issueReviewLock は N=0 (reconciliation へ max_retries=0 を渡す) で初回の締切超過で redispatch を経ず即 sink するため、書込時は常に 0" },
-        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の reconciliation をスキップする (通知の無限反復防止)" }
-      }
+      "allOf": [{ "$ref": "#/definitions/lockBase" }],
+      "description": "issue reviewer / issue review worker dispatch の in-flight ロック (transient・issue #88)。PR フェーズの reviewLock (issue #37/#71) を issue フェーズへ対称に写したもので、型/形は definitions.lockBase を allOf 参照 (round1 🟡12)。reviewLock との違いは reconciliation の role 解決だけ — reviewLock は残留ロックの role を pr.status から解決するが (completed review→responder 等)、issue フェーズには pr.status が無いため issueReviewLock は role を issue.status から解決する (created issue/waiting for review→issue reviewer、completed review→issue review worker)。K_review・締切・sink 手続き (N=0・redispatch なしで初回の締切超過で即 sink・K_review=0 で deadline_tick == dispatched_tick・retry_count は常に 0) の正は commands/harness-orchestrate.md「issue reviewer / issue review worker の in-flight ロック」節・「tick 冒頭 reconciliation」節 (ここでは複製しない)。dispatchMarker / reviewLock と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変)。issueReviewLock は重複配車防止 (選別 jq の .issueReviewLock == null ガード) と hang 検知 (reconciliation) の両方を単独で担う (PR フェーズの reviewLock と対称)。dispatch 前に issue.status を書き換えないため hang 時も status が dispatch 前の値のまま = reconciliation の role 解決マップが成立する (round1 🔴1/🔴2 — in-flight status マーカー starting review / starting review work は冗長かつ role 解決を壊すため書かない)"
     },
     "issueStatus": {
       "enum": [

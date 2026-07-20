@@ -369,18 +369,13 @@ PY
 
 ## issue reviewer / issue review worker の in-flight ロック(issue #88)
 
-**目的**: issue フェーズ dispatch にも PR フェーズと同じ二枚看板を配線する — (1) 重複配車防止の **in-flight status マーカー**(orchestrator が dispatch 前に書く)と、(2) hang 検知の **`issueReviewLock`**(reviewLock の issue 版)。両者は役割が違う(status マーカーは選別 jq が自動 dedup・`issueReviewLock` は hang を有界に sink へ落とす)。
+**目的**: issue フェーズ dispatch にも PR フェーズと同じ重複配車防止 + hang 検知を配線する。PR フェーズは `reviewLock` **単独**でこの両方を担う — dispatch 前に `reviewLock` **だけ**を書き `pr.status` は書き換えず(選別 jq の `.reviewLock == null` ガードが dedup、reconciliation が hang 検知)。issue フェーズも対称に、`issueReviewLock`(reviewLock の issue 版)**単独**で両方を担わせる。**dispatch 前に `issue.status` を書き換えてはならない(round1 🔴1・🔴2)** — status を書き換えると「dispatch が hang したなら status は dispatch 前の値のまま」という reconciliation の役割解決の前提(上記「issueReviewLock の reconciliation」の役割解決マップが依存する不変条件)が壊れる。`issueReviewLock` が既に dedup を担うため、in-flight status マーカー(`starting review` / `starting review work`)の追加書込は**冗長かつ有害**であり、書かない(PR フェーズが dispatch 前に `pr.status` を書かないのと対称)。
 
-**(1) in-flight status マーカー(重複配車防止・round2 🟡C)**: PR フェーズが dispatch 前に `starting review`(reviewer 前)/ `starting review work`(責め返す対応役 前)を台帳へ書くのと同型に、単一 writer の orchestrator が issue dispatch 前に in-flight status を台帳へ書く:
-- issue reviewer を dispatch する直前に `issue.status = "starting review"`。
-- issue review worker を dispatch する直前に `issue.status = "starting review work"`。
-選別 jq は `created issue` / `waiting for review` / `completed review` を対象にするため、これらの in-flight status を書けば **status 自身が次 tick のスキップを兼ねて自動 dedup**(sink の台帳ベース無条件スキップと同原理)。書込は「ルーティング判定」節『`ledger_write` の適用』と同じローカル編集(`issue.status` を書くだけ)。
-
-**(2) `issueReviewLock`(hang 検知・transient・型の正は `plan-progress.schema.json` の `definitions.issueReviewLock`)**: issue reviewer / issue review worker が dispatch する直前に、対象 step へ `reviewLock` と同型に書く(`K_review = 0`・`retry_count = 0` 固定)。`reviewLock` とは**別フィールド**で持つ(役割解決を `issue.status` から引くため — 上記「issueReviewLock の reconciliation」)。書込手続きは reviewLock の書込(「reviewer / 対応役の in-flight ロック」節)と同一で、フィールド名を `issueReviewLock` に変えるだけ:
+**`issueReviewLock`(重複配車防止 + hang 検知・transient・型の正は `plan-progress.schema.json` の `definitions.issueReviewLock`)**: issue reviewer / issue review worker が dispatch する直前に、対象 step へ `reviewLock` と同型に書く(`K_review = 0`・`retry_count = 0` 固定)。`reviewLock` とは**別フィールド**で持つ(役割解決を `issue.status` から引くため — 上記「issueReviewLock の reconciliation」)。書込手続きは reviewLock の書込(「reviewer / 対応役の in-flight ロック」節)と同一で、フィールド名を `issueReviewLock` に変えるだけ:
 ```
 step["issueReviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retry_count": 0}
 ```
-**選別ガード**: 「選別(jq)」節の issue reviewer / issue review worker ブロックに `.issueReviewLock == null` を追加し、既に in-flight な step を選別から除外する(実装役の `.dispatchMarker == null`・対応役の `.reviewLock == null` ガードと同型)。
+**選別ガード**: 「選別(jq)」節の issue reviewer / issue review worker ブロックに `.issueReviewLock == null` を追加し、既に in-flight な step を選別から除外する(実装役の `.dispatchMarker == null`・対応役の `.reviewLock == null` ガードと同型)。**dispatch 前に `issue.status` を書き換えないため、hang しても status は dispatch 前の値のまま**であり、「issueReviewLock の reconciliation」の役割解決マップ({`created issue` / `waiting for review` → issue-reviewer, `completed review` → issue-review-worker})が sink 時に正しく役割を解決できる(PR reviewLock reconciliation が `pr.status` から役割解決するのと対称。もし dispatch 前に `starting review` 系へ書き換えると、hang 残留時に status がマップに無い値になり役割解決が undefined になる — これが round1 🔴1 の根因だった)。
 
 **解除(必ず同一 tick 内・全 outcome で)**: issue reviewer / issue review worker はどちらも dispatch が同一 tick 内で outcome まで同期完結するため、判定器呼出後の原子書込で **全 outcome について** `issueReviewLock` を削除する(`ledger_write` が null の outcome(issue-reviewer/`invalid`)でも解除する)。適用は「ルーティング判定」節『`ledger_write` の適用』の `<marker_field>` に `"issueReviewLock"` を渡す(手続き本体はそちらが正・ここでは複製しない)。ただし `timeout`(hang)は上記 reconciliation が `issueReviewLock` を残置 + `notified` 付与する変則で、この解除経路は通らない。
 
@@ -413,8 +408,8 @@ step["issueReviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retr
 | `issue.status == "ready for implementation"` かつ `pr.number == null` かつ **in-flight マーカー無し(`wait` 対象外)** | developer(実装役) | tick 冒頭 reconciliation → (marker 無し/`redispatch`) → **ファイル衝突検知(下記)** → dispatch → 返答検証(復旧検索)→ evidence gate → outcome 解決 → 判定器 → git status ガード → route 実行(normal/skip/sink/timeout→sink) |
 | `pr.status == "completed review"` かつ **`reviewLock` 無し** | developer(対応役) | `reviewLock` 書込 → dispatch → 返答検証 → evidence gate → outcome 解決 → 判定器 → git status ガード → route 実行(normal/sink)→ `reviewLock` 解除 |
 | `pr.status in ("created pr", "waiting for review")` かつ **`reviewLock` 無し** | pr reviewer | `reviewLock` 書込 → dispatch → 返答から outcome 解決(`invalid`/`escalate`/`clean_pass`/`blockers`/`subjective_escalate`)→ 判定器 → route + label_action 実行 → `reviewLock` 解除 |
-| `issue.status in ("created issue", "waiting for review")` かつ **`issueReviewLock` 無し**(issue #88) | issue reviewer | `issue.status="starting review"` 書込(in-flight マーカー)→ `issueReviewLock` 書込 → dispatch → 返答から outcome 解決(`invalid`/`escalate`/`clean_pass`/`blockers`/`subjective_escalate`)→ 判定器 → route + label_action 実行 → `issueReviewLock` 解除 |
-| `issue.status == "completed review"` かつ **`issueReviewLock` 無し**(issue #88) | issue review worker | `issue.status="starting review work"` 書込(in-flight マーカー)→ `issueReviewLock` 書込 → dispatch → 返答から outcome 解決(`done`/`subjective_escalate`)→ 判定器 → route 実行 → `issueReviewLock` 解除 |
+| `issue.status in ("created issue", "waiting for review")` かつ **`issueReviewLock` 無し**(issue #88) | issue reviewer | `issueReviewLock` 書込(`issue.status` は書き換えない・round1 🔴1/🔴2)→ dispatch → 返答から outcome 解決(`invalid`/`escalate`/`clean_pass`/`blockers`/`subjective_escalate`)→ 判定器 → route + label_action 実行 → `issueReviewLock` 解除 |
+| `issue.status == "completed review"` かつ **`issueReviewLock` 無し**(issue #88) | issue review worker | `issueReviewLock` 書込(`issue.status` は書き換えない・round1 🔴1/🔴2)→ dispatch → 返答から outcome 解決(`done`/`subjective_escalate`)→ 判定器 → route 実行 → `issueReviewLock` 解除 |
 | `issue.status == "ready for implementation"`(issue reviewer の天井) | なし(PR フェーズへ) | issue フェーズ側では dispatch しない(実装役は PR フェーズの配車が拾う) |
 | `pr.status == "ready for merge"` | なし | dispatch しない(終端は人間の専権) |
 | `pr.status in ("merged pr")` / issue 終端(`closed issue`) | なし | 何もしない |
@@ -474,20 +469,26 @@ jq -c '[ .steps[]
   | {id, number: .pr.number} ] | unique_by(.number)' "$PLAN"
 
 # issue reviewer dispatch 対象(issue #88: `.issueReviewLock == null` で in-flight を除外。
-# in-flight status マーカー(starting review / starting review work)は選別集合に無いため
-# status 自身が自動 dedup も兼ねる。dependsOn ガード(issue #51・round1 🟡5)も適用する)
+# dedup は `.issueReviewLock == null` ガード単独が担う(PR フェーズの `.reviewLock == null` と対称。
+# dispatch 前に `issue.status` を書き換えないため in-flight status マーカーは無い・round1 🔴1/🔴2)。
+# `.issue.number != null and .issue.githubState == "open"` ガード(round1 🔴3)は PR 側
+# (`.pr.number != null and .pr.githubState == "open"`)と対称 — GitHub 上で close 済みの issue へ
+# 台帳の遅延で誤 dispatch するのを防ぐ。dependsOn ガード(issue #51・round1 🟡5)も適用する)
 jq -c '
   ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
   | [ .steps[]
+      | select(.issue.number != null and .issue.githubState == "open")
       | select((.issue.status == "created issue" or .issue.status == "waiting for review") and .issueReviewLock == null)
       | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
       | {id, number: .issue.number} ]
 ' "$PLAN"
 
-# issue review worker dispatch 対象(issue #88: 同じく `.issueReviewLock == null` で除外)
+# issue review worker dispatch 対象(issue #88: 同じく `.issueReviewLock == null` で除外。
+# `.issue.number != null and .issue.githubState == "open"` ガード(round1 🔴3)も PR 側と対称に課す)
 jq -c '
   ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
   | [ .steps[]
+      | select(.issue.number != null and .issue.githubState == "open")
       | select(.issue.status == "completed review" and .issueReviewLock == null)
       | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
       | {id, number: .issue.number} ]
@@ -646,7 +647,7 @@ label_action(`ready for merge` ラベル同期)の実コマンドは「ルーテ
 
 pr reviewer を issue フェーズへ写したもの。**判定エンジンは v1 では kit 非同梱の個人 skill `reviewing-github-issues` に依存する opt-in path**(PR 側の opt-in `multi-angle` 相当・可搬でない。honest な明記は `roles/issue-reviewer-dispatch.md` frontmatter と `.harness/CLAUDE.harness.md`「役割の分離」節)。**PR 側の候補収集(`collectors/strategy.md`・code-review mode)に相当する orchestrator 前処理は無い**(判定 rubric を個人 skill に委譲するため)。
 
-1. **in-flight マーカー + `issueReviewLock` 書込**: dispatch 直前に `issue.status = "starting review"` を書き(重複配車防止・「issue reviewer / issue review worker の in-flight ロック」節)、続けて同節の書込手続きで `issueReviewLock` を書く(選別 jq は既に `.issueReviewLock == null` で除外済み)。
+1. **`issueReviewLock` 書込**: dispatch 直前に「issue reviewer / issue review worker の in-flight ロック」節の書込手続きで `issueReviewLock` を書く(重複配車防止 + hang 検知を単独で担う・選別 jq は既に `.issueReviewLock == null` で除外済み)。**`issue.status` は書き換えない**(round1 🔴1/🔴2 — in-flight status マーカーは冗長かつ reconciliation の役割解決を壊すため。PR フェーズの reviewLock が `pr.status` を書かないのと対称)。
 
 2. **dispatch**(ツール制限は pr reviewer と同じ。`gh issue comment` 投稿は許可するが台帳・ラベルには触れさせない)。**dispatch prompt 本文は `${CLAUDE_PLUGIN_ROOT}/roles/issue-reviewer-dispatch.md` へ外出し済み**(★最重要★ の共通コア + issue reviewer 固有項目 + skill 起動 → blocker_count/round/prev_markers 補完 → `evaluate-stop-condition.py` で escalate 補完 → marker 埋込 + 投稿 → `contracts/issue-reviewer-return.schema.json` の形で返す指示を含む)。この参照ファイルは **dispatch する subagent 自身が読む** — orchestrator 自身は読まない:
 
@@ -666,7 +667,7 @@ pr reviewer を issue フェーズへ写したもの。**判定エンジンは v
 
 developer(対応役)を issue フェーズへ写したもの。**ただし issue フェーズには実行して落とせる証拠(test)が構造的に無いため evidence gate を持てない** — 前進 outcome は単一の `done` のみで、対応役の `evidence_pass`/`evidence_fail` 二分岐は無い(round1 🟡2 の正直な非対称)。「偽の前進」(無作業 dispatch でも `done` へ進む)の検知は次 round の issue reviewer 別セッション読取に一本化される(PR responder の evidence gate より構造的に弱い)。
 
-1. **in-flight マーカー + `issueReviewLock` 書込**: dispatch 直前に `issue.status = "starting review work"` を書き、続けて `issueReviewLock` を書く(選別 jq は `.issueReviewLock == null` で除外済み)。
+1. **`issueReviewLock` 書込**: dispatch 直前に「issue reviewer / issue review worker の in-flight ロック」節の書込手続きで `issueReviewLock` を書く(選別 jq は `.issueReviewLock == null` で除外済み)。**`issue.status` は書き換えない**(round1 🔴1/🔴2 — 対応役の reviewLock が `pr.status` を書かないのと対称)。
 
 2. **dispatch**(ツール制限は対応役と同じ。`gh issue comment` 投稿は許可するが台帳・ラベルには触れさせない)。**dispatch prompt 本文は `${CLAUDE_PLUGIN_ROOT}/roles/issue-review-worker.md` へ外出し済み**(★最重要★ の共通コア + issue review worker 固有項目 + 4 分類採否判定を inline。PR 側 `developer-responder.md` が dispatch file を分けないのと対称の単一ファイル):
 
@@ -680,7 +681,7 @@ developer(対応役)を issue フェーズへ写したもの。**ただし issue
    - 主観エスカレーション以外(通常の対応完了)→ outcome=**`done`** → 判定器の `ledger_write`(`issue.status`="waiting for review")を **`ledger_write` の適用**手続きで書く・route=normal(次 tick で issue reviewer が再レビュー)。
    - `subjective_escalate` → 判定器の `ledger_write`(`issue.status`="need for human review")を書く(書いてから sink)・route=sink。sink の出口はラベルを **issue に** 付与(「issue フェーズの sink の差分」)。
 
-   `done` は worker が実際に作業した事実(採用/却下の判断・本文反映)を伴うため、`ledger_write` 適用の直後に「作業レポートの代筆」節の共通手続きで `reports[]` へ 1 件追記する(`author`="issue review worker"・`role`="issue review worker"。`subjective_escalate` は対応未完了のため追記しない)。
+   `done` は worker が実際に作業した事実(採用/却下の判断・本文反映)を伴うため、`ledger_write` 適用の直後に「作業レポートの代筆」節の共通手続きで `reports[]` へ 1 件追記する(`author`="issue review worker"・`role`="developer"。worker は PR 対応役(`role`="developer")の issue 版であり、schema の `role` は区分(developer/reviewer 等)を表すため区分側に揃える・round1 🟡10。`subjective_escalate` は対応未完了のため追記しない)。
 
 **issue フェーズには evidence gate 相当が無い(正直な限界・round1 🟡2)**: PR フェーズの対応役は evidence gate(test 独立再実行)で越権を無効化し独立検証するが、issue フェーズには実行して落とせる証拠が無い。有界化は「issueReviewLock の reconciliation」(hang 検知)+ issue reviewer の停止条件機構(round 上限 / blocker trend → escalate → sink)が担い、機械的独立検証は issue reviewer の別セッション読取に一本化される。「A＝PR と対称」は (i) この evidence gate 非対称と (ii) 判定エンジンの可搬性(issue reviewer が opt-in の個人 skill 依存)の 2 点を除いて成立する。
 
@@ -752,7 +753,7 @@ PY
 | `main developer (対応役)` / `developer` | `evidence_pass` または `evidence_fail`(いずれも対応作業(採用/却下の判断・修正試行)が実際に行われた事実を伴うため対象。`subjective_escalate` は対応未完了のため対象外) | 「developer(対応役)」手順 6 |
 | `pr reviewer` / `reviewer` | `clean_pass` / `blockers` / `escalate` / `subjective_escalate`(いずれも判定が確定し `pr.status` が遷移するため対象。`invalid` は dispatch 結果失敗で判定物が無いため対象外) | 「pr reviewer」outcome 実行部 |
 | `issue reviewer` / `reviewer` | `clean_pass` / `blockers` / `escalate` / `subjective_escalate`(いずれも判定が確定し `issue.status` が遷移するため対象。`invalid` は dispatch 結果失敗で判定物が無いため対象外。issue #88) | 「issue reviewer」outcome 実行部 |
-| `issue review worker` / `issue review worker` | `done`(対応作業が実際に行われた事実を伴うため対象。`subjective_escalate` は対応未完了のため対象外。issue #88) | 「issue review worker」手順 5 |
+| `issue review worker` / `developer` | `done`(対応作業が実際に行われた事実を伴うため対象。`subjective_escalate` は対応未完了のため対象外。issue #88。`role` は区分側に揃え PR 対応役と対称・round1 🟡10) | 「issue review worker」手順 5 |
 | `pr review worker` | 対象外(本コマンドが dispatch しないロール。`developer(対応役)` と機能は近いが、本コマンド経由ではなく個人 skill `working-triaged-pr-for-loop` 経由で手動 / loop 起動される独立ロールであり、本ファイルの配線対象ではない) | — |
 | `orchestrator` | 対象外(上記 3 ロール分の代筆行為そのものが単一 writer = 本コマンドの実行として行われるため、別途 `author="orchestrator"` の重複 report は持たない) | — |
 
@@ -823,7 +824,7 @@ PY
 - **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等・review-mode=multi-angle のみ)の kit 同梱が前提になるため別途対応が必要(review-mode=code-review(既定)は issue #49 以降 `${CLAUDE_PLUGIN_ROOT}/collectors/strategy.md`(kit 同梱・個人 skill 不要)による角度別 finder 収集のみに依存する。導入先が `.harness/collectors/angles/` に `skill:` 付き角度を追加した場合はその skill にも依存する)。
 - **手動代行モードは第一級の運用モード(issue #71・B2)**: 本 orchestrator は `/loop` による定期実行だけでなく、**ルートエージェントが各 tick を都度手動起動する「手動代行モード」でも回る**(実測: `orchestratorTick` が 2026-07-16 の `1` から手動代行のみで前進した)。両モードで tick モデル(無状態 tick・`orchestratorTick` 加算)・配車ロジックは同一で差は無く、`/loop` は「手動代行の tick 起動を定期化した特殊形」に過ぎない。**有界停止の保証レベルは両モードとも tick 数ベース**であり実時間ベースではない(「有界停止の保証」節 B2 参照)— 手動代行モードでは次 tick の起動タイミングが人間に委ねられるため、sink 到達までの実時間は不定である(これは B2 として受容された帰結)。締切機構(`dispatchMarker` の `K=2` / `reviewLock` の `K_review=0`)が保証するのは「何 tick で sink へ到達するか」であって wall-clock の有界性ではない。
 - **issue #11 の F案は実装済み**: 上記「既知のリスク」節参照。orchestrator の単一書込は ローカルファイル編集 + Statuses API 自己申告へ追従済み(main への直接 commit/push はしない)。
-- **issue サイド(issue reviewer / issue review worker)の配車を配線済み(issue #88)**: issue フェーズも PR フェーズと対称に配線した(配車テーブル・decision script の 2 role・in-flight status マーカー + `issueReviewLock`・単一 sink(`issue.status="need for human review"`)・ダッシュボード可視化・reports[] 代筆)。ただし「A＝PR と対称」は 2 点を除いて成立する正直な非対称が残る: (i) issue フェーズには実行して落とせる証拠(test)が構造的に無く **evidence gate 相当が無い**(有界化は停止条件機構 + `issueReviewLock` hang 検知が担い、偽の前進検知は次 round の issue reviewer 別セッション読取に一本化 = PR responder より弱い)、(ii) issue reviewer の判定エンジンは v1 では kit 非同梱の個人 skill `reviewing-github-issues` に依存する **opt-in path で可搬でない**(PR 既定 `code-review` は #49 で可搬化済み・個人 skill 依存は opt-in `multi-angle` 限定)。他 repo は配車 wiring は得るが動く issue-reviewer は得ない(skill 不在で dispatch wrapper が存在しない skill を呼ぶ)。**follow-up**: 8 観点 rubric を kit 同梱 `roles/issue-reviewer.md` へ inline し個人 skill 非依存で可搬化(PR 既定 mode 可搬化の #49 と同型・issue reviewer を PR reviewer と対称の dispatch+spec 2 ファイルへ)。**PR を伴わない issue 単体の close 代行はスコープ外**(`.harness/CLAUDE.harness.md`『終端の記録と merge 代行』踏襲)。
+- **issue サイド(issue reviewer / issue review worker)の配車を配線済み(issue #88)**: issue フェーズも PR フェーズと対称に配線した(配車テーブル・decision script の 2 role・`issueReviewLock`(重複配車防止 + hang 検知を単独で担う・dispatch 前に `issue.status` は書き換えない・round1 🔴1/🔴2)・単一 sink(`issue.status="need for human review"`)・ダッシュボード可視化・reports[] 代筆)。ただし「A＝PR と対称」は 2 点を除いて成立する正直な非対称が残る: (i) issue フェーズには実行して落とせる証拠(test)が構造的に無く **evidence gate 相当が無い**(有界化は停止条件機構 + `issueReviewLock` hang 検知が担い、偽の前進検知は次 round の issue reviewer 別セッション読取に一本化 = PR responder より弱い)、(ii) issue reviewer の判定エンジンは v1 では kit 非同梱の個人 skill `reviewing-github-issues` に依存する **opt-in path で可搬でない**(PR 既定 `code-review` は #49 で可搬化済み・個人 skill 依存は opt-in `multi-angle` 限定)。他 repo は配車 wiring は得るが動く issue-reviewer は得ない(skill 不在で dispatch wrapper が存在しない skill を呼ぶ)。**follow-up**: 8 観点 rubric を kit 同梱 `roles/issue-reviewer.md` へ inline し個人 skill 非依存で可搬化(PR 既定 mode 可搬化の #49 と同型・issue reviewer を PR reviewer と対称の dispatch+spec 2 ファイルへ)。**PR を伴わない issue 単体の close 代行はスコープ外**(`.harness/CLAUDE.harness.md`『終端の記録と merge 代行』踏襲)。
 - **git-status ガードの限界と設計境界(部分的バックストップ・正直な明記)**: 台帳保護には次の点がある。
   - **(a) subagent の worktree 編集は捕捉できない**: 実装役 subagent は自前の worktree で作業するため、その `.harness/` 編集は orchestrator 自身の checkout で走る `git status` からは**見えない**。したがってこのガードは **orchestrator 自身の checkout 内の編集しか捕捉できない部分的バックストップ**に過ぎない。**「subagent に `Write` を渡さない」ツール制限は台帳保護の隔離にならない(issue #37・欠落 9。理由は「単一書込」節参照 — `Bash` を持つ子は `Bash` 経由で台帳を編集でき、実装役は `Bash` が必須)**。したがって台帳保護の実質はこの git-status ガード(部分的バックストップ)と各ロール委譲プロンプト冒頭の禁止文言(L1)のみに依存する。`Bash` 経由の編集は完全には防げず、hook 等による L3 相当の強制ではない。追加の構造防御は `Agent` ツールに環境隔離が入るまで別 issue とし、主防御の不在を正直に受容する。
   - **(b) 自身の書込の誤検知を避ける(ローカル編集方式)**: ローカル編集方式(F案)では orchestrator 自身の書込は commit されず作業ツリーに残り続ける(`.harness/plan-progress.json` は常に dirty)。この自分の書込を subagent の変更と**誤検知しない**よう、ガードは `git status` の dirty 判定ではなく、`plan-progress.json` については **orchestrator が最後に書いた内容のスナップショットと照合**し、`.harness/` のそれ以外のファイルのみ `git status` で HEAD 一致を確認する。orchestrator は自身の各書込の直後にスナップショットを更新する(「dirty = subagent の意図しない変更」と短絡しない — 誤検知で無関係 step を spurious に sink 隔離するのを防ぐ)。

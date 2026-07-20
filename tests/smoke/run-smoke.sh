@@ -30,7 +30,9 @@
 #    壊れた・不整合な marker→sink(fail-closed。progressed=true でも優先) の境界、
 #    妥当性検証の各項目 (型崩れ・負値・deadline<dispatched・dispatched>current の未来矛盾)、
 #    不正入力 exit 2 の境界を含む)。加えて選別(jq) 実装役 / 対応役 / pr reviewer 各ブロックの
-#    dispatchMarker / reviewLock(issue #37)ガードを、commands/harness-orchestrate.md と同一の
+#    dispatchMarker / reviewLock(issue #37)ガードと、issue reviewer / issue review worker ブロックの
+#    issueReviewLock + githubState ガード(issue #88・round1 🔴3: close 済み / number 未確定 issue の
+#    誤 dispatch を防ぐ PR 側対称ガード)を、commands/harness-orchestrate.md と同一の
 #    jq を直接実行して固定する。同じ実装役ブロックの jq で dependsOn ガード(issue #51・
 #    スループット)の 6 種の境界(全依存終端 / 一部未終端 / 空配列 / キー欠損 /
 #    存在しない id(fail-closed) / 依存先が discuss 型)と、DoD (ii-a)(依存の無い step が
@@ -1020,6 +1022,55 @@ SELECT_REVIEWER_WANT='[{"id":"Z1","number":21}]'
 [ "$SELECT_REVIEWER_GOT" = "$SELECT_REVIEWER_WANT" ] \
   || fail "選別(jq) pr reviewer: reviewLock が残る step (Z2) が候補から除外されていない (got: $SELECT_REVIEWER_GOT / want: $SELECT_REVIEWER_WANT)"
 echo "[9/14] 選別(jq) 対応役 / pr reviewer の reviewLock ガード OK (issue #37・in-flight な step を候補から除外)"
+
+# 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState ガード
+# (issue #88・round1 🔴3/🟡11)。commands/harness-orchestrate.md の issue 選別 jq と同一の jq を
+# ここで直接実行し、次を固定する: (a) `.issueReviewLock == null` で in-flight step を除外(対応役 /
+# pr reviewer の reviewLock ガードと同型)、(b) `.issue.number != null and .issue.githubState == "open"`
+# ガード(PR 側 `.pr.number != null and .pr.githubState == "open"` と対称・round1 🔴3)で、GitHub 上で
+# close 済み / number 未確定の issue を除外する(台帳が非終端 status のまま遅延しても誤 dispatch しない)。
+SELECT_ISSUE_REVIEWER_JQ='
+  ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
+  | [ .steps[]
+      | select(.issue.number != null and .issue.githubState == "open")
+      | select((.issue.status == "created issue" or .issue.status == "waiting for review") and .issueReviewLock == null)
+      | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
+      | {id, number: .issue.number} ]
+'
+SELECT_ISSUE_WORKER_JQ='
+  ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
+  | [ .steps[]
+      | select(.issue.number != null and .issue.githubState == "open")
+      | select(.issue.status == "completed review" and .issueReviewLock == null)
+      | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
+      | {id, number: .issue.number} ]
+'
+# I1: 通常の created issue (open) → issue reviewer で eligible。
+# I2: waiting for review だが issueReviewLock 保持 → in-flight で除外。
+# I3: created issue だが githubState=closed → 🔴3 ガードで除外 (台帳が非終端のまま遅延)。
+# I4: created issue だが number=null → 🔴3 ガードで除外 (issue 番号未確定)。
+# I5: completed review (open) → issue review worker で eligible (reviewer 側では除外)。
+# I6: closed issue (終端) → 両方で除外。
+# I7: waiting for review だが githubState=closed → 🔴3 の中心ケース (非終端 status + close 済み) で除外。
+SELECT_ISSUE_INPUT='{"steps":[
+  {"id":"I1","issue":{"status":"created issue","number":201,"githubState":"open"},"pr":{"number":null}},
+  {"id":"I2","issue":{"status":"waiting for review","number":202,"githubState":"open"},"pr":{"number":null},
+   "issueReviewLock":{"dispatched_tick":3,"deadline_tick":3,"retry_count":0}},
+  {"id":"I3","issue":{"status":"created issue","number":203,"githubState":"closed"},"pr":{"number":null}},
+  {"id":"I4","issue":{"status":"created issue","number":null,"githubState":null},"pr":{"number":null}},
+  {"id":"I5","issue":{"status":"completed review","number":205,"githubState":"open"},"pr":{"number":null}},
+  {"id":"I6","issue":{"status":"closed issue","number":206,"githubState":"closed"},"pr":{"number":null}},
+  {"id":"I7","issue":{"status":"waiting for review","number":207,"githubState":"closed"},"pr":{"number":null}}
+]}'
+SELECT_ISSUE_REVIEWER_GOT="$(printf '%s' "$SELECT_ISSUE_INPUT" | jq -c "$SELECT_ISSUE_REVIEWER_JQ")"
+SELECT_ISSUE_REVIEWER_WANT='[{"id":"I1","number":201}]'
+[ "$SELECT_ISSUE_REVIEWER_GOT" = "$SELECT_ISSUE_REVIEWER_WANT" ] \
+  || fail "選別(jq) issue reviewer: issueReviewLock/githubState ガードの判定が期待と不一致 (got: $SELECT_ISSUE_REVIEWER_GOT / want: $SELECT_ISSUE_REVIEWER_WANT)"
+SELECT_ISSUE_WORKER_GOT="$(printf '%s' "$SELECT_ISSUE_INPUT" | jq -c "$SELECT_ISSUE_WORKER_JQ")"
+SELECT_ISSUE_WORKER_WANT='[{"id":"I5","number":205}]'
+[ "$SELECT_ISSUE_WORKER_GOT" = "$SELECT_ISSUE_WORKER_WANT" ] \
+  || fail "選別(jq) issue review worker: issueReviewLock/githubState ガードの判定が期待と不一致 (got: $SELECT_ISSUE_WORKER_GOT / want: $SELECT_ISSUE_WORKER_WANT)"
+echo "[9/14] 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState ガード OK (issue #88・round1 🔴3: close済み/number未確定 issue を除外・in-flight step を除外)"
 
 # ledger_write 適用手続き(「ルーティング判定」節)の直接検証。
 # commands/harness-orchestrate.md の同手続きと同一のロジックをここで直接実行し、次を固定する:

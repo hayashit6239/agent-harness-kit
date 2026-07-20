@@ -30,9 +30,9 @@ allowed-tools: [Read, Skill, Bash, Grep, Glob]
 続いて **dispatch wrapper(あなた)の責務**として次を補完する(skill は blocker_count / escalate / marker / 投稿を持たないため):
 
 1. **blocker_count を算出する**: `review_markdown` 中の 🔴 の件数を数える(issue reviews は arch/google のような source 区別が無い単一 source のため、PR 側の `reaggregate-has-blocker.py` に相当する再集計 script は使わない — 🔴 の件数がそのまま blocker_count)。
-2. **round と prev_markers を算出する**: issue #<N> の既存コメントのうち `<!-- issue-review:` マーカーを持つ件数 + 1 を `round` とする(prefix 非依存で頑健)。`prev_markers` は同じ `<!-- issue-review:` マーカー行を most-recent-first(直近が先頭)で最大 2 件抽出する(`gh issue view <N> --json comments` の本文から grep)。
+2. **round と prev_markers を算出する**: issue #<N> の既存コメントのうち `<!-- harness-review-issue:` マーカーを持つ件数 + 1 を `round` とする(PR 側 `harness-review-pr:` と対称の `harness-` 名前空間・両フェーズ共通の marker 走査が単一 prefix 族で成立する・round1 🟡9)。`prev_markers` は同じ `<!-- harness-review-issue:` マーカー行を most-recent-first(直近が先頭)で最大 2 件抽出する(`gh issue view <N> --json comments` の本文から grep)。
 3. **escalate を補完する**: `{round, has_blocker, blocker_count, prev_markers}` を stdin に `${CLAUDE_PLUGIN_ROOT}/scripts/evaluate-stop-condition.py` へ渡し(**同 script は無改修で流用** — marker パーサ `blocker_count=(\d+)` が prefix 非依存のため issue-review マーカーをそのまま食える)、返った `escalate` を採用する。
-4. **marker を埋め込み投稿する**: `review_markdown` の末尾に `<!-- issue-review: round=<N> has_blocker=<B> blocker_count=<M> escalate=<E> -->` を付けて、H1 を `# Issue Reviewer - レビュー実施`(PR 側 `# PR Reviewer - レビュー実施` と対称・ロール判別用)としたコメントを issue #<N> へ `gh issue comment` で投稿する(投稿は dispatch wrapper の専権であり、本コマンドの触らないものではない)。
+4. **marker を埋め込み投稿する**: `review_markdown` の末尾に `<!-- harness-review-issue: round=<N> has_blocker=<B> blocker_count=<M> escalate=<E> -->`(PR 側 `<!-- harness-review-pr: ... -->` と同型・`harness-` 名前空間で対称・round1 🟡9)を付けて、H1 を `# Issue Reviewer - レビュー実施`(PR 側 `# PR Reviewer - レビュー実施` と対称・ロール判別用)としたコメントを issue #<N> へ `gh issue comment` で投稿する(投稿は dispatch wrapper の専権であり、本コマンドの触らないものではない)。
 5. **`recommended_label` は捨てる**: skill が返す任意の `recommended_label` は issue に適用しない・返り値契約にも載せない(ラベル同期は単一書込主体 orchestrator の専権で、issue フェーズラベルは `need for human review` のみ)。
 
 最後に、`contracts/issue-reviewer-return.schema.json` が規定する形(`{has_blocker, blocker_count, escalate, review_markdown}`)を JSON で返せ(`review_markdown` は手順 4 で組み立てたコメント本文)。
