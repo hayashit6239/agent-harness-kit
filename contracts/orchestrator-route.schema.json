@@ -12,8 +12,8 @@
       "properties": {
         "role": {
           "type": "string",
-          "enum": ["implementer", "responder", "reviewer"],
-          "description": "委譲先ロールの区分。DECISION_TABLE の第 1 キー。"
+          "enum": ["implementer", "responder", "reviewer", "issue-reviewer", "issue-review-worker"],
+          "description": "委譲先ロールの区分。DECISION_TABLE の第 1 キー。issue-reviewer / issue-review-worker は issue フェーズ配車 (issue #88)。"
         },
         "outcome": {
           "type": "string",
@@ -59,8 +59,8 @@
           "description": "副作用の分岐。normal=台帳書込のみ / skip=書込なし・次 tick 再試行 / sink=失敗経路(need for human review ラベル + PushNotification)。各 route の適用手順の正は commands/harness-orchestrate.md「ルーティング判定」節。"
         },
         "label_action": {
-          "enum": [null, "add_ready_for_merge", "remove_ready_for_merge"],
-          "description": "PR ラベル操作。null=なし / add_ready_for_merge=付与 / remove_ready_for_merge=除去。適用は commands/harness-orchestrate.md「ルーティング判定」節。"
+          "enum": [null, "add_ready_for_merge", "remove_ready_for_merge", "add_ready_for_implementation", "remove_ready_for_implementation"],
+          "description": "ラベル操作。null=なし / add|remove_ready_for_merge=PR の ready for merge ラベル (PR reviewer) / add|remove_ready_for_implementation=issue の ready for implementation ラベル (issue reviewer・issue #88)。適用は commands/harness-orchestrate.md「ルーティング判定」節。"
         }
       }
     }

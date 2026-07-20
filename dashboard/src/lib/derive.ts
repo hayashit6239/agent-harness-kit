@@ -11,7 +11,9 @@
  *   規則 3 (祝い): ready for merge はキャラ信号ではなく舞台全体の演出フラグ (キャラ状態と直交)
  *   規則 4 (エスカレーション): need for human review もキャラ信号ではなく舞台全体の警告フラグ
  *     (キャラ状態・祝いのいずれとも直交。停止条件到達 = 人間の判断待ちで、どちらのキャラの
- *      仕事でもないため)
+ *      仕事でもないため)。issue #88 で issue フェーズにも nfhr sink を新設したため、舞台フラグ
+ *      escalate は issueEscalating || prEscalating のいずれかで立つ (エスカレーションだけが両レーンに
+ *      跨る非対称 — celebrating は PR 専用)。列集約は phase 別 signal を使い cross-lane 誤点灯を防ぐ。
  * 未知 status は unknown として信号に数えず警告を返す (fail-soft)。
  */
 import type { Ledger, Step } from '../types';
@@ -28,8 +30,10 @@ export interface Signal {
 }
 
 /**
- * issue フェーズ (schema issueStatus の非 null 全 7 値) → キャラ信号。
+ * issue フェーズ (schema issueStatus の非 null 全 8 値) → キャラ信号。
  * null 信号 = キャラへの信号なし。schema enum との網羅一致は derive.test.ts が assert する。
+ * 'need for human review' はキャラ信号なし (続行可否の判断は人間の専権) — エスカレーションは
+ * 舞台フラグで別扱い (規則 4)。PR フェーズ sink の issue 版 (issue #88)。
  */
 export const ISSUE_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = {
   'created issue': { character: 'reviewer', kind: 'waiting', label: 'レビュー待ち' },
@@ -38,6 +42,7 @@ export const ISSUE_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = 
   'ready for implementation': { character: 'developer', kind: 'waiting', label: '実装着手待ち' },
   'starting review work': { character: 'developer', kind: 'working', label: '指摘対応中' },
   'waiting for review': { character: 'reviewer', kind: 'waiting', label: '再レビュー待ち' },
+  'need for human review': null, // エスカレーション演出 (舞台フラグ・issue #88)
   'closed issue': null, // 終端
 };
 
@@ -81,8 +86,15 @@ export interface StepView {
   pr: PhaseView;
   /** pr.status が 'ready for merge' (祝いフラグの由来 step。行を強調表示) */
   celebrating: boolean;
-  /** pr.status が 'need for human review' (エスカレーションフラグの由来 step。行を強調表示) */
-  escalating: boolean;
+  /**
+   * issue.status が 'need for human review' (issue レーンのエスカレーションフラグの由来。issue #88)。
+   * phase 別 2 値化 (issueEscalating / prEscalating) の理由: 単一 boolean のまま issue へ広げると、
+   * issue が nfhr の step (pr=null) で PR レーンの未着手 (null) 列を誤点灯するため
+   * (buildLane が phase ごとに対応する signal だけを見て cross-lane の誤点灯を防ぐ)。
+   */
+  issueEscalating: boolean;
+  /** pr.status が 'need for human review' (PR レーンのエスカレーションフラグの由来。行を強調表示) */
+  prEscalating: boolean;
 }
 
 export interface LedgerWarning {
@@ -112,7 +124,8 @@ export interface BoardState {
   characters: Record<CharacterId, CharacterView>;
   /** 規則 3: ready for merge の step が 1 つでもあれば true (キャラ状態と直交) */
   celebrate: boolean;
-  /** 規則 4: need for human review の step が 1 つでもあれば true (キャラ状態・celebrate と直交) */
+  /** 規則 4: need for human review の step (issue / PR いずれかのフェーズ) が 1 つでもあれば true
+   * (= issueEscalating || prEscalating。キャラ状態・celebrate と直交。issue #88 で両レーンに拡張) */
   escalate: boolean;
   warnings: LedgerWarning[];
 }
@@ -232,8 +245,12 @@ export function derive(ledger: Ledger): BoardState {
 
     const celebrating = prStatus === 'ready for merge';
     if (celebrating) celebrate = true;
-    const escalating = prStatus === 'need for human review';
-    if (escalating) escalate = true;
+    // phase 別 2 値化 (issue #88): 単一 boolean のまま issue へ広げると、issue nfhr の step (pr=null) が
+    // PR レーンの null 列を誤点灯する。issueEscalating / prEscalating を分けて列集約も phase 別にする。
+    const issueEscalating = issueStatus === 'need for human review';
+    const prEscalating = prStatus === 'need for human review';
+    // 舞台フラグ escalate は issue / PR どちらの sink でも立つ (規則 4・両レーンに跨る)
+    if (issueEscalating || prEscalating) escalate = true;
 
     // 規則 1: pr.status != null の step は PR フェーズの信号のみ採用。
     // pr.status が未知語でも「PR フェーズが始まっている」事実は変わらないため issue 信号は採用しない。
@@ -252,7 +269,8 @@ export function derive(ledger: Ledger): BoardState {
       issue: { number: rawIssue?.number ?? null, status: issueStatus, githubState: rawIssue?.githubState ?? null, known: issue.known },
       pr: { number: rawPr?.number ?? null, status: prStatus, githubState: rawPr?.githubState ?? null, known: pr.known },
       celebrating,
-      escalating,
+      issueEscalating,
+      prEscalating,
     };
   });
 
@@ -275,6 +293,7 @@ export const ISSUE_COLUMN_ORDER: ReadonlyArray<string | null> = [
   'starting review',
   'completed review',
   'starting review work',
+  'need for human review', // 停止条件到達・人間の判断待ち (issue #88・PR レーンと対称)
   'ready for implementation',
   'closed issue',
 ];
@@ -327,8 +346,9 @@ export interface KanbanColumn {
    */
   celebrating: boolean;
   /**
-   * 規則 4 の導出値 (StepView.escalating) の列への集約 — この列にエスカレーション step のカードがあるか。
-   * PR レーンの 'need for human review' 列でのみ立ちうる。UI はこの値を消費する (再導出しない)。
+   * 規則 4 の導出値 (StepView.issueEscalating / prEscalating) の列への集約 — この列にエスカレーション
+   * step のカードがあるか。issue レーン・PR レーン双方の 'need for human review' 列で立ちうる
+   * (phase 別 signal を使うため cross-lane では立たない・issue #88)。UI はこの値を消費する (再導出しない)。
    */
   escalating: boolean;
   cards: KanbanCard[];
@@ -373,8 +393,11 @@ function buildLane(phase: Phase, order: ReadonlyArray<string | null>, steps: Ste
     target.cards.push(card);
     // 祝いは step 側の導出値 (規則 3) を列へ集約するだけ — PR レーンの ready for merge 列で立つ
     if (phase === 'pr' && step.celebrating) target.celebrating = true;
-    // エスカレーションは step 側の導出値 (規則 4) を列へ集約するだけ — PR レーンの need for human review 列で立つ
-    if (phase === 'pr' && step.escalating) target.escalating = true;
+    // エスカレーションは step 側の導出値 (規則 4) を列へ集約する。phase 別 signal を使うことで
+    // cross-lane 誤点灯を防ぐ (issue #88): issue レーンは issueEscalating・PR レーンは prEscalating のみ参照。
+    // これにより issue nfhr の step (pr=null) が PR レーンの null 列を点灯することはない。
+    if (phase === 'issue' && step.issueEscalating) target.escalating = true;
+    if (phase === 'pr' && step.prEscalating) target.escalating = true;
   }
   return { phase, columns: [...columns, unknown] };
 }

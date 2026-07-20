@@ -199,12 +199,26 @@ describe('合成規則 3 — 祝いは舞台全体のフラグでキャラ状態
   });
 });
 
-describe('合成規則 4 — エスカレーションも舞台全体のフラグでキャラ状態と直交 (issue #12)', () => {
-  it('need for human review の step が 1 つでもあれば escalate=true、該当 step に escalating が立つ', () => {
+describe('合成規則 4 — エスカレーションも舞台全体のフラグでキャラ状態と直交 (issue #12 / issue #88)', () => {
+  it('PR: need for human review の step が 1 つでもあれば escalate=true、該当 step に prEscalating が立つ', () => {
     const board = derive(ledgerOf([step('A', null, 'need for human review'), step('B', null, null)]));
     expect(board.escalate).toBe(true);
-    expect(board.steps[0]!.escalating).toBe(true);
-    expect(board.steps[1]!.escalating).toBe(false);
+    expect(board.steps[0]!.prEscalating).toBe(true);
+    expect(board.steps[1]!.prEscalating).toBe(false);
+  });
+
+  it('issue: need for human review の step が 1 つでもあれば escalate=true、該当 step に issueEscalating が立つ (issue #88)', () => {
+    const board = derive(ledgerOf([step('A', 'need for human review', null), step('B', null, null)]));
+    expect(board.escalate).toBe(true);
+    expect(board.steps[0]!.issueEscalating).toBe(true);
+    expect(board.steps[1]!.issueEscalating).toBe(false);
+  });
+
+  it('cross-lane negative: issue nfhr の step (pr=null) は prEscalating を立てない (PR レーン誤点灯防止・issue #88)', () => {
+    const board = derive(ledgerOf([step('A', 'need for human review', null)]));
+    expect(board.escalate).toBe(true);
+    expect(board.steps[0]!.issueEscalating).toBe(true);
+    expect(board.steps[0]!.prEscalating).toBe(false);
   });
 
   it('エスカレーションとキャラの作業中は同時に成立する (直交)', () => {
@@ -468,7 +482,7 @@ describe('台帳に動きなし = 両キャラ idle', () => {
 });
 
 describe('カンバン (deriveKanban) — 列順', () => {
-  it('issue レーンの列順 = 作者指定のカンバン並び 8 枚 + 右端に unknown 警告列', () => {
+  it('issue レーンの列順 = 作者指定のカンバン並び 9 枚 + 右端に unknown 警告列', () => {
     const lane = deriveKanban([]).issue;
     expect(lane.columns.map((c) => c.status)).toEqual([
       null, // 未着手
@@ -477,6 +491,7 @@ describe('カンバン (deriveKanban) — 列順', () => {
       'starting review',
       'completed review',
       'starting review work',
+      'need for human review', // issue #88 (PR レーンと対称)
       'ready for implementation',
       'closed issue',
       null, // unknown 列 (status なし・kind で区別)
@@ -617,12 +632,28 @@ describe('カンバン (deriveKanban) — カードの配置', () => {
     }
   });
 
-  it('エスカレーションは列の escalating に集約される (規則 4 の導出値の消費 — UI は再導出しない・issue #12)', () => {
+  it('PR エスカレーションは PR レーンの列の escalating に集約される (規則 4 の導出値の消費 — UI は再導出しない・issue #12)', () => {
     const board = derive(ledgerOf([step('A', 'created issue', 'need for human review')]));
     const view = deriveKanban(board.steps);
     expect(columnOf(view.pr, 'need for human review').escalating).toBe(true);
     // 同じ step のカードが入る issue レーン側の列には立たない
     expect(view.issue.columns.every((c) => !c.escalating)).toBe(true);
+  });
+
+  it('issue エスカレーションは issue レーンの列の escalating に集約される (issue #88)', () => {
+    const board = derive(ledgerOf([step('A', 'need for human review', null)]));
+    const view = deriveKanban(board.steps);
+    expect(columnOf(view.issue, 'need for human review').escalating).toBe(true);
+  });
+
+  it('cross-lane negative: issue nfhr (pr=null) は PR レーンのどの列も escalating を立てない (誤点灯防止・issue #88)', () => {
+    // 単一 boolean のまま issue へ広げると PR レーンの未着手 (null) 列が誤点灯するのを防ぐ回帰テスト。
+    const board = derive(ledgerOf([step('A', 'need for human review', null)]));
+    const view = deriveKanban(board.steps);
+    // PR レーンは prEscalating のみ参照するため issue 由来 nfhr では 1 列も立たない (null 列を含む)
+    expect(view.pr.columns.every((c) => !c.escalating)).toBe(true);
+    // issue レーン側は該当列のみ立つ
+    expect(columnOf(view.issue, 'need for human review').escalating).toBe(true);
   });
 
   it('エスカレーション step が無ければ全列 escalating=false', () => {
