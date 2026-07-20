@@ -1,6 +1,6 @@
 # escalate_to_human — 3 role 共通返り値契約
 
-developer(実装役)・developer(対応役)・pr reviewer の 3 role が dispatch prompt で共通して持つ、委譲先自身による人間への主観的エスカレーション経路(issue #31・A案)。各 role 規約ファイル(`${CLAUDE_PLUGIN_ROOT}/roles/developer-implementer.md` / `${CLAUDE_PLUGIN_ROOT}/roles/developer-responder.md` / `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`、および `commands/harness-orchestrate.md` の pr reviewer inline dispatch prompt)はこの契約を参照し、文言を複製しない(issue #61)。
+developer(実装役)・developer(対応役)・pr reviewer の 3 role が dispatch prompt で共通して持つ、委譲先自身による人間への主観的エスカレーション経路(issue #31・A案)。各 dispatch prompt ファイル(`${CLAUDE_PLUGIN_ROOT}/roles/developer-implementer.md` / `${CLAUDE_PLUGIN_ROOT}/roles/developer-responder.md` / `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer-dispatch.md`)はこの契約を参照し、文言を複製しない(issue #61。pr reviewer 分は issue #52 Phase B で `commands/harness-orchestrate.md` の inline dispatch prompt から `roles/pr-reviewer-dispatch.md` へ外出しした)。
 
 `gh auth switch` 禁止・fork 禁止・観測していないこと原則・`SendMessage` 禁止・台帳保護の 5 項目は本ファイルの対象外(`#52` Phase B の担当領域。各 dispatch ファイル冒頭にインラインのまま残る)。
 

@@ -52,7 +52,16 @@
 #    期待通り (衝突なし / 全件衝突 / 部分衝突(推移閉包) / 独立した複数組の衝突 /
 #    Implementation Scope 欠落(files 空配列)時の fail-closed / 候補 0 件 / 単一候補 の境界、
 #    不正入力 exit 2 の境界を含む)
-# 13. すべて通れば "SMOKE OK" を出して exit 0
+# 13. 共通コア(禁止事項)の単一ソース + 各 dispatch ファイル冒頭 ★最重要★ ブロックへの presence 検査
+#    (issue #52 Phase B・症状1・A3)。CANONICAL_CORE(この script が唯一の単一ソース)の 5 行
+#    (fork / SendMessage / gh auth switch / 台帳保護 / 観測禁止)を、4 dispatch ファイル
+#    (実装役 / 対応役 / pr reviewer / collectors)の冒頭 ★最重要★ ブロックが逐語部分一致で含むことを
+#    アサート(round2 🟡1(a): 行の脱落だけでなく文言 drift も捕捉するため keyword 一致にしない)。
+#    canonical 行を 1 本抜いたコピーが fail 判定になる負のケース(アサートが vacuous でないことの
+#    自己検証)を含む。**塞ぐのは「単一ソースからの脱落 / 文言 drift」のみ**で、subagent の runtime
+#    obedience(DoD (v))と「共通コア + ロール固有項目 *のみ* を持つ」排他(round2 🟡3)は構造的に
+#    検証不能 = best-effort(人間レビュー担保)。
+# 14. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -110,12 +119,12 @@ d["evidence"]["done"] = "make test"
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(d, f, ensure_ascii=False, indent=2)
 PY
-echo "[1/13] fixture + .harness/ を組み立てた: $REPO"
+echo "[1/14] fixture + .harness/ を組み立てた: $REPO"
 
 # --- 2. schema 検証: exit 0 を期待 ------------------------------------------
 python3 "$VALIDATOR" --schema "$PLAN" \
   || fail "正常な plan-progress.json で --schema が失敗した"
-echo "[2/13] --schema exit 0"
+echo "[2/14] --schema exit 0"
 
 # validator を import して検査規則を直接呼ぶ (直接テスト可能性の固定化 — 構造の退行検知)
 python3 - "$VALIDATOR" <<'PY_DIRECT'
@@ -135,13 +144,13 @@ assert errors[0].startswith("::error:: "), (
 assert "があるのに githubState が null" in errors[0], (
     f"期待する規則の文言が無い (got: {errors[0]!r})")  # 規則単位の固定化 (FAIL_CASES と同じ流儀)
 PY_DIRECT
-echo "[2/13] 検査規則の直接呼出 (import) OK"
+echo "[2/14] 検査規則の直接呼出 (import) OK"
 
 # --- 3. evidence.test 実行: exit 0 を期待 ------------------------------------
 TEST_CMD="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["evidence"]["test"])' "$PLAN")"
 ( cd "$REPO" && eval "$TEST_CMD" ) \
   || fail "evidence.test ($TEST_CMD) が exit 0 で終わらなかった"
-echo "[3/13] evidence.test ($TEST_CMD) exit 0"
+echo "[3/14] evidence.test ($TEST_CMD) exit 0"
 
 # --- 4. 失敗パターン群 (すべて non-zero + 期待文言を期待。件数はここに書かない — 乖離の温床) --------------------
 
@@ -268,7 +277,7 @@ for row in "${FAIL_CASES[@]}"; do
       fail "FAIL_CASES の検査モードが不正 ($checkmode): $row"
       ;;
   esac
-  echo "[4/13] $label -> non-zero + 期待文言"
+  echo "[4/14] $label -> non-zero + 期待文言"
 done
 
 # (xviii) dependsOn A⇄B 循環 (issue #57 round 2 🔴1): 2 step にまたがる循環は make_broken の
@@ -299,7 +308,7 @@ PY
 expect_fail_with "(xviii) dependsOn A⇄B 循環 (issue #57 round 2)" \
   "dependsOn に循環参照がある" \
   python3 "$VALIDATOR" --schema "$CYCLE_AB_PLAN"
-echo "[4/13] (xviii) dependsOn A⇄B 循環 (issue #57 round 2) -> non-zero + 期待文言"
+echo "[4/14] (xviii) dependsOn A⇄B 循環 (issue #57 round 2) -> non-zero + 期待文言"
 
 # --- 以下は形が特殊で表に入れない個別ケース (無理に畳むと可読性が落ちる)。
 #     番号は据え置きのため、出力順は表 → 個別の順になり通し番号どおりではない ---
@@ -310,7 +319,7 @@ make_broken "$TMP/broken-statusenums.json" statusenums
 expect_fail_with "(v) statusEnums 残存" \
   "台帳に statusEnums を置かない" \
   python3 "$VALIDATOR" --schema "$TMP/broken-statusenums.json"
-echo "[4/13] (v) statusEnums 残存 -> non-zero + 期待文言"
+echo "[4/14] (v) statusEnums 残存 -> non-zero + 期待文言"
 
 # (viii) literal-guard: 壊れ schema の配置 (台帳と同じディレクトリ) が必要なため、表に入れず個別に残す。
 #        schema 複製から "ready for merge" を取り除いた壊れ schema を
@@ -332,7 +341,7 @@ PY
 expect_fail_with "(viii) literal-guard" \
   "literal-guard" \
   python3 "$VALIDATOR" --schema "$LITDIR/plan-progress.json"
-echo "[4/13] (viii) literal-guard -> non-zero + 期待文言"
+echo "[4/14] (viii) literal-guard -> non-zero + 期待文言"
 
 # (ix) isDraft drift: 共通の STUB_MISMATCH では表現できない専用 stub (state は台帳と一致し
 #      isDraft だけ食い違う) が必要なため、表に入れず個別に残す。
@@ -355,7 +364,7 @@ make_broken "$ISDRAFT_PLAN" isdraft
 expect_fail_with "(ix) isDraft drift" \
   "台帳は False だが GitHub (PR #1) は True" \
   env PATH="$STUB_DRAFT:$PATH" python3 "$VALIDATOR" --drift "$ISDRAFT_PLAN"
-echo "[4/13] (ix) isDraft drift -> non-zero + 期待文言"
+echo "[4/14] (ix) isDraft drift -> non-zero + 期待文言"
 
 # --- 5. drift の正系 / gh 実行失敗の区別 --------------------------------------
 
@@ -379,7 +388,7 @@ SH
 chmod +x "$STUB_MATCH/gh"
 env PATH="$STUB_MATCH:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN" \
   || fail "drift 正系 (stub gh が台帳と一致) で --drift が失敗した"
-echo "[5/13] drift 正系 -> exit 0"
+echo "[5/14] drift 正系 -> exit 0"
 
 # gh 実行失敗: 壊れた gh (常に exit 1) では「drift 検出」ではなく
 # 「実行エラー」と分かる文言で fail すること (紛れの防止)
@@ -394,7 +403,7 @@ chmod +x "$STUB_BROKEN/gh"
 expect_fail_with "gh 実行失敗の区別" \
   "gh 呼出に失敗した" \
   env PATH="$STUB_BROKEN:$PATH" python3 "$VALIDATOR" --drift "$DRIFT_PLAN"
-echo "[5/13] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
+echo "[5/14] gh 実行失敗 -> non-zero + 実行エラー文言 (drift と区別)"
 
 # gh 途中失敗: 2 step の台帳で step A (PR #1) は drift を検出し、step B (PR #2) で
 # gh が失敗する。fatal しても蓄積済みの検出済み drift が全件出力されること (診断情報を失わない)
@@ -438,7 +447,7 @@ grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$partial_out
   || fail "gh 途中失敗: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $partial_out)"
 grep -qF "gh 呼出に失敗した" <<< "$partial_out" \
   || fail "gh 途中失敗: gh 失敗エラーが出力に無い (got: $partial_out)"
-echo "[5/13] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
+echo "[5/14] gh 途中失敗 -> 検出済み drift + gh 失敗エラーの両方を出力して exit 1"
 
 # (xv) gh が非オブジェクト JSON (null) を返す: json.loads は null / 配列 / 文字列も受理する
 #      ため、dict 形状検証で実行エラーとして fail し、蓄積済みの検出済み drift (PR #1) も
@@ -464,7 +473,7 @@ grep -qF "JSON オブジェクトでない" <<< "$null_out" \
   || fail "(xv) gh null 出力: dict 形状エラー文言が出力に無い (got: $null_out)"
 grep -qF "台帳は 'open' だが GitHub (PR #1) は 'merged'" <<< "$null_out" \
   || fail "(xv) gh null 出力: 蓄積済みの drift エラー (PR #1) が出力に無い (got: $null_out)"
-echo "[5/13] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
+echo "[5/14] (xv) gh null 出力 -> dict 形状エラー + 蓄積済み drift を出力して exit 1"
 
 # --- 6. reaggregate-has-blocker (has_blocker 再集計) の単体判定 ----------------
 REAGG="$ROOT/scripts/reaggregate-has-blocker.py"
@@ -550,7 +559,7 @@ assert_reagg "(p) 複数 findings (blocker と非 blocker の混在)" true \
 reagg_count="$(printf '%s' '[{"severity":"🔴","sources":["code-review"]},{"severity":"🟡","sources":["arch"]}]' \
   | python3 "$REAGG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["blocker_count"])')"
 [ "$reagg_count" = "2" ] || fail "(q) blocker_count=2 を期待したが $reagg_count"
-echo "[6/13] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
+echo "[6/14] reaggregate-has-blocker 判定ケース OK (fail-closed 境界・混在 sources・複数 findings 集計を含む)"
 
 # --- 7. evaluate-stop-condition (停止条件 round_flag/trend_flag/escalate) の単体判定 ----
 # reaggregate-has-blocker と対の decision script。round 上限 (round_flag) / blocker trend /
@@ -636,7 +645,7 @@ grep -qF "、" <<< "$same_reason" \
 #     (4,4,4 で trend 成立 -> escalate true。round=2 の (a) が false なのと対をなす境界)
 assert_escalate "(j) round=3 境界 (判定開始の最小 round・trend 成立)" true \
   '{"round":3,"has_blocker":true,"blocker_count":4,"prev_markers":["blocker_count=4","blocker_count=4"]}'
-echo "[7/13] evaluate-stop-condition 判定ケース OK (round 上限・trend・trend の and/or 判別・fail-open 境界・has_blocker 抑止・round<3 短絡・同時成立・round=3 境界・不正入力 exit 2)"
+echo "[7/14] evaluate-stop-condition 判定ケース OK (round 上限・trend・trend の and/or 判別・fail-open 境界・has_blocker 抑止・round<3 短絡・同時成立・round=3 境界・不正入力 exit 2)"
 
 # --- 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定 ----
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
@@ -741,7 +750,7 @@ PY
 )"
 [ "$ROUTE_CASES" -eq "$TABLE_ENTRIES" ] \
   || fail "decision-table 行数ガード: assert_route で網羅したケース数 ($ROUTE_CASES) が DECISION_TABLE のエントリ総数 ($TABLE_ENTRIES) と一致しない (行追加時の assert 書き忘れ / 行削除の取りこぼし)"
-echo "[8/13] decision-table 行数ガード OK (assert_route ケース数 $ROUTE_CASES == DECISION_TABLE エントリ数 $TABLE_ENTRIES)"
+echo "[8/14] decision-table 行数ガード OK (assert_route ケース数 $ROUTE_CASES == DECISION_TABLE エントリ数 $TABLE_ENTRIES)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — evaluate-stop-condition と同じ流儀)
 # (n) role が enum 外 -> exit 2
@@ -783,7 +792,7 @@ route_rc=0
 printf '%s' '{"role":"implementer","outcome":"timeout","observation":{"command":"x","exit_code":1,"summary":""}}' \
   | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
 [ "$route_rc" -eq 2 ] || fail "(u) observation.summary が空文字で exit 2 を期待したが exit $route_rc"
-echo "[8/13] decide-orchestrator-route 判定ケース OK (全 role×outcome 16 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
+echo "[8/14] decide-orchestrator-route 判定ケース OK (全 role×outcome 16 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
 
 # --- 9. reconcile-dispatch-marker (dispatch in-flight マーカーの reconciliation 判定・issue #26) --
 # decide-orchestrator-route / evaluate-stop-condition / reaggregate-has-blocker と同型の
@@ -860,7 +869,7 @@ assert_reconcile "(l) bool 混入 marker (retry_count=true) -> sink" \
 assert_reconcile "(r) max_retries:0 (reviewLock) 締切超過 -> redispatch を経ず即 sink" \
   '{"marker":{"dispatched_tick":1,"deadline_tick":3,"retry_count":0},"current_tick":4,"progressed":false,"max_retries":0}' \
   '{"action":"sink","reason":"retries_exhausted","retry_count":1}'
-echo "[9/13] reconcile-dispatch-marker 判定ケース OK (eligible/clear/wait/redispatch/sink 全 action・境界・fail-closed・max_retries:0 即 sink (issue #71) を含む)"
+echo "[9/14] reconcile-dispatch-marker 判定ケース OK (eligible/clear/wait/redispatch/sink 全 action・境界・fail-closed・max_retries:0 即 sink (issue #71) を含む)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — 他の decision script と同じ流儀)
 # (m) marker キー欠損 -> exit 2
@@ -888,7 +897,7 @@ printf '%s' '["not","an","object"]' | python3 "$RECONCILE" >/dev/null 2>&1 || re
 recon_rc=0
 printf '%s' '{"marker":null,"current_tick":1,"progressed":false,"max_retries":-1}' | python3 "$RECONCILE" >/dev/null 2>&1 || recon_rc=$?
 [ "$recon_rc" -eq 2 ] || fail "(s) max_retries 負値で exit 2 を期待したが exit $recon_rc"
-echo "[9/13] reconcile-dispatch-marker 不正入力 exit 2 境界 OK (max_retries 非負検証を含む)"
+echo "[9/14] reconcile-dispatch-marker 不正入力 exit 2 境界 OK (max_retries 非負検証を含む)"
 
 # 選別(jq) 実装役の dispatchMarker / dependsOn ガード。
 # commands/harness-orchestrate.md 選別(jq) 実装役ブロックと同一の jq をここで直接実行し、
@@ -915,7 +924,7 @@ SELECT_IMPLEMENTER_GOT="$(printf '%s' "$SELECT_IMPLEMENTER_INPUT" | jq -c "$SELE
 SELECT_IMPLEMENTER_WANT='[{"id":"X1","issueNumber":1}]'
 [ "$SELECT_IMPLEMENTER_GOT" = "$SELECT_IMPLEMENTER_WANT" ] \
   || fail "選別(jq) 実装役: dispatchMarker が残る step (X2) が候補から除外されず二重 dispatch ガードが機能していない (got: $SELECT_IMPLEMENTER_GOT / want: $SELECT_IMPLEMENTER_WANT)"
-echo "[9/13] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外・後方互換: dependsOn 無しの step は従来どおり配車)"
+echo "[9/14] 選別(jq) 実装役の dispatchMarker ガード OK (marker 残存 step (wait/redispatch 中) を候補から除外・後方互換: dependsOn 無しの step は従来どおり配車)"
 
 # 選別(jq) 実装役の dependsOn ガード(issue #51・スループット)。
 # 6 種の境界(全依存終端 / 一部未終端 / 空配列 / キー欠損 / 存在しない id(fail-closed) /
@@ -950,7 +959,7 @@ SELECT_DEPENDSON_WANT='[{"id":"W1","issueNumber":101},{"id":"W3","issueNumber":1
 DEPENDSON_COUNT="$(printf '%s' "$SELECT_DEPENDSON_GOT" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
 [ "$DEPENDSON_COUNT" -ge 2 ] \
   || fail "選別(jq) 実装役: DoD (ii-a) — 同一 tick で 2 件以上 eligible を期待したが $DEPENDSON_COUNT 件しか返らなかった (got: $SELECT_DEPENDSON_GOT)"
-echo "[9/13] 選別(jq) 実装役の dependsOn ガード OK (issue #51・全依存終端/一部未終端/空配列/キー欠損/存在しないid(fail-closed)/依存先discuss型の6境界 + DoD(ii-a) 同一tick 2件以上eligible)"
+echo "[9/14] 選別(jq) 実装役の dependsOn ガード OK (issue #51・全依存終端/一部未終端/空配列/キー欠損/存在しないid(fail-closed)/依存先discuss型の6境界 + DoD(ii-a) 同一tick 2件以上eligible)"
 
 # 選別(jq) 対応役 / pr reviewer の reviewLock ガード(issue #37)。
 # commands/harness-orchestrate.md 選別(jq) 対応役 / pr reviewer ブロックと同一の jq をここで
@@ -984,7 +993,7 @@ SELECT_REVIEWER_GOT="$(printf '%s' "$SELECT_REVIEWER_INPUT" | jq -c "$SELECT_REV
 SELECT_REVIEWER_WANT='[{"id":"Z1","number":21}]'
 [ "$SELECT_REVIEWER_GOT" = "$SELECT_REVIEWER_WANT" ] \
   || fail "選別(jq) pr reviewer: reviewLock が残る step (Z2) が候補から除外されていない (got: $SELECT_REVIEWER_GOT / want: $SELECT_REVIEWER_WANT)"
-echo "[9/13] 選別(jq) 対応役 / pr reviewer の reviewLock ガード OK (issue #37・in-flight な step を候補から除外)"
+echo "[9/14] 選別(jq) 対応役 / pr reviewer の reviewLock ガード OK (issue #37・in-flight な step を候補から除外)"
 
 # ledger_write 適用手続き(「ルーティング判定」節)の直接検証。
 # commands/harness-orchestrate.md の同手続きと同一のロジックをここで直接実行し、次を固定する:
@@ -1057,7 +1066,7 @@ step = plan["steps"][0]
 assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
 assert step["pr"]["number"] is None, "pr.number が意図せず書き換わった"
 PY
-echo "[9/13] ledger_write 適用 (i) lw=null + clear_marker=true -> marker 単独削除 OK"
+echo "[9/14] ledger_write 適用 (i) lw=null + clear_marker=true -> marker 単独削除 OK"
 
 # (ii) lw 非 null + clear_marker=true -> ledger_write の全キーと marker 削除が同一書込で適用される
 mk_lw_fixture
@@ -1069,7 +1078,7 @@ step = plan["steps"][0]
 assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
 assert step["pr"] == {"number": 42, "githubState": "open", "status": "created pr"}, f"pr フィールドが期待と不一致: {step['pr']}"
 PY
-echo "[9/13] ledger_write 適用 (ii) lw 非 null + clear_marker=true -> ledger_write と marker 削除の原子適用 OK"
+echo "[9/14] ledger_write 適用 (ii) lw 非 null + clear_marker=true -> ledger_write と marker 削除の原子適用 OK"
 
 # (iii) clear_marker=false(省略) -> marker には触れない (通常の対応役/reviewer 経路)
 mk_lw_fixture
@@ -1081,7 +1090,7 @@ step = plan["steps"][0]
 assert step.get("dispatchMarker") == {"dispatched_tick": 1, "deadline_tick": 3, "retry_count": 0}, f"dispatchMarker が変化した: {step.get('dispatchMarker')}"
 assert step["pr"]["status"] == "waiting for review", f"pr.status が書かれていない: {step['pr']}"
 PY
-echo "[9/13] ledger_write 適用 (iii) clear_marker 省略 -> marker 不変 OK"
+echo "[9/14] ledger_write 適用 (iii) clear_marker 省略 -> marker 不変 OK"
 
 # (iv) lw=null かつ clear_marker=false(省略) -> ファイルへ一切書き込まない (no_pr 経路相当の no-op)
 mk_lw_fixture
@@ -1089,7 +1098,7 @@ BEFORE_HASH="$(shasum -a 256 "$LW_PLAN" | cut -d' ' -f1)"
 APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":null}' ""
 AFTER_HASH="$(shasum -a 256 "$LW_PLAN" | cut -d' ' -f1)"
 [ "$BEFORE_HASH" = "$AFTER_HASH" ] || fail "(iv) lw=null+clear_marker=false: no-op のはずがファイルが変化した"
-echo "[9/13] ledger_write 適用 (iv) lw=null + clear_marker 省略 -> no-op OK"
+echo "[9/14] ledger_write 適用 (iv) lw=null + clear_marker 省略 -> no-op OK"
 
 # (v) marker_field 省略(5 引数呼出)-> 既定 "dispatchMarker" が削除される。dispatchMarker と
 #     reviewLock の両方を持つ fixture で検証し、reviewLock は無関係のまま残ることも確認する
@@ -1103,7 +1112,7 @@ step = plan["steps"][0]
 assert "dispatchMarker" not in step, f"dispatchMarker が残っている: {step}"
 assert step.get("reviewLock") == {"dispatched_tick": 5}, f"無関係の reviewLock が変化した: {step.get('reviewLock')}"
 PY
-echo "[9/13] ledger_write 適用 (v) marker_field 省略 -> 既定 dispatchMarker のみ削除 OK (issue #37 後方互換)"
+echo "[9/14] ledger_write 適用 (v) marker_field 省略 -> 既定 dispatchMarker のみ削除 OK (issue #37 後方互換)"
 
 # (vi) marker_field="reviewLock"(6 引数呼出)-> reviewLock だけが削除され dispatchMarker は無関係のまま残る
 #      (pr reviewer / 対応役 が in-flight ロックを解除する経路。issue #37)
@@ -1116,7 +1125,7 @@ step = plan["steps"][0]
 assert "reviewLock" not in step, f"reviewLock が残っている: {step}"
 assert step.get("dispatchMarker") == {"dispatched_tick": 1, "deadline_tick": 3, "retry_count": 0}, f"無関係の dispatchMarker が変化した: {step.get('dispatchMarker')}"
 PY
-echo "[9/13] ledger_write 適用 (vi) marker_field=reviewLock -> reviewLock のみ削除 OK (issue #37)"
+echo "[9/14] ledger_write 適用 (vi) marker_field=reviewLock -> reviewLock のみ削除 OK (issue #37)"
 
 # --- 10. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ は複製)
@@ -1158,9 +1167,9 @@ if [ -d "$ROOT/.harness" ]; then
     diff -u "$ROOT/$src" "$ROOT/$dst" \
       || fail "複製が古い: $dst が $src と一致しない。cp で同期せよ (cp $src $dst)"
   done
-  echo "[10/13] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
+  echo "[10/14] 複製一致検査 (kit checkout) OK (templates/ 全ファイルのカバーを含む)"
 else
-  echo "[10/13] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
+  echo "[10/14] 複製一致検査は skip (.harness/ が無い = kit checkout ではない)"
 fi
 
 # --- 11. commands/*.md から抽出した共通 script 群の構文チェック -----------
@@ -1184,9 +1193,9 @@ for rel in "${EXTRACTED_SCRIPTS[@]}"; do
   fi
 done
 if command -v shellcheck >/dev/null 2>&1; then
-  echo "[11/13] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n + shellcheck OK"
+  echo "[11/14] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n + shellcheck OK"
 else
-  echo "[11/13] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n OK (shellcheck 未導入のため skip)"
+  echo "[11/14] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n OK (shellcheck 未導入のため skip)"
 fi
 
 # --- 12. detect-dispatch-collision (実装役 dispatch 候補のファイル衝突検知・issue #37) --------
@@ -1232,7 +1241,7 @@ assert_collision "(f) 候補 0 件" '[]' '{"groups":[],"safe":[]}'
 assert_collision "(g) 単一候補・非空 files -> safe" \
   '[{"id":"A","files":["x.py"]}]' \
   '{"groups":[],"safe":["A"]}'
-echo "[12/13] detect-dispatch-collision 判定ケース OK (衝突なし/全件衝突/部分衝突(推移閉包)/独立 2 組/fail-closed/候補 0 件/単一候補)"
+echo "[12/14] detect-dispatch-collision 判定ケース OK (衝突なし/全件衝突/部分衝突(推移閉包)/独立 2 組/fail-closed/候補 0 件/単一候補)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — 他の decision script と同じ流儀)
 # (h) 配列でない入力 -> exit 2
@@ -1259,8 +1268,67 @@ printf '%s' '[{"id":"A","files":[1]}]' | python3 "$COLLISION" >/dev/null 2>&1 ||
 coll_rc=0
 printf '%s' '[{"id":"A","files":[]},{"id":"A","files":["x"]}]' | python3 "$COLLISION" >/dev/null 2>&1 || coll_rc=$?
 [ "$coll_rc" -eq 2 ] || fail "(m) id 重複で exit 2 を期待したが exit $coll_rc"
-echo "[12/13] detect-dispatch-collision 不正入力 exit 2 境界 OK"
+echo "[12/14] detect-dispatch-collision 不正入力 exit 2 境界 OK"
 
-# --- 13. 完了 -----------------------------------------------------------------
-echo "[13/13] 全アサーション通過"
+# --- 13. 共通コア(禁止事項)の単一ソース + dispatch ファイル冒頭ブロックへの presence 検査 -------
+# issue #52 Phase B・症状1・A3。この配列(CANONICAL_CORE)が禁止事項の共通コアの唯一の正(単一ソース)。
+# 各 dispatch ファイルの冒頭 ★最重要★ ブロックが、この 5 行を「逐語部分一致(verbatim substring)」で
+# 含むことをアサートする(round2 🟡1(a))。逐語一致にすることで「行の脱落(drift)」だけでなく
+# 「文言だけ 1 箇所書き換えて古いまま」も捕捉する(keyword 一致では後者をすり抜ける)。
+#
+# 【この閉ループが塞ぐもの / 塞がないもの(DoD (v)・round2 🟡3 の正直な限界)】
+#  - 塞ぐ:  各ファイルの冒頭ブロックからの共通コア行の脱落・文言 drift(単一ソースからの乖離)。
+#  - 塞がない(best-effort・人間レビュー担保):
+#      (a) subagent が実際に指示を遵守するか(runtime obedience)は構造的に検証不能。
+#      (b)「共通コア + ロール固有項目 *のみ*」の排他(のみ)= 正準行を残したまま矛盾する追記をしても
+#          presence は緑のまま(allowlist 検査は入れず honest downgrade。round2 🟡3)。
+CANONICAL_CORE=(
+'**fork を使うな(fan-out は `general-purpose`)**: 作業中に subagent を fan-out する場面では `subagent_type: "general-purpose"` で起動せよ(`fork` は呼出元の会話文脈を丸ごと継承し、狭い directive を無視して呼出元の最上位タスクを再実行する)。文脈は各 subagent に自己完結する形で渡す。'
+'**`SendMessage` を使うな**: 結果は最終メッセージで直接返せ(`SendMessage` は宛先解決に失敗して結果が消失する)。'
+'**`gh auth switch` を実行するな**: active アカウントを変えると orchestrator 自身の `gh` 操作が壊れる。'
+'**台帳(`.harness/plan-progress.json`)に触れるな**: Read も編集もするな。`git stash` / `git checkout` / `git reset` で戻そうともするな(作業ツリー上で dirty なのは F案の正常な状態)。'
+'**観測していないことを書くな**: 『エラー』と『処理中』を区別せよ。分からないことは未観測と書け。'
+)
+DISPATCH_FILES=(
+"$ROOT/roles/developer-implementer.md"
+"$ROOT/roles/developer-responder.md"
+"$ROOT/roles/pr-reviewer-dispatch.md"
+"$ROOT/collectors/strategy.md"
+)
+
+# ファイルの冒頭 ★最重要★ ブロック(★最重要★ 行から直後の '---' 区切りまで)を取り出し、
+# CANONICAL_CORE の全行を逐語部分一致で含むか判定する(0=全て含む / 1=ブロック抽出失敗 or 欠落あり)。
+# `fail` を直接呼ばず戻り値で返すことで、正のケースと負のケース(vacuous でない自己検証)の両方に使える。
+core_block_has_all() {
+  local file="$1" block line
+  block="$(awk '/★最重要★/{cap=1} cap{print} cap&&/^---$/{exit}' "$file")"
+  [ -n "$block" ] || return 1
+  for line in "${CANONICAL_CORE[@]}"; do
+    grep -Fq "$line" <<<"$block" || return 1
+  done
+  return 0
+}
+
+# 正: 4 dispatch ファイルすべての冒頭ブロックが 5 canonical 行を含む
+for f in "${DISPATCH_FILES[@]}"; do
+  [ -f "$f" ] || fail "[13/14] dispatch ファイルが存在しない: $f"
+  block="$(awk '/★最重要★/{cap=1} cap{print} cap&&/^---$/{exit}' "$f")"
+  [ -n "$block" ] || fail "[13/14] ★最重要★ ブロックを抽出できない(区切り '---' が無い?): $f"
+  for line in "${CANONICAL_CORE[@]}"; do
+    grep -Fq "$line" <<<"$block" \
+      || fail "[13/14] 共通コア行が $f の冒頭ブロックに無い(脱落 / 文言 drift): $line"
+  done
+done
+echo "[13/14] 共通コア presence 検査 OK (4 dispatch ファイル × 5 canonical 行・逐語部分一致・単一ソースは CANONICAL_CORE)"
+
+# 負(自己検証): canonical 行を 1 本抜いたコピーは fail 判定になる(アサートが vacuous でない証明)
+NEG_TMP="$TMP/neg-dispatch.md"
+grep -vF "${CANONICAL_CORE[0]}" "${DISPATCH_FILES[0]}" > "$NEG_TMP"
+if core_block_has_all "$NEG_TMP"; then
+  fail "[13/14] 共通コア presence 検査が vacuous(canonical 行を 1 本抜いても pass した)"
+fi
+echo "[13/14] 共通コア presence 検査の負のケース OK (canonical 行を抜いたコピーは fail 判定)"
+
+# --- 14. 完了 -----------------------------------------------------------------
+echo "[14/14] 全アサーション通過"
 echo "SMOKE OK"
