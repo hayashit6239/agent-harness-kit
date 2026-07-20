@@ -12,6 +12,7 @@ harness の各エージェント(orchestrator / developer / pr reviewer / collec
 | `collector-angle.schema.json` | `collectors/angles/*.md`(kit デフォルト)・`.harness/collectors/angles/*.md`(導入先追加。issue #65)の frontmatter | collector 機構(`collectors/strategy.md`。読取) / 観点を書くユーザー |
 | `collector-angle.template.md` | 上記 angle を新規作成するときの雛形 | 観点を追加するユーザー |
 | `reviewer-return.schema.json` | pr reviewer が orchestrator へ返す判定結果 `{has_blocker,blocker_count,escalate,review_markdown,escalate_to_human?}`(issue #66・round2) | pr reviewer(出力) / orchestrator(入力・検証) |
+| `issue-reviewer-return.schema.json` | issue reviewer が orchestrator へ返す判定結果 `{has_blocker,blocker_count,escalate,review_markdown,escalate_to_human?}`(PR 版 `reviewer-return` を issue フェーズへ対称に写したもの・issue #88) | issue reviewer(出力) / orchestrator(入力・検証) |
 | `orchestrator-route.schema.json` | `scripts/decide-orchestrator-route.py` の入出力(実行時 IPC)。入力 `{role,outcome,observation?}` / 出力 `{ledger_write,route,label_action}`(issue #68。`definitions.input` / `definitions.output`) | orchestrator(input 産出・output 消費) / decide-orchestrator-route.py(input 消費・output 産出) |
 
 **別ファイルに置く契約(意図的・issue #68 で解消)**: `dispatchMarker` / `reviewLock`(in-flight マーカー)と `reports[]`(作業レポート)は、実行時 IPC ではなく**台帳(`.harness/plan-progress.json`)の step に永続する構造**なので、`contracts/` ではなく `.harness/plan-progress.schema.json` に定義する(`definitions.dispatchMarker` / `definitions.reviewLock` / `definitions.report`)。判断基準は下記「置き場の判断基準」節を参照(PR #66 時点では「follow-up」だったが、本 issue #68 で置き場を確定して解消済み)。

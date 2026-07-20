@@ -822,6 +822,34 @@ printf '%s' '{"role":"implementer","outcome":"timeout","observation":{"command":
 [ "$route_rc" -eq 2 ] || fail "(u) observation.summary が空文字で exit 2 を期待したが exit $route_rc"
 echo "[8/14] decide-orchestrator-route 判定ケース OK (全 role×outcome 25 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
 
+# label_action 執行レシピ presence 検査(round2 🔴1・issue #88): decide-orchestrator-route.py が
+# emit しうる label_action トークン(null 以外)すべてが、commands/harness-orchestrate.md の
+# 「label_action の実行」節に執行レシピ(バッククォート囲みのトークン見出し)を持つことを固定する。
+# 塞ぐ故障クラス: script が emit するのに執行部にレシピが無く、`gh <pr|issue> edit --add-label` が
+# 存在しないラベルへ実行されて失敗 → 台帳は進むが GitHub ラベルは欠落という無音 label/ledger drift。
+# issue #88 では add/remove_ready_for_implementation を enum/decision script に足しながら執行部に
+# レシピを足し忘れ、fresh repo の happy path で issue ラベル付与が無音失敗しうる状態だった。
+ORCH="$ROOT/commands/harness-orchestrate.md"
+[ -f "$ORCH" ] || fail "[8/14] harness-orchestrate.md が存在しない: $ORCH"
+# decision script が返しうる label_action の非 null トークンを列挙(実値 "label_action": "<token>" のみ。
+# docstring の "<null|...>" は先頭が英字でないため [a-z_]+ に一致せず拾わない)。
+LABEL_TOKENS="$(grep -oE '"label_action": *"[a-z_]+"' "$DECIDE" | sed -E 's/.*"([a-z_]+)"$/\1/' | sort -u)"
+[ -n "$LABEL_TOKENS" ] || fail "[8/14] decide-orchestrator-route.py から label_action トークンを抽出できない"
+# 「label_action の実行」節本文を抽出(label_action と の実行 を同時に含む見出し行から次の '## ' 節見出しまで)。
+LABEL_SECTION="$(awk '/label_action/ && /の実行/ {cap=1} cap{print} cap && /^## /{exit}' "$ORCH")"
+[ -n "$LABEL_SECTION" ] || fail "[8/14] 「label_action の実行」節を抽出できない"
+LABEL_TOKEN_COUNT=0
+for tok in $LABEL_TOKENS; do
+  grep -Fq "\`$tok\`" <<<"$LABEL_SECTION" \
+    || fail "[8/14] label_action トークン '$tok' の執行レシピが「label_action の実行」節に無い(decision script が emit するのに執行部にレシピが欠落 = add-label 無音 drift のリスク・round2 🔴1)"
+  LABEL_TOKEN_COUNT=$((LABEL_TOKEN_COUNT + 1))
+done
+# 自己検証(非 vacuous): 抽出したトークンが 4 種(add/remove × ready for merge/ready for implementation)
+# 揃っていることを固定する。decision script に新トークンを足したのにここが 4 のままなら気づける。
+[ "$LABEL_TOKEN_COUNT" -eq 4 ] \
+  || fail "[8/14] label_action 非 null トークン数が期待(4)と不一致: $LABEL_TOKEN_COUNT ($LABEL_TOKENS)"
+echo "[8/14] label_action 執行レシピ presence 検査 OK (decision script が emit する 4 トークンすべてに「label_action の実行」節の執行レシピが存在・round2 🔴1)"
+
 # --- 9. reconcile-dispatch-marker (dispatch in-flight マーカーの reconciliation 判定・issue #26) --
 # decide-orchestrator-route / evaluate-stop-condition / reaggregate-has-blocker と同型の
 # pure decision script。marker 不在 (eligible) / 進捗確認 (clear) / 締切未到達 (wait) /
@@ -1023,17 +1051,20 @@ SELECT_REVIEWER_WANT='[{"id":"Z1","number":21}]'
   || fail "選別(jq) pr reviewer: reviewLock が残る step (Z2) が候補から除外されていない (got: $SELECT_REVIEWER_GOT / want: $SELECT_REVIEWER_WANT)"
 echo "[9/14] 選別(jq) 対応役 / pr reviewer の reviewLock ガード OK (issue #37・in-flight な step を候補から除外)"
 
-# 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState ガード
-# (issue #88・round1 🔴3/🟡11)。commands/harness-orchestrate.md の issue 選別 jq と同一の jq を
+# 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState + cross-phase ガード
+# (issue #88・round1 🔴3/🟡11・round2 🟡3)。commands/harness-orchestrate.md の issue 選別 jq と同一の jq を
 # ここで直接実行し、次を固定する: (a) `.issueReviewLock == null` で in-flight step を除外(対応役 /
 # pr reviewer の reviewLock ガードと同型)、(b) `.issue.number != null and .issue.githubState == "open"`
 # ガード(PR 側 `.pr.number != null and .pr.githubState == "open"` と対称・round1 🔴3)で、GitHub 上で
-# close 済み / number 未確定の issue を除外する(台帳が非終端 status のまま遅延しても誤 dispatch しない)。
+# close 済み / number 未確定の issue を除外する(台帳が非終端 status のまま遅延しても誤 dispatch しない)、
+# (c) `.pr.number == null` の cross-phase 相互排他ガード(round2 🟡3・実装役選別 `.pr.number == null` と
+# 対称)で、PR が実在する step へ issue reviewer/worker が二重 dispatch するのを防ぐ(台帳 drift 時の
+# defense-in-depth)。
 SELECT_ISSUE_REVIEWER_JQ='
   ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
   | [ .steps[]
       | select(.issue.number != null and .issue.githubState == "open")
-      | select((.issue.status == "created issue" or .issue.status == "waiting for review") and .issueReviewLock == null)
+      | select((.issue.status == "created issue" or .issue.status == "waiting for review") and .issueReviewLock == null and .pr.number == null)
       | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
       | {id, number: .issue.number} ]
 '
@@ -1041,7 +1072,7 @@ SELECT_ISSUE_WORKER_JQ='
   ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
   | [ .steps[]
       | select(.issue.number != null and .issue.githubState == "open")
-      | select(.issue.status == "completed review" and .issueReviewLock == null)
+      | select(.issue.status == "completed review" and .issueReviewLock == null and .pr.number == null)
       | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
       | {id, number: .issue.number} ]
 '
@@ -1052,6 +1083,9 @@ SELECT_ISSUE_WORKER_JQ='
 # I5: completed review (open) → issue review worker で eligible (reviewer 側では除外)。
 # I6: closed issue (終端) → 両方で除外。
 # I7: waiting for review だが githubState=closed → 🔴3 の中心ケース (非終端 status + close 済み) で除外。
+# I8: reviewer-eligible な status/open/number だが pr.number 実在 → 🟡3 cross-phase ガードで除外
+#     (このガードを外すと I8 が reviewer 出力へ漏れて WANT と不一致 = 非 vacuous の証明)。
+# I9: worker-eligible な status/open/number だが pr.number 実在 → 🟡3 cross-phase ガードで worker から除外。
 SELECT_ISSUE_INPUT='{"steps":[
   {"id":"I1","issue":{"status":"created issue","number":201,"githubState":"open"},"pr":{"number":null}},
   {"id":"I2","issue":{"status":"waiting for review","number":202,"githubState":"open"},"pr":{"number":null},
@@ -1060,17 +1094,19 @@ SELECT_ISSUE_INPUT='{"steps":[
   {"id":"I4","issue":{"status":"created issue","number":null,"githubState":null},"pr":{"number":null}},
   {"id":"I5","issue":{"status":"completed review","number":205,"githubState":"open"},"pr":{"number":null}},
   {"id":"I6","issue":{"status":"closed issue","number":206,"githubState":"closed"},"pr":{"number":null}},
-  {"id":"I7","issue":{"status":"waiting for review","number":207,"githubState":"closed"},"pr":{"number":null}}
+  {"id":"I7","issue":{"status":"waiting for review","number":207,"githubState":"closed"},"pr":{"number":null}},
+  {"id":"I8","issue":{"status":"waiting for review","number":208,"githubState":"open"},"pr":{"number":51,"githubState":"open"}},
+  {"id":"I9","issue":{"status":"completed review","number":209,"githubState":"open"},"pr":{"number":52,"githubState":"open"}}
 ]}'
 SELECT_ISSUE_REVIEWER_GOT="$(printf '%s' "$SELECT_ISSUE_INPUT" | jq -c "$SELECT_ISSUE_REVIEWER_JQ")"
 SELECT_ISSUE_REVIEWER_WANT='[{"id":"I1","number":201}]'
 [ "$SELECT_ISSUE_REVIEWER_GOT" = "$SELECT_ISSUE_REVIEWER_WANT" ] \
-  || fail "選別(jq) issue reviewer: issueReviewLock/githubState ガードの判定が期待と不一致 (got: $SELECT_ISSUE_REVIEWER_GOT / want: $SELECT_ISSUE_REVIEWER_WANT)"
+  || fail "選別(jq) issue reviewer: issueReviewLock/githubState/cross-phase ガードの判定が期待と不一致 (got: $SELECT_ISSUE_REVIEWER_GOT / want: $SELECT_ISSUE_REVIEWER_WANT)"
 SELECT_ISSUE_WORKER_GOT="$(printf '%s' "$SELECT_ISSUE_INPUT" | jq -c "$SELECT_ISSUE_WORKER_JQ")"
 SELECT_ISSUE_WORKER_WANT='[{"id":"I5","number":205}]'
 [ "$SELECT_ISSUE_WORKER_GOT" = "$SELECT_ISSUE_WORKER_WANT" ] \
-  || fail "選別(jq) issue review worker: issueReviewLock/githubState ガードの判定が期待と不一致 (got: $SELECT_ISSUE_WORKER_GOT / want: $SELECT_ISSUE_WORKER_WANT)"
-echo "[9/14] 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState ガード OK (issue #88・round1 🔴3: close済み/number未確定 issue を除外・in-flight step を除外)"
+  || fail "選別(jq) issue review worker: issueReviewLock/githubState/cross-phase ガードの判定が期待と不一致 (got: $SELECT_ISSUE_WORKER_GOT / want: $SELECT_ISSUE_WORKER_WANT)"
+echo "[9/14] 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState + cross-phase ガード OK (issue #88・round1 🔴3: close済み/number未確定 issue を除外・in-flight step を除外・round2 🟡3: PR 実在 step を二重 dispatch から除外)"
 
 # ledger_write 適用手続き(「ルーティング判定」節)の直接検証。
 # commands/harness-orchestrate.md の同手続きと同一のロジックをここで直接実行し、次を固定する:

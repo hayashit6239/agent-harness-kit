@@ -59,7 +59,7 @@
     },
     "dispatchMarker": {
       "allOf": [{ "$ref": "#/definitions/lockBase" }],
-      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形は definitions.lockBase を allOf 参照 (issue #88 round1 🟡12 で共通化) — tick 計測・締切オフセット K・有界リトライ・notified 付与などの手続き (K/N 等のチューニング可能な具体値を含む) の正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない)。K=2・N=2 (締切超過で redispatch・上限到達で sink)。retry_count は初回 0、再 dispatch で reconciliation が返す値を引き継ぐ。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)"
+      "description": "実装役 dispatch の in-flight マーカー (transient・issue #26)。型/形は definitions.lockBase を allOf 参照 (issue #88 round1 🟡12 で共通化) — tick 計測・締切オフセット K・有界リトライ・notified 付与などの手続き (K/N 等のチューニング可能な具体値を含む) の正は commands/harness-orchestrate.md「tick 冒頭 reconciliation」節 (ここでは複製しない・K/N の具体値もそちらが正で複製しない)。retry_count は初回 0、再 dispatch で reconciliation が返す値を引き継ぐ。issue #26 決定で validator/drift/smoke の検査対象外に留めるため、この定義は step.required に含めない optional であり、step は additionalProperties を制限しない (issue #68 で「schema 非宣言」から「optional 宣言・検査対象外は維持」へ変更)"
     },
     "reviewLock": {
       "allOf": [{ "$ref": "#/definitions/lockBase" }],

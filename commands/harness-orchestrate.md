@@ -153,7 +153,8 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   ' "<role>" "<outcome>" "$OBS_CMD" "<exit_code か 0>" "$OBS_SUMMARY" \
     | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-orchestrator-route.py")
   # -> {"ledger_write": <null|{...}>, "route": "normal|skip|sink",
-  #     "label_action": "null|add_ready_for_merge|remove_ready_for_merge"}
+  #     "label_action": "null|add_ready_for_merge|remove_ready_for_merge|
+  #                      add_ready_for_implementation|remove_ready_for_implementation"}
   ```
   **各ロール節が定義するのは `<command>/<exit_code>/<summary>` に何を渡すかだけ**(sink 系 outcome ごとに、その outcome を解決した手順で既に確定している値を使う — この判定のために新たに何かを実行観測する必要は無い)。**この呼び方(heredoc → `OBS_CMD`/`OBS_SUMMARY` → `"$OBS_CMD"`/`"$OBS_SUMMARY"` 展開)はロール共通の唯一の正であり、各ロール節(実装役手順 7 を含む)はこれを複製せずここを参照する。** script が exit 2(`observation` 欠落・不備を含む)を返した場合の扱いは下記のとおり。
 
@@ -232,14 +233,19 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
   - **`skip`**: 書込なし・副作用なし。次 tick で条件が再成立すれば再 dispatch される(副作用が無いので暴走しない)。
   - **`sink`**: 「失敗経路(単一の need for human review sink)」へ。`ledger_write` が非 null なら**先に書いてから** sink 共通手続きを実行する(例: 実装役 evidence 失敗は「PR は実在する」事実を書いた上で sink)。
 
-- **`label_action` の実行**(reviewer 経路のみ非 null。`ready for merge` ラベルの同期。単一書込の設計上 pr reviewer subagent はラベルに触らせないため orchestrator が実コマンドとして持つ — `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md` 手順 6 と同内容):
-  - **`add_ready_for_merge`**:
+- **`label_action` の実行**(reviewer / issue-reviewer 経路のみ非 null。PR は `ready for merge`・issue は `ready for implementation` ラベルの同期。単一書込の設計上 reviewer subagent はラベルに触らせないため orchestrator が実コマンドとして持つ — PR は `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md` 手順 6 と同内容・issue は `roles/issue-reviewer-dispatch.md`「ラベル操作は orchestrator 専権」が委ねる先。**この節が全 label_action トークンの唯一の執行 home であり、decision script(`scripts/decide-orchestrator-route.py`)が emit しうる非 null トークンはすべてここにレシピを持つ**(`tests/smoke/run-smoke.sh` [8] が presence を機械照合する — 執行部にレシピが無いと add-label が存在しないラベルへ実行され無音 drift する故障クラスを塞ぐ・round2 🔴1)):
+  - **`add_ready_for_merge`**(PR reviewer 経路・`clean_pass`):
     - ラベル作成 fallback(冪等): `gh label create "ready for merge" --color "0e8a16" --description "reviewer が merge 可能と判定した PR" --force`
     - `gh pr edit <n> --repo <repo> --add-label "ready for merge"`(冪等)
     - 旧名ラベルの掃除: `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(無ければ警告のみで実害なし)
-  - **`remove_ready_for_merge`**:
+  - **`remove_ready_for_merge`**(PR reviewer 経路・`blockers`):
     - `gh pr edit <n> --repo <repo> --remove-label "ready for merge"`(付いていなければ警告のみで実害なし)
     - 旧名ラベルの掃除: `gh pr edit <n> --repo <repo> --remove-label "merge ready"`(無ければ警告のみで実害なし)
+  - **`add_ready_for_implementation`**(issue-reviewer 経路・`clean_pass`・issue #88。issue の `ready for implementation` ラベルの同期。PR の `add_ready_for_merge` と対称。`ready for merge`(色 `0e8a16`)とはラベル名が異なるため read-map では色・説明を導けず、冪等 create fallback を明記する):
+    - ラベル作成 fallback(冪等): `gh label create "ready for implementation" --color "1d76db" --description "issue reviewer が実装着手可能と判定した issue" --force`(色・説明は `/harness-init` の仕上げ節が作る同ラベルと**必ず揃える** — `--force` は既存の色・説明も上書きするため、片側だけ変えるともう一方の実行で旧定義へ戻り変更が定着しない。PR 側 `ready for merge` の drift 注意(`roles/pr-reviewer.md`)と同種)
+    - `gh issue edit <N> --repo <repo> --add-label "ready for implementation"`(冪等。`<N>` は対象 issue 番号)
+  - **`remove_ready_for_implementation`**(issue-reviewer 経路・`blockers`):
+    - `gh issue edit <N> --repo <repo> --remove-label "ready for implementation"`(付いていなければ警告のみで実害なし)
   - **`null`**: ラベル操作なし。
 
 ## tick 開始時の前提整備(issue #37・選別より前)
@@ -473,23 +479,29 @@ jq -c '[ .steps[]
 # dispatch 前に `issue.status` を書き換えないため in-flight status マーカーは無い・round1 🔴1/🔴2)。
 # `.issue.number != null and .issue.githubState == "open"` ガード(round1 🔴3)は PR 側
 # (`.pr.number != null and .pr.githubState == "open"`)と対称 — GitHub 上で close 済みの issue へ
-# 台帳の遅延で誤 dispatch するのを防ぐ。dependsOn ガード(issue #51・round1 🟡5)も適用する)
+# 台帳の遅延で誤 dispatch するのを防ぐ。`.pr.number == null` の cross-phase 相互排他ガード
+# (round2 🟡3)は実装役選別(下記 `.pr.number == null`)と対称 — 台帳 drift 時(手動編集 / PR 実在中の
+# issue 再オープン再レビュー / 部分書込)に issue reviewer と pr reviewer が同一 step へ二重 dispatch
+# するのを防ぐ defense-in-depth(happy path では issue.status は PR 作成前に ready for implementation へ
+# 抜けるため到達不能・正常系の正しさには影響しない)。dependsOn ガード(issue #51・round1 🟡5)も適用する)
 jq -c '
   ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
   | [ .steps[]
       | select(.issue.number != null and .issue.githubState == "open")
-      | select((.issue.status == "created issue" or .issue.status == "waiting for review") and .issueReviewLock == null)
+      | select((.issue.status == "created issue" or .issue.status == "waiting for review") and .issueReviewLock == null and .pr.number == null)
       | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
       | {id, number: .issue.number} ]
 ' "$PLAN"
 
 # issue review worker dispatch 対象(issue #88: 同じく `.issueReviewLock == null` で除外。
-# `.issue.number != null and .issue.githubState == "open"` ガード(round1 🔴3)も PR 側と対称に課す)
+# `.issue.number != null and .issue.githubState == "open"` ガード(round1 🔴3)も PR 側と対称に課す。
+# `.pr.number == null` の cross-phase 相互排他ガード(round2 🟡3)も issue reviewer と同型に課す
+# (実装役選別 `.pr.number == null` と対称・二重 dispatch 防止の defense-in-depth))
 jq -c '
   ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $terminal
   | [ .steps[]
       | select(.issue.number != null and .issue.githubState == "open")
-      | select(.issue.status == "completed review" and .issueReviewLock == null)
+      | select(.issue.status == "completed review" and .issueReviewLock == null and .pr.number == null)
       | select((.dependsOn // []) | all(. as $d | $terminal | index($d) != null))
       | {id, number: .issue.number} ]
 ' "$PLAN"
