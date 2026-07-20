@@ -69,6 +69,18 @@
         "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の reconciliation をスキップする (通知の無限反復防止)" }
       }
     },
+    "issueReviewLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatched_tick", "deadline_tick", "retry_count"],
+      "description": "issue reviewer / issue review worker dispatch の in-flight ロック (transient・issue #88)。PR フェーズの reviewLock (issue #37/#71) を issue フェーズへ対称に写したもので、型/形は同一。reviewLock との違いは reconciliation の role 解決だけ — reviewLock は残留ロックの role を pr.status から解決するが (completed review→responder 等)、issue フェーズには pr.status が無いため issueReviewLock は role を issue.status から解決する (created issue/waiting for review→issue reviewer、completed review→issue review worker)。K_review・締切・sink 手続き (N=0・redispatch なしで初回の締切超過で即 sink) の正は commands/harness-orchestrate.md「issue reviewer / issue review worker の in-flight ロック」節・「tick 冒頭 reconciliation」節 (ここでは複製しない)。dispatchMarker / reviewLock と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変)。issueReviewLock (hang 検知の transient) は重複配車防止の in-flight status マーカー (starting review / starting review work) とは役割が違う二枚看板である (status マーカーは選別 jq が自動 dedup・issueReviewLock は hang を有界に sink へ落とす)",
+      "properties": {
+        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick を共有)" },
+        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K_review)。reviewLock と同じく K_review=0 のため通常 dispatched_tick と一致する (dispatch は同一 tick 内で解決するため、次 tick 以降まで残っていること自体が hang のシグナル)" },
+        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数。issueReviewLock は N=0 (reconciliation へ max_retries=0 を渡す) で初回の締切超過で redispatch を経ず即 sink するため、書込時は常に 0" },
+        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の reconciliation をスキップする (通知の無限反復防止)" }
+      }
+    },
     "issueStatus": {
       "enum": [
         null,
@@ -78,6 +90,7 @@
         "ready for implementation",
         "starting review work",
         "waiting for review",
+        "need for human review",
         "closed issue"
       ]
     },
@@ -135,7 +148,8 @@
           "description": "この step が実装役の配車選別で eligible になるために終端していなければならない依存 step の id 一覧 (任意・後方互換。issue #51)。終端の定義は issue.status == \"closed issue\" (PR の有無は問わない)。空配列/欠損/null はいずれも「依存なし」= 常に eligible (selection-time の選別 jq は `(.dependsOn // [])` で null を [] と同一視する。authoring-time の validate-plan-progress.py --schema も同じ扱いに揃える。PR #57 round 1 レビュー対応)。存在しない step id を指す要素は selection-time (選別 jq) で fail-closed に未解決として扱われる — authoring-time (validate-plan-progress.py --schema) の整合規則でも同じ違反を検知する (2 段の安全網)。dependsOn の有向グラフに循環参照 (A⇄B や self-loop) があると、選別 jq は循環に絡む step を永久に eligible にできず無音の永久デッドロックになるため、authoring-time (validate-plan-progress.py --schema) は循環を検知して exit 1 で reject する (循環は selection-time では検知しない・fail-closed の前段防御。PR #57 round 2 レビュー対応)"
         },
         "dispatchMarker": { "$ref": "#/definitions/dispatchMarker" },
-        "reviewLock": { "$ref": "#/definitions/reviewLock" }
+        "reviewLock": { "$ref": "#/definitions/reviewLock" },
+        "issueReviewLock": { "$ref": "#/definitions/issueReviewLock" }
       }
     }
   }

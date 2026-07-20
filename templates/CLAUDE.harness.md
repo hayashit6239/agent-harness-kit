@@ -16,7 +16,7 @@
 
 ### status 一覧 (意味と遷移)
 
-issue フェーズ (8 status):
+issue フェーズ (9 status):
 
 | status | 主体 | 意味 | 次の遷移先 |
 |---|---|---|---|
@@ -27,6 +27,7 @@ issue フェーズ (8 status):
 | ready for implementation | reviewer | レビュー完了・blocker なし (実装に着手できる) | — (PR フェーズへ) |
 | starting review work | 作者 | 作者が指摘対応を開始した | waiting for review |
 | waiting for review | 作者 | 指摘対応が済み再レビュー待ち | starting review |
+| need for human review | reviewer | 停止条件到達 (round 上限 / blocker 傾向未改善)・人間が続行可否を判断 (PR フェーズ同名 status の issue 版・非終端の sink。issue #88) | 人間の判断による (継続するなら waiting for review 等へ戻す) |
 | closed issue | 人間 (明示指示によるエージェント代行を含む) | 実際に close した (終端。githubState=closed) | — |
 
 PR フェーズ (10 status):
@@ -57,8 +58,9 @@ PR フェーズ (10 status):
 
 ## 役割の分離 (doer ≠ judge)
 
-- コードを書く人 (main developer = 普段のセッション) と、レビューして判定する人 (reviewer = pr reviewer ロール規約 (`roles/pr-reviewer.md`) に従い orchestrator (`/harness-orchestrate`) が dispatch する別セッション相当の subagent) を分ける。dispatch は main developer のセッションとは独立した subagent 呼出であり、reviewer は変更を初見で見る。
+- コードを書く人 (main developer = 普段のセッション) と、レビューして判定する人 (reviewer = pr reviewer ロール規約 (`roles/pr-reviewer.md`) に従い orchestrator (`/harness-orchestrate`) が dispatch する別セッション相当の subagent) を分ける。dispatch は main developer のセッションとは独立した subagent 呼出であり、reviewer は変更を初見で見る。issue フェーズも対称で、issue reviewer (`roles/issue-reviewer-dispatch.md`) と issue review worker (`roles/issue-review-worker.md`) を orchestrator が別 subagent として dispatch する (issue #88)。
 - reviewer が進められる status は `ready for merge` / `need for human review` まで (どちらも reviewer が設定できる終端手前の状態)。**終端の `merged pr` / `closed issue` は、人間が実際に merge / close した時にだけ書く**(ただし人間の明示指示がある場合の代行は例外 — 詳細は下記『終端の記録と merge 代行』節を参照)。
+- **issue フェーズの単一 sink (`need for human review`・issue #88)**: PR フェーズの `need for human review` sink を issue フェーズへ対称に写す。前進不能な issue (停止条件到達 = round 上限 / blocker 傾向未改善、または主観的エスカレーション) は原因を問わず単一の失敗経路 `issue.status = "need for human review"` へ集約し、`need for human review` ラベルを **issue に** 付与して人間へ surface する。issue reviewer が進められる status は `ready for implementation` / `need for human review` まで (PR reviewer の `ready for merge` / `need for human review` と対称の終端手前状態)。**issue review worker が `ready for implementation` を立てるのは越権 (例外なし)** — worker の前進 outcome は `waiting for review` 固定で、`ready for implementation` は issue reviewer の判定 (`clean_pass`) 経由でのみ到達する (decision script が構造的に担保。doer ≠ judge)。ラベル解除だけでは再 dispatch されない #12 結線を保つため、sink は status を書いてから集約する (詳細な配線は `commands/harness-orchestrate.md`「失敗経路」節)。**非対称の正直な明記 (issue #88)**: 「issue フェーズ = PR フェーズと対称」の主張は 2 点で成立しない — (i) issue フェーズには実行して落とせる証拠 (test) が構造的に無く **evidence gate 相当が無い** (有界化は停止条件機構 + issueReviewLock hang 検知が担い、「偽の前進」検知は issue reviewer の別セッション読取に一本化される = PR responder より弱い)、(ii) issue reviewer の判定エンジンは v1 では kit 非同梱の個人 skill `reviewing-github-issues` に依存する **opt-in path** で可搬でない (PR 側の既定 `code-review` は #49 で可搬化済み・個人 skill 依存は opt-in `multi-angle` 限定)。完全可搬化 (8 観点 rubric を `roles/issue-reviewer.md` へ inline) は follow-up。**PR を伴わない issue 単体の close 代行は本 kit のスコープ外** (『終端の記録と merge 代行』「スコープ外(意図的)」を踏襲)。
 - `completed review` になったら、実装者が指摘の採否を判断して修正し、`waiting for review` に戻す。
 - **対応側が `ready for merge` を立てるのは越権 (例外なし)**。指摘が解消不可 (環境依存の実測値が要る等) でも、「merge 後の対応でよい」と作者間で合意した場合でも、対応側は `waiting for review` に戻すだけ。merge 後対応にするか否かの最終判断は reviewer の責務。
   (実事故の教訓: 対応側が「作者と合意済みの follow-up」を根拠に直接 `ready for merge` へ進め、reviewer の検証を飛ばした)

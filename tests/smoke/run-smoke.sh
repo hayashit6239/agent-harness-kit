@@ -54,8 +54,9 @@
 #    不正入力 exit 2 の境界を含む)
 # 13. 共通コア(禁止事項)の単一ソース + 各 dispatch ファイル冒頭 ★最重要★ ブロックへの presence 検査
 #    (issue #52 Phase B・症状1・A3)。CANONICAL_CORE(この script が唯一の単一ソース)の 5 行
-#    (fork / SendMessage / gh auth switch / 台帳保護 / 観測禁止)を、4 dispatch ファイル
-#    (実装役 / 対応役 / pr reviewer / collectors)の冒頭 ★最重要★ ブロックが逐語部分一致で含むことを
+#    (fork / SendMessage / gh auth switch / 台帳保護 / 観測禁止)を、6 dispatch ファイル
+#    (実装役 / 対応役 / pr reviewer / collectors / issue reviewer / issue review worker・issue #88)の
+#    冒頭 ★最重要★ ブロックが逐語部分一致で含むことを
 #    アサート(round2 🟡1(a): 行の脱落だけでなく文言 drift も捕捉するため keyword 一致にしない)。
 #    canonical 行を 1 本抜いたコピーが fail 判定になる負のケース(アサートが vacuous でないことの
 #    自己検証)を含む。**塞ぐのは「単一ソースからの脱落 / 文言 drift」のみ**で、subagent の runtime
@@ -649,7 +650,9 @@ echo "[7/14] evaluate-stop-condition 判定ケース OK (round 上限・trend・
 
 # --- 8. decide-orchestrator-route (orchestrator ルーティング判定) の単体判定 ----
 # evaluate-stop-condition / reaggregate-has-blocker と同型の pure decision script。
-# 決定表の全 (role × outcome) 16 行を網羅検証する — この網羅により、reviewer の "invalid"
+# 決定表の全 (role × outcome) 25 行 (implementer 6 + responder 4 + reviewer 6 + issue-reviewer 6 +
+# issue-review-worker 3。issue-reviewer / issue-review-worker は issue #88) を網羅検証する —
+# この網羅により、reviewer の "invalid"
 # 分岐 (dispatch 結果失敗 -> sink)、implementer の "timeout" 分岐 (issue #26・in-flight
 # マーカーのリトライ上限到達/不整合 -> sink)、reviewer/responder の "timeout" 分岐 (issue #71・
 # reviewLock hang -> sink)、および 3 role 共通の主観的エスカレーション
@@ -733,6 +736,29 @@ assert_route "(m2) reviewer/timeout (issue #71・reviewLock hang -> 書込なし
   '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 assert_route "(m3) responder/timeout (issue #71・reviewLock hang -> 書込なし sink)" responder timeout \
   '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
+# issue-reviewer (issue #88: reviewer を issue フェーズへ写した 6 outcome。ledger_write は issue.status を書く。
+#   clean_pass の遷移先は "ready for implementation"(PR の "ready for merge" と対称)・ラベルは
+#   add/remove_ready_for_implementation。escalate/subjective_escalate は "need for human review" を書いてから sink)
+assert_route "(ir-a) issue-reviewer/invalid (dispatch 失敗 -> sink)" issue-reviewer invalid \
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
+assert_route "(ir-b) issue-reviewer/escalate (停止条件 -> need for human review へ書いてから sink)" issue-reviewer escalate \
+  '{"ledger_write":{"issue.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
+assert_route "(ir-c) issue-reviewer/clean_pass (ready for implementation・PR の ready for merge と対称)" issue-reviewer clean_pass \
+  '{"ledger_write":{"issue.status":"ready for implementation"},"route":"normal","label_action":"add_ready_for_implementation"}'
+assert_route "(ir-d) issue-reviewer/blockers" issue-reviewer blockers \
+  '{"ledger_write":{"issue.status":"completed review"},"route":"normal","label_action":"remove_ready_for_implementation"}'
+assert_route "(ir-e) issue-reviewer/subjective_escalate (issue #31・客観 escalate とは別トリガーだが同じ sink)" issue-reviewer subjective_escalate \
+  '{"ledger_write":{"issue.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
+assert_route "(ir-f) issue-reviewer/timeout (issue #88・issueReviewLock hang -> 書込なし sink)" issue-reviewer timeout \
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
+# issue-review-worker (issue #88: responder を issue フェーズへ写すが evidence gate を持てない 3 outcome。
+#   前進 outcome は単一の "done"(→ waiting for review)のみ。"ready for implementation" は書けない = doer≠judge)
+assert_route "(iw-a) issue-review-worker/done (対応済み -> 再レビュー待ち)" issue-review-worker done \
+  '{"ledger_write":{"issue.status":"waiting for review"},"route":"normal","label_action":null}'
+assert_route "(iw-b) issue-review-worker/subjective_escalate (issue #31・書いてから sink)" issue-review-worker subjective_escalate \
+  '{"ledger_write":{"issue.status":"need for human review"},"route":"sink","label_action":null}' "$OBS"
+assert_route "(iw-c) issue-review-worker/timeout (issue #88・issueReviewLock hang -> 書込なし sink)" issue-review-worker timeout \
+  '{"ledger_write":null,"route":"sink","label_action":null}' "$OBS"
 
 # 行数ガード: DECISION_TABLE の全エントリ数 (role×outcome の全組み合わせ) と assert_route で
 # 網羅したケース数 (ROUTE_CASES) が一致することを機械的に確認する。手動列挙は「行削除」は
@@ -792,7 +818,7 @@ route_rc=0
 printf '%s' '{"role":"implementer","outcome":"timeout","observation":{"command":"x","exit_code":1,"summary":""}}' \
   | python3 "$DECIDE" >/dev/null 2>&1 || route_rc=$?
 [ "$route_rc" -eq 2 ] || fail "(u) observation.summary が空文字で exit 2 を期待したが exit $route_rc"
-echo "[8/14] decide-orchestrator-route 判定ケース OK (全 role×outcome 16 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
+echo "[8/14] decide-orchestrator-route 判定ケース OK (全 role×outcome 25 行を網羅 + 不正入力 exit 2 境界 + A1 観測必須 fail-closed 境界)"
 
 # --- 9. reconcile-dispatch-marker (dispatch in-flight マーカーの reconciliation 判定・issue #26) --
 # decide-orchestrator-route / evaluate-stop-condition / reaggregate-has-blocker と同型の
@@ -1294,6 +1320,8 @@ DISPATCH_FILES=(
 "$ROOT/roles/developer-responder.md"
 "$ROOT/roles/pr-reviewer-dispatch.md"
 "$ROOT/collectors/strategy.md"
+"$ROOT/roles/issue-reviewer-dispatch.md"
+"$ROOT/roles/issue-review-worker.md"
 )
 
 # ファイルの冒頭 ★最重要★ ブロック(★最重要★ 行から直後の '---' 区切りまで)を取り出し、
@@ -1309,7 +1337,7 @@ core_block_has_all() {
   return 0
 }
 
-# 正: 4 dispatch ファイルすべての冒頭ブロックが 5 canonical 行を含む
+# 正: 6 dispatch ファイルすべての冒頭ブロックが 5 canonical 行を含む
 for f in "${DISPATCH_FILES[@]}"; do
   [ -f "$f" ] || fail "[13/14] dispatch ファイルが存在しない: $f"
   block="$(awk '/★最重要★/{cap=1} cap{print} cap&&/^---$/{exit}' "$f")"
@@ -1319,7 +1347,7 @@ for f in "${DISPATCH_FILES[@]}"; do
       || fail "[13/14] 共通コア行が $f の冒頭ブロックに無い(脱落 / 文言 drift): $line"
   done
 done
-echo "[13/14] 共通コア presence 検査 OK (4 dispatch ファイル × 5 canonical 行・逐語部分一致・単一ソースは CANONICAL_CORE)"
+echo "[13/14] 共通コア presence 検査 OK (6 dispatch ファイル × 5 canonical 行・逐語部分一致・単一ソースは CANONICAL_CORE)"
 
 # 負(自己検証): canonical 行を 1 本抜いたコピーは fail 判定になる(アサートが vacuous でない証明)
 NEG_TMP="$TMP/neg-dispatch.md"
