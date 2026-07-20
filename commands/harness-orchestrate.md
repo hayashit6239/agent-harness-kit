@@ -1,5 +1,5 @@
 ---
-description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。**第 1 引数にゴール文言を渡すと、本コマンドの手順書内容を context にロード済みの状態で、失敗経路の 10 トリガーを反映した `/goal <文言>` コマンド文字列を組み立てて提示する(issue #60)。`/goal` の実行そのものは技術的制約により本コマンドから起動できないため、提示のみに留まる**。
+description: 対象 repo の .harness/plan-progress.json を単一の書込主体として、developer(実装役・対応役)と pr reviewer の 2 ロールを配車する orchestrator(v1 walking skeleton・PR ライフサイクルのみ)。判断ロジックは一切持たず、既存の判定 skill/command(`/code-review` または `reviewing-multi-angle` 経由の `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md`)に委譲し、返答を検証してから台帳へ書き込む。前進できない状況は原因を問わず単一の失敗経路(need for human review sink)に集約する。ルーティング(台帳書込・sink・ラベル操作)は各ロールが状況を outcome トークンに解決したうえで tested decision script(`scripts/decide-orchestrator-route.py`)で決定論的に解決し、規則を散文に複製しない。委譲先ロール(実装役・対応役・pr reviewer)の作業レポート(`reports[]`)も、単一 writer 原則(`.harness/CLAUDE.harness.md`)に従い本コマンドが代筆する(issue #52 症状2)。**第 1 引数にゴール文言を渡すと、本コマンドの手順書内容を context にロード済みの状態で、失敗経路の 12 トリガーを反映した `/goal <文言>` コマンド文字列を組み立てて提示する(issue #60)。`/goal` の実行そのものは技術的制約により本コマンドから起動できないため、提示のみに留まる**。
 argument-hint: "[ゴール文言] [review-mode] [owner/repo]  省略時: 通常 tick 実行 / code-review(opt-in: multi-angle) / CWD の origin から自動判定。ゴール文言(第1引数)指定時は /goal 起動文字列の組み立てのみを行う"
 allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 ---
@@ -19,14 +19,14 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 **`$1`(ゴール文言)が与えられた場合**(例: `/harness-orchestrate "issue #42 を ready for implementation になるまでレビュー・対応を繰り返して"`): 本コマンドは通常の tick(下記「配車テーブル」以降の手順)を実行**しない**。代わりに次を行う:
 
 1. 本ファイル(このコマンドの手順書)は、このコマンド自体の実行によって既に context にロード済みである。追加のファイル読込は不要。
-2. 下記「失敗経路(単一の need for human review sink)」節の**この sink にルーティングされるトリガー**表(decision script 経由の sink 9 種 + git-status ガード 1 種 = 合計 10 種)を、簡潔な自然文の停止条件へ変換する。表の `role/outcome` トークンや書込 status 列はそのまま `/goal` 文字列へ転記しない — 表の「トリガー(状況)」列の文言を平易な日本語で言い換える。
-3. `$1` のゴール文言と、変換した 10 個の停止条件を、次のサンプルと同じ構造で 1 つの `/goal` コマンド文字列に組み立てる:
+2. 下記「失敗経路(単一の need for human review sink)」節の**この sink にルーティングされるトリガー**表(decision script 経由の sink 11 種 + git-status ガード 1 種 = 合計 12 種)を、簡潔な自然文の停止条件へ変換する。うち `timeout` 系 3 種(実装役 `dispatchMarker` の hang + reviewer / 対応役 `reviewLock` の hang。issue #26 / #71)は下表の行ではなく「tick 冒頭 reconciliation」節が検知する変則 sink だが、停止条件としては下記サンプルに含める。表の `role/outcome` トークンや書込 status 列はそのまま `/goal` 文字列へ転記しない — 表の「トリガー(状況)」列の文言を平易な日本語で言い換える。
+3. `$1` のゴール文言と、変換した 12 個の停止条件を、次のサンプルと同じ構造で 1 つの `/goal` コマンド文字列に組み立てる:
 
    ```
-   /goal 「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して。次のいずれかに該当したら停止して人間に報告して: reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ 実装役 dispatch 後の evidence gate 失敗 / 対応役 dispatch 後の evidence gate 失敗 / 実装役の pr_number 復旧検索が複数一致(曖昧)/ 実装役の in-flight マーカーが締切超過でリトライ上限到達(timeout)/ 実装役・対応役・reviewer いずれかが主観的エスカレーションを返した / git-status ガードが .harness/ への意図しない変更を検知した」
+   /goal 「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して。次のいずれかに該当したら停止して人間に報告して: reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ 実装役 dispatch 後の evidence gate 失敗 / 対応役 dispatch 後の evidence gate 失敗 / 実装役の pr_number 復旧検索が複数一致(曖昧)/ 実装役の in-flight マーカーが締切超過でリトライ上限到達(timeout)/ reviewer・対応役の reviewLock が締切超過(dispatch の hang・timeout)/ 実装役・対応役・reviewer いずれかが主観的エスカレーションを返した / git-status ガードが .harness/ への意図しない変更を検知した」
    ```
 
-   サンプルの「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して」の部分を `$1` の内容に差し替え、停止条件の並びはサンプルの粒度(10 トリガーを 8 文で言い換えた簡潔な自然文の列挙 — `subjective_escalate` は実装役・対応役・reviewer の 3 経路をまとめて 1 文にできる)に揃える。
+   サンプルの「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して」の部分を `$1` の内容に差し替え、停止条件の並びはサンプルの粒度(12 トリガーを 9 文で言い換えた簡潔な自然文の列挙 — `subjective_escalate` は実装役・対応役・reviewer の 3 経路を、reviewLock hang の `timeout` は reviewer・対応役の 2 経路を、それぞれまとめて 1 文にできる)に揃える。
 4. 組み立てた `/goal <文言>` をそのままコピー&ペーストできる形で提示して終了する。**このコマンド自身は `/goal` を実行しない**(実行はユーザーの操作)。
 
 **`$1` が省略された場合**: 従来どおり、本コマンドは 1 回の orchestrator tick を実行する(以下の手順)。
@@ -112,7 +112,9 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 3. **以後その step は無条件スキップ**: 次 tick 以降、配車テーブルの選別より前で `need for human review` ラベルの有無を確認し、付いていればどのロールにも dispatch しない。**ラベルの解除は人間が手動で行う**(orchestrator 側で自動解除ロジックは持たない)。
 4. **報告への反映(虚偽防止)**: tick 報告の「失敗 sink」列は `LABEL_OK` と通知の成否を**実際に反映する**。付与成功時のみ「🛑 need for human review 付与 + 通知済み」と書き、`add-label` 失敗時は「⚠️ ラベル付与失敗(手動付与が必要)」と正直に書く(無条件に「付与 + 通知済み」と書かない)。
 
-**有界停止の保証**: この sink に入った step は「人間がラベルを外す」以外に配車対象へ戻る経路が無い。したがって、どのロール(実装役・対応役・reviewer)から入っても、evidence が通らない/停止条件に達した/dispatch 結果が失敗した step が無限に再 dispatch され続けることはない(無界ループは残さない)。**実装役の `no_pr`(dispatch 後 PR 未作成 + 復旧検索 0 件)は、issue #26(P1 決定)により「tick 冒頭 reconciliation」節の in-flight マーカー機構(締切 K=2 tick・リトライ上限 N=2)で有界化された** — `no_pr` は sink には入らず route=skip のまま毎 tick 即時再 dispatch されるが、原因が持続的なら最大 N=2 回のリトライで outcome=`timeout` に解決し sink(この sink はラベルではなく永続する `dispatchMarker` 自体が「無条件スキップ」を実装する変則形 — 詳細は「tick 冒頭 reconciliation」節参照)。これで本コマンドが掲げる「無界ループを残さない」不変条件に唯一残っていた例外が解消された(旧版はこの段落で `no_pr` を唯一の例外と明記していたが、issue #26 で解消済み)。加えて、reviewer/`escalate` は `pr.status="need for human review"` を書いてから sink するため(上記「sink の出口を人間の意図と結線」参照)、人間がラベルを外しただけでは再 dispatch されず、この経路での再 escalate ループは構造的に防がれる(`invalid` 経路は書込が無いため対象外)。
+**有界停止の保証**: この sink に入った step は「人間がラベルを外す」以外に配車対象へ戻る経路が無い。したがって、どのロール(実装役・対応役・reviewer)から入っても、evidence が通らない/停止条件に達した/dispatch 結果が失敗した step が無限に再 dispatch され続けることはない(無界ループは残さない)。**実装役の `no_pr`(dispatch 後 PR 未作成 + 復旧検索 0 件)は、issue #26(P1 決定)により「tick 冒頭 reconciliation」節の in-flight マーカー機構(締切 K=2 tick・リトライ上限 N=2)で有界化された** — `no_pr` は sink には入らず route=skip のまま毎 tick 即時再 dispatch されるが、原因が持続的なら最大 N=2 回のリトライで outcome=`timeout` に解決し sink(この sink はラベルではなく永続する `dispatchMarker` 自体が「無条件スキップ」を実装する変則形 — 詳細は「tick 冒頭 reconciliation」節参照)。これで本コマンドが掲げる「無界ループを残さない」不変条件に唯一残っていた例外が解消された(旧版はこの段落で `no_pr` を唯一の例外と明記していたが、issue #26 で解消済み)。加えて、reviewer/`escalate` は `pr.status="need for human review"` を書いてから sink するため(上記「sink の出口を人間の意図と結線」参照)、人間がラベルを外しただけでは再 dispatch されず、この経路での再 escalate ループは構造的に防がれる(`invalid` 経路は書込が無いため対象外)。**reviewer / 対応役の `reviewLock` hang も issue #71 の締切機構(reviewLock reconciliation・N=0)で有界化された** — 次 tick で締切超過を検知し reviewer/`timeout` または responder/`timeout` として単一 sink に落ちる(「tick 冒頭 reconciliation」節「reviewLock の reconciliation」参照)。
+
+**この有界性は tick 数ベースであり実時間ベースではない(B2・issue #71)**: 上記の「無限に再 dispatch され続けない」保証は、**tick を単位とした有界性**(実装役は最大 N=2 リトライ、reviewLock hang は次 tick で即 sink 等)である。`/loop` 運用では tick 間隔がおおむね一定なため**近似的に実時間の有界性にもなる**が、**手動代行モード(orchestrator を `/loop` ではなくルートエージェントが都度手動起動する運用。「既知の制限・拡張ポイント」節参照)では tick 間の実時間間隔(cadence)が不定期**であり、次 tick を人間がいつ起動するかに実時間の有界性が依存する — 締切機構が保証するのは「何 tick で sink へ到達するか」であって「何分/何時間で」ではない。`dispatchMarker` の `K=2` / `reviewLock` の `K_review=0` はいずれも tick 数の値であり、実時間の締切ではない(締切を tick ベースから時刻ベースへ変える案 = #53 の B3 は本 issue のスコープ外・owner 判断待ち)。
 
 ## ルーティング判定(`scripts/decide-orchestrator-route.py`)
 
@@ -147,8 +149,8 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
   outcome トークン(role ごと。全網羅は `tests/smoke/run-smoke.sh` [8] が決定論検証):
   - **implementer**: `no_pr`(返答不正 かつ 復旧検索 0 件)/ `ambiguous`(復旧検索 複数件)/ `pr_evidence_pass`(pr_number 確定 かつ evidence exit 0)/ `pr_evidence_fail`(pr_number 確定 かつ evidence 非 0)/ `timeout`(issue #26: 「tick 冒頭 reconciliation」節の in-flight マーカーが締切超過でリトライ上限 N=2 に到達、またはマーカーが壊れている/不整合)/ `subjective_escalate`(issue #31・PR 未作成のまま `escalate_to_human` を返した)
-  - **responder**: `evidence_pass` / `evidence_fail` / `subjective_escalate`(issue #31)
-  - **reviewer**: `invalid`(返答が JSON でない・`escalate` を読めない=dispatch 結果失敗)/ `escalate`(escalate=true)/ `clean_pass`(escalate=false かつ has_blocker=false)/ `blockers`(escalate=false かつ has_blocker=true)/ `subjective_escalate`(issue #31・客観的な `escalate` とは別に `escalate_to_human` を返した)
+  - **responder**: `evidence_pass` / `evidence_fail` / `timeout`(issue #71: 「tick 冒頭 reconciliation」節の reviewLock reconciliation が締切超過 = hang と判定した。reconciliation 側が解決)/ `subjective_escalate`(issue #31)
+  - **reviewer**: `invalid`(返答が JSON でない・`escalate` を読めない=dispatch 結果失敗)/ `escalate`(escalate=true)/ `clean_pass`(escalate=false かつ has_blocker=false)/ `blockers`(escalate=false かつ has_blocker=true)/ `timeout`(issue #71: reviewLock が締切超過 = hang。`invalid` とは別事象で reconciliation 側が解決)/ `subjective_escalate`(issue #31・客観的な `escalate` とは別に `escalate_to_human` を返した)
 
   **3 role 共通の `subjective_escalate` の解決方法(issue #31・詳細は「主観的エスカレーション」節)**: 各ロールの dispatch 応答が `escalate_to_human: {reason}`(`reason` は空でない文字列)を含む場合、その他の分岐より**先に** outcome=`subjective_escalate` へ解決する。**この検出条件(JSON として解釈できるか・`escalate_to_human.reason` の有無)の唯一の正はここに置き、各ロール節(実装役手順 3・対応役手順 3・reviewer 手順 2)では複製せずここを参照する**(役割ごとに異なるのは「他の分岐より先に判定する」という優先順位の適用箇所と「解決後にどの手順へ進むか」だけで、検出条件自体は共通)。`reason` の形式検証(空・欠損・非文字列なら無視してフォールバック)は「主観的エスカレーション」節の「最小の形式検証(A案)」を参照(判定ロジックの唯一の正はそちらに置き、ここでは複製しない)。
 
@@ -289,15 +291,33 @@ PY
 
 これにより `no_pr` の連続発生(P1 決定により timeout と同じカウンタに畳み込む)も真の締切超過(hang)も、**同じ `retry_count` で最大 N=2 回(初回 + 2 リトライ = 計 3 dispatch)まで有界リトライし、尽きたら sink する**(「有界停止の保証」節の唯一の例外だった `no_pr` はこれで解消)。dispatch call 自体がセッションを止めてしまう真の hang(`Agent` ツールにタイムアウト parameter が無い制約は変わらない)は、marker が dispatch 直前に書かれているため、**人間がセッションを再起動した次の tick**で `TICK > deadline_tick` として検知される(tick を跨いだ persistent state による回復。dispatch 中の hang をリアルタイムに検知する機構ではない — 「既知の制限・拡張ポイント」節参照)。
 
-## reviewer / 対応役の in-flight ロック(lock-only・issue #37)
+**reviewLock の reconciliation(issue #71・`dispatchMarker` の走査と並置)**: 上の `dispatchMarker` の走査と**並置**して、`reviewLock` を持つ全 step も各 tick(選別より前)に reconcile する。目的は reviewer / 対応役の dispatch が真の hang(dispatch call がセッションを止めた)で `reviewLock` が解除されないまま次 tick 以降まで残った場合に、有界に sink へ落とすこと。`dispatchMarker` と同じ `reconcile-dispatch-marker.py`(**ロール非依存**)を使い、次の 2 点だけを変える:
 
-**目的**: pr reviewer / developer(対応役)の dispatch にも、実装役の `dispatchMarker`(issue #26)と同じ「重複配車防止」が要る(欠落 1)。ただし目的は選別排他ロックのみで、実装役が持つ締切・有界リトライ(`deadline_tick`/`retry_count`)は要らない — reviewer/対応役には `no_pr` 相当の無界駆動因(dispatch 後の完了未確認状態が跨 tick で残る)が無く、dispatch は `Agent` ツールの blocking call として同一 tick 内で outcome まで解決するため、liveness/timeout の機構を持ち込むと over-engineering になる。実装役の `dispatchMarker` をそのまま転用しない理由もここにある。
+- **`progressed` は常に false**: reviewLock には実装役の `Closes #<N>` 復旧検索に相当する跨 tick 進捗シグナルが構造的に無く、残留 = hang である以上「前進したか」を確定する手段が無いため、保守側に倒して常に false を渡す(`clear` へは決して解決しない)。
+- **`max_retries: 0` を渡す**(N=0)。reviewLock の締切は `K_review=0`(`deadline_tick == dispatched_tick`。「reviewer / 対応役の in-flight ロック」節)なので、正常時に同一 tick 内で削除された reviewLock は reconciliation の走査に乗らない。次 tick 以降まで残った reviewLock は `current_tick > deadline_tick` で締切超過と判定され、`max_retries: 0` により **redispatch を経ず初回で即 `sink`(`retries_exhausted`)** に落ちる(redispatch を持たせないのは、対応役の再 dispatch が修正の二重適用になりうるため — 冪等性を別機構で担保せず設計で回避する)。
 
-**`reviewLock`(transient・型の正は `plan-progress.schema.json` の `definitions.reviewLock`。issue #68 で optional 宣言に変更・検査対象外は維持)**: pr reviewer / developer(対応役)が dispatch する直前に、対象 step へ次を書く(実装役の `dispatchMarker` とは**別フィールド**で持つ — 「tick 冒頭 reconciliation」節の reconciliation はこのフィールドを走査しない。同一フィールドを共有すると `deadline_tick` を必須とする `marker_is_valid()` に `invalid_marker` として拾われ sink されてしまうため):
-```json
-{"dispatched_tick": <TICK>}
+**`notified` 済みの早期スキップ**: `reviewLock.notified == true` の step は、`dispatchMarker` の「`notified` 済みマーカーの早期スキップ」と同型に、reconcile 呼出そのものをスキップする(この step は既に下記 sink を通過済みで、選別 jq からも `reviewLock` の存在自体で除外されている — 再判定は重複通知を生むだけ)。`notified` が無い(または false の)step だけ、以下を行う:
+
 ```
-`deadline_tick` / `retry_count` は持たない(lock-only)。`$TICK` は「tick 冒頭 reconciliation」節の `orchestratorTick` を共有する。書込は次の 1 手続きで行う(`<step id>` は対象 step):
+ROUTE_MARKER=$(printf '{"marker":<reviewLock か null>,"current_tick":%d,"progressed":false,"max_retries":0}' "$TICK" \
+  | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/reconcile-dispatch-marker.py")
+```
+返る `action` は実質 `wait` か `sink` のいずれか(`eligible` は reviewLock 不在時のみ・`clear`/`redispatch` は上記のとおり構造的に発生しない):
+
+- **`wait`**(締切未到達 = `K_review=0` では通常起こらない): 何もしない(reviewLock を残す。選別 jq は `.reviewLock == null` で既に除外している)。
+- **`sink`**(`retries_exhausted` または `invalid_marker`(fail-closed)): 対象 step の `pr.status` から役割を解決し(`completed review` → **responder**、`created pr` / `waiting for review` → **reviewer**。dispatch が hang したなら status は dispatch 前の値のまま変化していない)、outcome=**`timeout`** として判定器を呼ぶ(`decide-orchestrator-route.py` の reviewer/`timeout` または responder/`timeout` 行。いずれも `ledger_write=null`(hang は無状態 tick では検証不能なので status を捏造しない)・`route=sink`)。**`observation`(issue #50 A1)**: `<command>`="reconcile-dispatch-marker.py の判定(reviewLock)"・`<exit_code>`=0・`<summary>`=`$reason`(`retries_exhausted` または `invalid_marker`。「ルーティング判定」節「呼び方」の共通手続きに従う)。**sink の出口**は、実装役 `timeout`(PR 不在でラベル付与しない変則)とは異なり **PR が実在するため「sink の共通手続き」をそのまま実行し `need for human review` ラベル + `PushNotification` を出す**。ただし `dispatchMarker` の timeout sink と同型に、**`reviewLock` は削除せず残したまま `notified: true` を付与する**(「ルーティング判定」節『`notified` フラグの付与』の手続きを、`dispatchMarker` の代わりに `reviewLock` に対して行う — 既存 3 キーは変更せず `notified` を追加。reviewLock を削除すると `.reviewLock == null` ガードで次 tick に再選別=再 dispatch されるため、削除してはならない)。人間の復旧手段は `need for human review` ラベル除去 + 対象 step の `reviewLock` 手動削除の 2 つ。
+
+**走査の独立性**: 1 step が `dispatchMarker` と `reviewLock` を同時に持つ場合、reconciliation は各フィールドを**独立に**走査する(dispatchMarker は N=2・redispatch あり、reviewLock は N=0・即 sink)。通常は実装役 dispatch と reviewer/対応役 dispatch はライフサイクル上の別フェーズで、1 step が両方を同時に持つことは無い。
+
+## reviewer / 対応役の in-flight ロック(issue #37、issue #71 で締切機構を追加)
+
+**目的**: pr reviewer / developer(対応役)の dispatch にも、実装役の `dispatchMarker`(issue #26)と同じ「重複配車防止」が要る(欠落 1)。加えて、dispatch call 自体がセッションを止める**真の hang** で `reviewLock` が解除されないまま残るケースを、有界に sink へ落とす締切機構を持たせる(issue #71。issue #37 時点ではこの残留を検知する主体が無く、人間が手動削除するまで永久に選別から外れたままだった)。ただし reviewLock は実装役の `dispatchMarker`(N=2・締切超過で redispatch)とは**プロファイルが異なる** — reviewer/対応役の dispatch は `Agent` ツールの blocking call として**同一 tick 内で outcome まで解決**し、正常時は同じ tick 内で reviewLock を削除するため、`no_pr` 相当の無界駆動因は無い。したがって締切は `K_review=0`(下記)、リトライは **N=0(redispatch なし・初回の締切超過で即 sink)** とする。**対応役の再 dispatch は修正の二重適用**になりうるため redispatch 経路を持たせず、冪等性を別機構で担保せず設計で回避する(#37 節が述べた「独立 timeout/retry 機構の追加は over-engineering」とも整合 — 実装役の締切機構 `reconcile-dispatch-marker.py` を**ロール非依存**に流用し、`max_retries: 0` を渡すだけで実現する)。
+
+**`reviewLock`(transient・型の正は `plan-progress.schema.json` の `definitions.reviewLock`。issue #68 で optional 宣言・issue #71 で `dispatchMarker` 同型へ拡張・検査対象外は維持)**: pr reviewer / developer(対応役)が dispatch する直前に、対象 step へ次を書く(実装役の `dispatchMarker` とは**別フィールド**で持つ — 「tick 冒頭 reconciliation」節の reconciliation は両フィールドを**独立に**走査する。同一フィールドを共有すると、dispatchMarker 用の N=2・redispatch プロファイルと reviewLock 用の N=0・即 sink プロファイルが混ざり、対応役の二重 dispatch を招くため別フィールドに保つ):
+```json
+{"dispatched_tick": <TICK>, "deadline_tick": <TICK>, "retry_count": 0}
+```
+`deadline_tick = dispatched_tick + K_review`(**`K_review = 0`** のため通常 `dispatched_tick` と一致・下記)、`retry_count` は初回 0 固定(reviewLock は N=0 で redispatch しないため常に 0)。`$TICK` は「tick 冒頭 reconciliation」節の `orchestratorTick` を共有する。書込は次の 1 手続きで行う(`<step id>` は対象 step):
 ```
 PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
 python3 - "$PLAN" "<step id>" "$TICK" <<'PY'
@@ -306,7 +326,8 @@ plan_path, step_id, tick = sys.argv[1], sys.argv[2], int(sys.argv[3])
 with open(plan_path, encoding="utf-8") as f:
     plan = json.load(f)
 step = next(s for s in plan["steps"] if s["id"] == step_id)
-step["reviewLock"] = {"dispatched_tick": tick}
+# K_review=0 のため deadline_tick == dispatched_tick、retry_count は初回 0 固定 (N=0・issue #71)
+step["reviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retry_count": 0}
 plan["updatedAt"] = datetime.date.today().isoformat()
 with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
     json.dump(plan, f, ensure_ascii=False, indent=2)
@@ -314,11 +335,13 @@ os.replace(plan_path + ".tmp", plan_path)
 PY
 ```
 
+**`K_review = 0`(tick)と定義する**: reviewer/対応役の dispatch は同一 tick 内で outcome まで解決し、正常時は reviewLock を書いた同じ tick 内で削除される(下記「解除」)。したがって reviewLock が次 tick 以降まで残ること自体が「dispatch 中にセッションが死んだ(真の hang)」の定義的シグナルであり、`dispatched_tick` より後の tick で reviewLock を観測した時点で sink してよい。`K_review=0` は **mode 非依存の構造的確定値**である — multi-angle の内部 fan-out は単一 blocking call の**内部(同一 tick 内)**で起きるため tick 単位の締切 K には影響しない(code-review モード対 multi-angle モードの所要差は wall-clock 差であり tick 数差ではない)。dispatchMarker の `K=2`(校正根拠なし best-effort)とは対照的に、reviewLock の `K=0` は同一 tick 解決という構造的事実から導かれるため校正不要。締切超過の判定と sink 手続きは「tick 冒頭 reconciliation」節の**「reviewLock の reconciliation」**が担う(ここでは書込のみ・複製しない)。
+
 **選別ガード**: 「選別(jq)」節の対応役・pr reviewer ブロックに `.reviewLock == null` を追加し、既に in-flight な step を選別から除外する(実装役の `.dispatchMarker == null` ガードと同型)。
 
 **解除(必ず同一 tick 内・全 outcome で)**: pr reviewer / 対応役はどちらも dispatch が同一 tick 内で outcome まで同期完結するため、判定器呼出後の原子書込(「ルーティング判定」節『`ledger_write` の適用』)で **全 outcome について** `reviewLock` を削除する(route が normal/sink いずれでも、`ledger_write` が null の outcome(reviewer/`invalid`・対応役/`evidence_fail`)でも解除する — 解除しないと次 tick 以降この step が永久に選別から外れたままになる)。適用手続きは既存の `<clear_marker>` 引数に加え、削除対象のフィールド名を汎化した `<marker_field>`(省略時の既定 `dispatchMarker`)を渡す — 実装役の既存呼出は省略のまま(挙動不変)、pr reviewer / 対応役は `"reviewLock"` を渡す。詳細は「ルーティング判定」節『`ledger_write` の適用』を参照(手続き本体はそちらが正・ここでは複製しない)。
 
-**既知の限界(正直な明記・独立機構は足さない)**: dispatch call 自体がセッションを止める真の hang が起きた場合、`reviewLock` は書かれたまま残り、それを跨 tick でタイムアウトさせる主体は無い(「tick 冒頭 reconciliation」節の reconciliation は `deadline_tick` 必須かつ `dispatchMarker` フィールドのみを走査するため、`reviewLock` を看取れない)。この残留は issue #26 自身の残余限界(真の hang はリアルタイム検知できず、人間がセッションを再起動しても `reviewLock` は自動では解除されない)と同型で、**`pr.status` は resting のまま変化しないため、復旧は人間が対象 step の `reviewLock` を手動削除するだけでよい**(status の復元は不要 — 実装役の `dispatchMarker` のような専用ラベル・`notified` 通知の仕組みは持たない)。頻度が低い残留経路のため、独立の timeout/retry 機構を追加するのは v1 では over-engineering と判断する。実運用で高頻度に観測されたら follow-up で issue #26 の reconciliation を「ロール非依存・deadline 任意」へ一般化する対応を検討する(v1 では採らない・観測駆動)。
+**hang 検知の到達点(issue #71 で締切機構を追加)**: dispatch call 自体がセッションを止める真の hang が起きた場合、`reviewLock` は書かれたまま残るが、**「tick 冒頭 reconciliation」節の「reviewLock の reconciliation」(`max_retries: 0`・`progressed: false`)が次 tick 以降にこれを締切超過(`current_tick > deadline_tick`)として検知し、初回で即 `sink`(reviewer/`timeout` または responder/`timeout`)に落とす**。これは issue #26 の実装役 hang 検知と同型の「tick を跨いだ persistent state による事後回復」であり、dispatch 中の hang をリアルタイムに検知する機構ではない(`Agent` ツールにタイムアウト parameter が無い制約は変わらない)。sink 到達時は `need for human review` ラベル付与(reviewer/対応役は PR が実在するため実装役 `timeout` の変則(ラベル無し)とは異なる)+ `reviewLock` 残置 + `notified: true` 付与で以後の tick を早期スキップさせる(重複通知防止)。人間の復旧手段は `need for human review` ラベル除去 + 対象 step の `reviewLock` 手動削除の 2 つ。issue #37 が「follow-up で issue #26 の reconciliation をロール非依存・deadline 任意へ一般化する」と留保していた対応が、本 issue #71 で実現された(`reconcile-dispatch-marker.py` は元からロール非依存で、`max_retries` の任意入力化だけで reviewLock の N=0 プロファイルを賄えたため、role 分岐の追加は不要だった)。
 
 ## 主観的エスカレーション(issue #31・A案)
 
@@ -500,6 +523,8 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 
    > 「`${CLAUDE_PLUGIN_ROOT}/roles/developer-responder.md` を Read し、そこに書かれた指示をそのまま実行せよ(対象 PR は #<N>)。手順本体は転写しない — 必ずファイルを Read してから実行すること。」
 
+   **(A1・issue #71)dispatch prompt に「時間を自分で計測せよ / タイムボックスを自分で守れ」といった時間の自己管理を求める指示は書かない** — 締切(`reviewLock` の `deadline_tick`)の所有と hang 判定は orchestrator の職責(「tick 冒頭 reconciliation」節「reviewLock の reconciliation」)であり、委譲先に時計を持たせない(#53 症状1 の A2「orchestrator が能動的に時刻確認」却下と対の原則。上記 dispatch prompt に該当記述が無いことを維持する = 将来の追記を防ぐ予防的明記)。
+
 3. **主観的エスカレーションの確認(issue #31・返答検証より先に行う)**: 検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)。該当すれば outcome=**`subjective_escalate`**(判定器は `ledger_write={"pr.status":"need for human review"}`・`route=sink` を返す。手順 5 の evidence gate は行わず、手順 6 の判定器呼び出しへ進む)。形式不正で `escalate_to_human` を無視した場合は下記手順 4 へフォールバックする(tick 報告に 1 行残す)。
 
 4. **返答検証(越権の無効化)**: `proposed_status` が `"waiting for review"` 以外(特に `"ready for merge"`)でも**無視して先へ進む**(対応役の越権を orchestrator 側で機械的に無効化する — `.harness/CLAUDE.harness.md` の「対応側が `ready for merge` を立てるのは越権(例外なし)」を技術的に担保)。対応役の返答は outcome 解決に使わない — status は evidence gate だけで決まる。
@@ -531,7 +556,9 @@ COLLISION=$(printf '%s' "$CANDIDATES_JSON" | python3 "${CLAUDE_PLUGIN_ROOT}/scri
 
 > 「`${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer-dispatch.md` を Read し、そこに書かれた指示をそのまま実行せよ(対象 PR は #<N>、review-mode=`$REVIEW_MODE`、code-review の場合は候補収集済みファイル `$FINDINGS_PATH`)。手順本体は転写しない — 必ずファイルを Read してから実行すること。」
 
-**outcome 解決(判定器の reviewer 行に渡すトークンを決める。全 5 outcome を必ず解決する)**: 実装役の復旧検索・対応役の evidence gate と対称に、**reviewer にも「dispatch 結果失敗」分岐を持たせて単一 sink をすり抜けさせない**(「実装役は復旧検索、対応役は evidence gate で dispatch 失敗を捌けるが、reviewer だけ dispatch 結果失敗の分岐が無く単一 sink をすり抜ける」を、この `invalid` 分岐で塞ぐ)。判定順序は次のとおり(上から順に該当する最初の分岐を採用する):
+**(A1・issue #71)pr reviewer の dispatch prompt にも「時間を自分で計測せよ / タイムボックスを自分で守れ」といった時間の自己管理を求める指示は書かない** — 締切(`reviewLock` の `deadline_tick`)の所有と hang 判定は orchestrator の職責(「tick 冒頭 reconciliation」節「reviewLock の reconciliation」)であり、委譲先に時計を持たせない(上記 dispatch prompt に該当記述が無いことを維持する = 将来の追記を防ぐ予防的明記)。
+
+**outcome 解決(判定器の reviewer 行に渡すトークンを決める。dispatch 応答から解決する 5 outcome を必ず解決する — reviewLock hang の `timeout` は dispatch 応答ではなく「tick 冒頭 reconciliation」節の reviewLock reconciliation が解決する別経路のため、ここには含めない)**: 実装役の復旧検索・対応役の evidence gate と対称に、**reviewer にも「dispatch 結果失敗」分岐を持たせて単一 sink をすり抜けさせない**(「実装役は復旧検索、対応役は evidence gate で dispatch 失敗を捌けるが、reviewer だけ dispatch 結果失敗の分岐が無く単一 sink をすり抜ける」を、この `invalid` 分岐で塞ぐ)。判定順序は次のとおり(上から順に該当する最初の分岐を採用する):
 
 1. **返答が JSON として解釈できない / `escalate` を読めない**(subagent クラッシュ・不正 JSON・個人 skill 欠落で `escalate` を組み立てられない等の **dispatch 結果失敗**)→ outcome=**`invalid`**(判定器は route=sink を返す)。
 2. **(issue #31)検出条件は「ルーティング判定」節の「3 role 共通の `subjective_escalate` の解決方法」を参照(ここでは複製しない)**。該当する場合(客観的な `escalate` の値に関わらず優先) → outcome=**`subjective_escalate`**。形式不正で `escalate_to_human` を無視した場合は下記へフォールバックする(tick 報告に 1 行残す)。
@@ -684,6 +711,7 @@ PY
 ## 既知の制限・拡張ポイント
 
 - **真の無人化はまだできない**: `/loop` はセッションが開いている間だけ定期実行できる方式であり無人ではない。GitHub Actions `on: schedule` / `/schedule` クラウド routine による真の無人化は、判定 skill(`reviewing-multi-angle` 等・review-mode=multi-angle のみ)の kit 同梱が前提になるため別途対応が必要(review-mode=code-review(既定)は issue #49 以降 `${CLAUDE_PLUGIN_ROOT}/collectors/strategy.md`(kit 同梱・個人 skill 不要)による角度別 finder 収集のみに依存する。導入先が `.harness/collectors/angles/` に `skill:` 付き角度を追加した場合はその skill にも依存する)。
+- **手動代行モードは第一級の運用モード(issue #71・B2)**: 本 orchestrator は `/loop` による定期実行だけでなく、**ルートエージェントが各 tick を都度手動起動する「手動代行モード」でも回る**(実測: `orchestratorTick` が 2026-07-16 の `1` から手動代行のみで前進した)。両モードで tick モデル(無状態 tick・`orchestratorTick` 加算)・配車ロジックは同一で差は無く、`/loop` は「手動代行の tick 起動を定期化した特殊形」に過ぎない。**有界停止の保証レベルは両モードとも tick 数ベース**であり実時間ベースではない(「有界停止の保証」節 B2 参照)— 手動代行モードでは次 tick の起動タイミングが人間に委ねられるため、sink 到達までの実時間は不定である(これは B2 として受容された帰結)。締切機構(`dispatchMarker` の `K=2` / `reviewLock` の `K_review=0`)が保証するのは「何 tick で sink へ到達するか」であって wall-clock の有界性ではない。
 - **issue #11 の F案は実装済み**: 上記「既知のリスク」節参照。orchestrator の単一書込は ローカルファイル編集 + Statuses API 自己申告へ追従済み(main への直接 commit/push はしない)。
 - **issue サイド(issue reviewer / issue review worker)の自動化は対象外**: v1 は PR ライフサイクルのみ。issue フェーズの配車は別 issue の範囲。
 - **git-status ガードの限界と設計境界(部分的バックストップ・正直な明記)**: 台帳保護には次の点がある。
@@ -692,9 +720,9 @@ PY
   - **(c) git-status ガードだけが decision script を通らない唯一の失敗経路(設計境界・意図的)**: 他の全失敗面は「ルーティング判定」節の decision script が `route=sink` として決めるが、git-status ガードの drift 検知 → sink だけは script を経由しない。これは意図的である — **git-guard trip は「(role, outcome) に紐づくルーティング判断」ではなく、全ロール横断(cross-cutting)の pre-write 前提チェックであり、その帰結は自明に sink(分岐する判断ロジックが無い)ため decision script の対象外とする**(decision script はルーティング「判断」を集約するものであって、判断の無い自明な guard→sink はその対象ではない、という設計境界)。無理に決定表へ押し込まない。
 - **dispatch 上限 5 件のトレードオフ**: 1 tick で処理しきれない場合は次 tick へ持ち越される(dedup は各ロールの status 遷移が担う)。**「tick 冒頭 reconciliation」の `redispatch` 候補もこの上限の対象**(「選別(jq)」節参照)であり、枠から溢れた候補は marker を書き換えずに持ち越されるため retry_count は消費されない。
 - **ファイル衝突検知(`scripts/detect-dispatch-collision.py`)の抽出規則は machine-enforce されていない(既知のギャップ・issue #37・欠落 3)**: script が受け取る `files` は issue 本文の Implementation Scope から prose が抽出したものであり、抽出規則(バッククォート内のパスのみを対象ファイルとし、通りすがり言及を除外する)自体は script の対象外(pure-function 境界を守るため。「衝突判定(グラフの連結成分)」だけが script 側の正)。抽出漏れ・誤抽出は smoke では検出できず、fail-closed(`files: []`)側に倒すことで実害を「衝突不明な step を保守的に別 tick へ回す」に留めている。
-- **ルーティングは tested decision script**: (role, outcome) → (ledger_write, route, label_action) を `scripts/decide-orchestrator-route.py` が決定論的に解決し、`tests/smoke/run-smoke.sh` [8] が全 (role × outcome) 14 行を網羅検証する(reviewer の `invalid` 分岐 / implementer の `timeout` 分岐(issue #26)/ 3 role 共通の `subjective_escalate`(issue #31)を含む)。散文分岐の取りこぼしを構造的に防ぐのが目的で、規則は script が正・prose は「outcome への解決」と「route の実行」だけを持つ。
+- **ルーティングは tested decision script**: (role, outcome) → (ledger_write, route, label_action) を `scripts/decide-orchestrator-route.py` が決定論的に解決し、`tests/smoke/run-smoke.sh` [8] が全 (role × outcome) 16 行を網羅検証する(reviewer の `invalid` 分岐 / implementer の `timeout` 分岐(issue #26)/ reviewer・responder の `timeout` 分岐(issue #71・reviewLock hang)/ 3 role 共通の `subjective_escalate`(issue #31)を含む)。散文分岐の取りこぼしを構造的に防ぐのが目的で、規則は script が正・prose は「outcome への解決」と「route の実行」だけを持つ。
 - **A1(sink 系 outcome の観測必須フィールド)は独立検証ではなく自己規律の強化に留まる(issue #50 owner 決定 (b)・正直な明記)**: `route=sink` への解決に `observation`(コマンド + 終了コード + 出力要約)を必須化する A1(「ルーティング判定」節「呼び方」・`decide-orchestrator-route.py` モジュール docstring 参照)は、orchestrator 自身の 2 日間の自動運転で「観測できないもの」を「失敗」と 7 回誤断した実害(issue #50)への対策として導入した。**ただしこの検証は `observation` の存在・型のみを確認し、内容の真偽は検証しない** — orchestrator prose(判定を下す当人)が虚偽の観測を書けばそのまま通る(spoof 可能)。issue #50 の owner は「症状1(orchestrator/doer 自身の sink 判断)の常用経路は独立検証ゼロを正直に受容する」と決定した(選択肢 (b)。#17 round2 の Statuses API 自己申告「security boundary ではなく便宜シグナル」と同じ流儀)。**症状2(doer による DoD の独断書き換え)とは非対称**: そちらは PR reviewer という独立読み手(別セッション)が `${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md` の DoD 照合手順(issue #50 B2)で機械的に塞ぐが、症状1(orchestrator が sink へ倒す判断そのもの)には対称の独立読み手が存在しない。この非対称は本 issue の対応(Worker 権限)では解消できないと判断され保留された構造的な限界であり、(a) sink 倒し込み側にも独立検証の主体を配線する、という選択肢は #21(完全無人化)を本気で進める段階の前提として別途 issue 化する想定(issue #50 本文「レビュー反映 — 決定事項(round1/round2)」+ owner 決定コメント参照)。
-- **`dispatchMarker` のライフサイクル(削除 / 永続 / 永続+`notified`)は machine-enforce されていない(既知のギャップ)**: 上記の decision script が検証するのは `(ledger_write, route, label_action)` の 3 つだけで、実装役の各 outcome が marker をどう扱うか(手順 6 の 3 分類)は `DECISION_TABLE` にも `tests/smoke/run-smoke.sh` にも反映されておらず、手順 6 の固定列挙(prose)だけが正である。これは意図的な現状維持であり、次の理由による: (i) `dispatchMarker` は transient なフィールドで、issue #68 で `plan-progress.schema.json` に **optional 宣言**した(型/形の正は `definitions.dispatchMarker`)が **検査対象外は維持**され(`step.required` 非追加・`step` の `additionalProperties` 不変)、`validate-plan-progress.py` は marker の値を検査しない(marker の**存在確認・妥当性**は `reconcile-dispatch-marker.py` が既に smoke [9] で網羅検証しているが、これは「marker が有効か」の判定であって「outcome ごとにどう処理すべきか」の判定ではない — 後者を machine-enforce するには decision script の出力契約(`ledger_write`/`route`/`label_action`)を拡張する必要があり、これは 1 フィールド追加では済まず、`decide-orchestrator-route.py` の 14 行・smoke [8] の `assert_route` 全件・「ルーティング判定」節の適用手続き・reconciliation の timeout 分岐(現状 decision script を経由しない別経路)を横断する変更になる。(ii) issue #31 は「主観的エスカレーション経路の追加」がスコープであり、marker ライフサイクルの machine-enforce 化はそれ自体別の改善提案として independently 評価すべき設計変更である。手順 6 を固定列挙(性質ベースの一文ではなく `no_pr`/`ambiguous`/`pr_evidence_pass`/`pr_evidence_fail`/`subjective_escalate` の個別列挙 + 新 outcome 追加時の追記指示)に変更したことが、今回のスコープで取れる現実的な緩和策である。**同種の欠落(散文の一般化が実際の分類を誤る)が今後も観測される場合は、decision script の出力契約への `marker_disposition` 相当フィールド追加を検討する。**
+- **`dispatchMarker` のライフサイクル(削除 / 永続 / 永続+`notified`)は machine-enforce されていない(既知のギャップ)**: 上記の decision script が検証するのは `(ledger_write, route, label_action)` の 3 つだけで、実装役の各 outcome が marker をどう扱うか(手順 6 の 3 分類)は `DECISION_TABLE` にも `tests/smoke/run-smoke.sh` にも反映されておらず、手順 6 の固定列挙(prose)だけが正である。これは意図的な現状維持であり、次の理由による: (i) `dispatchMarker` は transient なフィールドで、issue #68 で `plan-progress.schema.json` に **optional 宣言**した(型/形の正は `definitions.dispatchMarker`)が **検査対象外は維持**され(`step.required` 非追加・`step` の `additionalProperties` 不変)、`validate-plan-progress.py` は marker の値を検査しない(marker の**存在確認・妥当性**は `reconcile-dispatch-marker.py` が既に smoke [9] で網羅検証しているが、これは「marker が有効か」の判定であって「outcome ごとにどう処理すべきか」の判定ではない — 後者を machine-enforce するには decision script の出力契約(`ledger_write`/`route`/`label_action`)を拡張する必要があり、これは 1 フィールド追加では済まず、`decide-orchestrator-route.py` の 16 行・smoke [8] の `assert_route` 全件・「ルーティング判定」節の適用手続き・reconciliation の timeout 分岐(現状 decision script を経由しない別経路)を横断する変更になる。(ii) issue #31 は「主観的エスカレーション経路の追加」がスコープであり、marker ライフサイクルの machine-enforce 化はそれ自体別の改善提案として independently 評価すべき設計変更である。手順 6 を固定列挙(性質ベースの一文ではなく `no_pr`/`ambiguous`/`pr_evidence_pass`/`pr_evidence_fail`/`subjective_escalate` の個別列挙 + 新 outcome 追加時の追記指示)に変更したことが、今回のスコープで取れる現実的な緩和策である。**同種の欠落(散文の一般化が実際の分類を誤る)が今後も観測される場合は、decision script の出力契約への `marker_disposition` 相当フィールド追加を検討する。**
 - **issue #26 との共有面(既知の drift リスク)**: `scripts/decide-orchestrator-route.py` の `DECISION_TABLE` と `tests/smoke/run-smoke.sh` [8] は issue #26(dispatch した子の生存監視と失敗の有界化)とも共有ファイルであり、両 issue が独立に `implementer` 行へ新エントリを追加する。詳細と rebase 時の注意点は「主観的エスカレーション(issue #31)」節の「issue #26 との共有面」を参照。
 - **失敗経路は単一 sink に集約(重要)**: 実装役・対応役・reviewer のどの経路でも「前進不能 = need for human review sink 到達」で対称に扱う。reviewer も `escalate`(停止条件)に加え `invalid`(dispatch 結果失敗)を持ち、単一 sink をすり抜けない。個別ロールに独自の失敗処理(片方だけ有界停止・片方は無界ループ)を持たせない。書き込む事実 status だけがトリガーごとに異なる(「失敗経路(単一の need for human review sink)」節の一覧表を参照)。**実装役の `no_pr` はこの対称性の唯一の例外だったが、issue #26(P1 決定)で解消済み**(下記「実装役の `no_pr` の有界化(issue #26)」参照)。
 - **対応役の無作業検知は escalate backstop に委ねる(意図的な既知の限界)**: 対応役だけは dispatch 結果失敗の即時検知分岐を持たない(最後の非対称)。subagent が **無作業/クラッシュでも test が元々緑なら `evidence_pass` → `waiting for review`** へ進む(偽の前進)。実装役(復旧検索)・reviewer(`invalid` 検知)が dispatch 失敗を即座に sink するのに対し、対応役の無作業だけ検知が **~3 round 遅延する**という latency の非対称が残る。ただし finding 未対応なら reviewer が同じ blocker を再検出 → `completed review` へ戻す往復が続き、**escalate backstop(round≥5 / blocker trend)が最終的に人間へ surface する**。これは bounded(`has_blocker=true` 維持で `clean_pass`=不正 merge には至らない)であり、walking skeleton では検知機構を足さず backstop に委ねる(作者の意図的判断)。実害(無作業 dispatch が頻発)が観測されたら follow-up で対応役の作業有無(`# PR Review Worker` コメント / commit の有無)検証を足す(対応役 flow の該当箇所にも同旨を明記済み)。

@@ -7,7 +7,14 @@ python3 標準ライブラリのみの 1 ファイル。
 同じ設計境界を守る:「状況 (進捗の有無・現在 tick 番号) を解決するのは prose 側 /
 マーカーの解釈と有界化の適用は script 側で決定論」。
 
-背景 (issue #26 Problem #1): 実装役の `no_pr` (dispatch 後 PR 未作成) は唯一の無界再 dispatch
+**ロール非依存 (issue #71)**: 本 script は marker の出所 (どのロールが書いたか) を一切区別せず、
+3 キー (`dispatched_tick` / `deadline_tick` / `retry_count`) の構造だけを見て判定する。これにより
+2 つの用途を同一ロジックで担う: (1) 実装役の `dispatchMarker` (issue #26・N=2・締切超過で
+リトライ上限まで redispatch してから sink)、(2) reviewer / 対応役の `reviewLock` (issue #71・
+`max_retries=0` を渡し、初回の締切超過 (new_retry=1>0) で redispatch を経ず即 sink)。リトライ
+上限 N は入力の任意フィールド `max_retries` で切り替える (下記・未指定時は既定 `MAX_RETRIES=2`)。
+
+背景 (issue #26 Problem #1・用途 (1) 実装役 `dispatchMarker`): 実装役の `no_pr` (dispatch 後 PR 未作成) は唯一の無界再 dispatch
 経路で、原因が持続的 (issue 実装不能 / subagent の決定論的クラッシュ) でも人間に一切 surface
 されなかった。これを塞ぐため、dispatch のたびに in-flight マーカー (`dispatched_tick` /
 `deadline_tick` / `retry_count`) を対象 step に書き、以後の tick 冒頭でこの script が
@@ -26,8 +33,10 @@ python3 標準ライブラリのみの 1 ファイル。
         {
           "marker": null | {"dispatched_tick": <int>, "deadline_tick": <int>, "retry_count": <int>},
           "current_tick": <int>,   # 現在の tick 番号 (台帳 top-level の transient カウンタ由来)
-          "progressed": <bool>     # この step が前進した事実が確認できたか
+          "progressed": <bool>,    # この step が前進した事実が確認できたか
                                    # (例: PR が実在確認できた)。prose が解決する。
+          "max_retries": <int>     # (任意・issue #71) リトライ上限 N。未指定なら既定 MAX_RETRIES=2。
+                                   # reviewLock は 0 を渡し、初回の締切超過で redispatch を経ず即 sink。
         }
     stdout に判定結果 JSON を返す:
         {"action": "eligible"|"clear"|"wait"|"redispatch"|"sink",
@@ -43,7 +52,8 @@ action の意味 (呼び出し側の適用方法は `commands/harness-orchestrat
                 再 dispatch してよい。
   - sink:       (a) marker が壊れている/不整合 (fail-closed。暴走再 dispatch より安全側)、または
                 (b) 締切超過でリトライ上限に到達。既存の単一 sink (need for human review) へ
-                (`decide-orchestrator-route.py` の implementer/`timeout` outcome を経由する)。
+                (`decide-orchestrator-route.py` の `timeout` outcome を経由する — dispatchMarker は
+                implementer/`timeout`、reviewLock は reviewer/`timeout` または responder/`timeout`)。
 
 marker の妥当性 (壊れている/不整合と判定する条件。1 つでも満たせば invalid):
   - dict でない
@@ -63,9 +73,11 @@ null でも dict でもない / marker キー自体の欠損) は exit 2 + stder
 **入力エラーではなく判定結果 (action=sink)** として扱う (妥当性検証そのものが本 script の責務)。
 判定自体は action の値によらず exit 0。
 
-MAX_RETRIES (=N) は issue #26 の確定値 (N=2・初回 + 2 リトライ = 計 3 dispatch)。締切のオフセット
-K (deadline_tick = dispatched_tick + K、v1: K=2) は marker 書込側 (prose) が計算するため、
-本 script は K を持たず deadline_tick を直接比較するだけ。
+MAX_RETRIES (=N) は入力 `max_retries` 未指定時の既定値 (issue #26 の確定値 N=2・初回 + 2 リトライ
+= 計 3 dispatch)。入力で `max_retries` が渡されればそちらを N として使う (issue #71: reviewLock は 0
+を渡し、初回の締切超過 (new_retry=1 > 0) で redispatch を経ず即 sink)。締切のオフセット K
+(deadline_tick = dispatched_tick + K) は marker 書込側 (prose) が計算するため、本 script は K を
+持たず deadline_tick を直接比較するだけ (dispatchMarker は K=2、reviewLock は K=0)。
 """
 
 import json
@@ -105,6 +117,19 @@ def require_bool(data, key):
     return v
 
 
+def optional_nonneg_int(data, key, default):
+    """任意フィールド (issue #71 の max_retries)。キーが無ければ default を返す。
+    あれば bool を除く非負整数であることを検証し (不備は入力エラー exit 2)、その値を返す
+    (不正値のまま reconcile へ渡して TypeError で落ちるより、他の必須キー検証と同じ
+    fail-closed で早期に弾く)。"""
+    if key not in data:
+        return default
+    v = data[key]
+    if not _is_valid_int(v) or v < 0:
+        input_error(f"'{key}' が非負整数でない ({v!r})。")
+    return v
+
+
 def marker_is_valid(marker, current_tick):
     """marker (dict であることは呼び出し前に確定) の型/整合を検査する。壊れていれば False。"""
     for key in ("dispatched_tick", "deadline_tick", "retry_count"):
@@ -119,7 +144,7 @@ def marker_is_valid(marker, current_tick):
     return True
 
 
-def reconcile(marker, current_tick, progressed):
+def reconcile(marker, current_tick, progressed, max_retries=MAX_RETRIES):
     if marker is None:
         return {"action": "eligible"}
 
@@ -132,9 +157,10 @@ def reconcile(marker, current_tick, progressed):
         return {"action": "clear"}
 
     if current_tick > marker["deadline_tick"]:
-        # (3) 締切超過 (hang / P1 決定により no_pr もここに合流する)
+        # (3) 締切超過 (hang / P1 決定により no_pr もここに合流する)。
+        # max_retries=0 (reviewLock・issue #71) なら new_retry=1>0 で redispatch を経ず即 sink。
         new_retry = marker["retry_count"] + 1
-        if new_retry > MAX_RETRIES:
+        if new_retry > max_retries:
             return {"action": "sink", "reason": "retries_exhausted", "retry_count": new_retry}
         return {"action": "redispatch", "retry_count": new_retry}
 
@@ -158,8 +184,9 @@ def main():
 
     current_tick = require_int(data, "current_tick")
     progressed = require_bool(data, "progressed")
+    max_retries = optional_nonneg_int(data, "max_retries", MAX_RETRIES)
 
-    print(json.dumps(reconcile(marker, current_tick, progressed), ensure_ascii=False))
+    print(json.dumps(reconcile(marker, current_tick, progressed, max_retries), ensure_ascii=False))
     sys.exit(0)
 
 

@@ -60,10 +60,13 @@
     "reviewLock": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["dispatched_tick"],
-      "description": "pr reviewer / developer (対応役) dispatch の in-flight ロック (transient・lock-only・issue #37)。deadline_tick / retry_count は持たない (締切・有界リトライは不要 — dispatch は同一 tick 内で outcome まで同期完結するため)。書込・解除・選別ガードの手続きの正は commands/harness-orchestrate.md「reviewer / 対応役の in-flight ロック」節 (ここでは複製しない)。dispatchMarker と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変。issue #68 で optional 宣言に変更)",
+      "required": ["dispatched_tick", "deadline_tick", "retry_count"],
+      "description": "pr reviewer / developer (対応役) dispatch の in-flight ロック (transient・issue #37、issue #71 で dispatchMarker 同型へ拡張)。型/形のみをここで規定する — K_review・締切・sink 手続き (reviewLock は N=0・redispatch なしで初回の締切超過で即 sink) の正は commands/harness-orchestrate.md「reviewer / 対応役の in-flight ロック」節・「tick 冒頭 reconciliation」節 (ここでは複製しない)。dispatchMarker と同じく検査対象外 (step.required 非追加・step の additionalProperties 不変。issue #68 で optional 宣言に変更)",
       "properties": {
-        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick を共有)" }
+        "dispatched_tick": { "type": "integer", "minimum": 0, "description": "dispatch した tick 番号 (orchestratorTick を共有)" },
+        "deadline_tick": { "type": "integer", "minimum": 0, "description": "締切 tick (= dispatched_tick + K_review)。issue #71: K_review=0 のため通常 dispatched_tick と一致する (dispatch は同一 tick 内で解決するため、次 tick 以降まで残っていること自体が hang のシグナル)" },
+        "retry_count": { "type": "integer", "minimum": 0, "description": "リトライ回数。reviewLock は N=0 (reconciliation へ max_retries=0 を渡す) で初回の締切超過で redispatch を経ず即 sink するため、書込時は常に 0" },
+        "notified": { "type": "boolean", "description": "(任意) sink (timeout) 到達時に人間へ一度だけ通知済みであることを示すフラグ。付与後は次 tick 以降の reconciliation をスキップする (通知の無限反復防止)" }
       }
     },
     "issueStatus": {
