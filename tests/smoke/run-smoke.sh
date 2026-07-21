@@ -1149,7 +1149,7 @@ argv = sys.argv[1:]
 if len(argv) > 6:
     print("::error:: too many args", file=sys.stderr)
     sys.exit(2)
-argv = argv + ["false", "dispatchMarker"][len(argv) - 4:]
+argv = argv + ["false", "dispatchMarker"][len(argv) - 4:]  # commands/harness-orchestrate.md「ルーティング判定」節の同一 pad の意図的ミラー — 変える時は両方揃える (issue #54)
 plan_path, step_id, route_json, pr_number, clear_marker, marker_field = argv[:6]
 lw = json.loads(route_json)["ledger_write"]
 if lw is not None or clear_marker == "true":
@@ -1256,6 +1256,95 @@ assert step.get("dispatchMarker") == {"dispatched_tick": 1, "deadline_tick": 3, 
 PY
 echo "[9/16] ledger_write 適用 (vi) marker_field=reviewLock -> reviewLock のみ削除 OK (issue #37)"
 
+# reviewLock 書込 → clear の 1 往復 (issue #54)。marker_field 分岐の *clear* は上の (vi) が既に
+# 固定しているが、「reviewer / 対応役の in-flight ロック」節の *書込* 手続き (dispatch 直前に
+# reviewLock を書く) は smoke に未反映だった。書込手続きを直接ミラーして「書込 → 同一台帳を clear」
+# の 1 往復を固定する (網羅的な reviewLock ライフサイクル整合検査は #87 に委ねる — ここは最小 1 往復)。
+WRITE_REVIEWLOCK() {
+  # $1=plan_json_path $2=step_id $3=tick
+  # commands/harness-orchestrate.md「reviewer / 対応役の in-flight ロック」節の書込手続きのミラー。
+  # 手続きを変える場合はこの関数と当該 python を揃える (prose 手続きの直接検証用ミラー)。
+  python3 - "$1" "$2" "$3" <<'PY'
+import datetime, json, os, sys
+plan_path, step_id, tick = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(plan_path, encoding="utf-8") as f:
+    plan = json.load(f)
+step = next(s for s in plan["steps"] if s["id"] == step_id)
+# K_review=0 のため deadline_tick == dispatched_tick、retry_count は初回 0 固定 (N=0・issue #71)
+step["reviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retry_count": 0}
+plan["updatedAt"] = datetime.date.today().isoformat()
+with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(plan, f, ensure_ascii=False, indent=2)
+os.replace(plan_path + ".tmp", plan_path)
+PY
+}
+
+# reviewLock 無しの step から書込 -> 期待形で present になる (dispatch 直前・pr.status は書き換えない)
+printf '%s' '{"steps":[{"id":"S1","issue":{"status":null,"number":9},"pr":{"number":11,"githubState":"open","status":"completed review"}}]}' > "$LW_PLAN"
+WRITE_REVIEWLOCK "$LW_PLAN" "S1" 7
+python3 - "$LW_PLAN" <<'PY' || fail "reviewLock 書込: 期待形で書けていない"
+import json, sys
+step = json.load(open(sys.argv[1], encoding="utf-8"))["steps"][0]
+assert step.get("reviewLock") == {"dispatched_tick": 7, "deadline_tick": 7, "retry_count": 0}, f"reviewLock が期待形でない: {step.get('reviewLock')}"
+assert step["pr"]["status"] == "completed review", "書込が pr.status を意図せず変えた (dispatch 前に status を書き換えない原則に反する)"
+PY
+# 同一 tick 内で clear (全 outcome で marker_field=reviewLock を渡す解除経路) -> reviewLock が消える
+APPLY_LW "$LW_PLAN" "S1" '{"ledger_write":null}' "" "true" "reviewLock"
+python3 - "$LW_PLAN" <<'PY' || fail "reviewLock clear: 1 往復で解除できていない"
+import json, sys
+step = json.load(open(sys.argv[1], encoding="utf-8"))["steps"][0]
+assert "reviewLock" not in step, f"reviewLock が残っている (1 往復で解除されていない): {step}"
+PY
+echo "[9/15] reviewLock 書込 → clear の 1 往復 OK (issue #54・書込手続きミラー + marker_field=reviewLock 解除)"
+
+# statusesPostFailCount 更新 + global halt の判定 (scripts/decide-statuses-post-action.py・issue #54)。
+# 「Statuses post 失敗の surface と global halt」節が prose で持っていた increment/reset/閾値判定を
+# evaluate-stop-condition.py と同型の pure decision script へ切り出したもの。全分岐
+# (increment 0→1→2・閾値到達 2→3 で halt・閾値超過後も失敗なら加算継続 (reset しない)・
+# 成功で 0 へ reset・不正入力 exit 2) を固定し、閾値 3 の off-by-one が緑のまま素通しになるのを塞ぐ。
+STATUSES_POST="$ROOT/scripts/decide-statuses-post-action.py"
+
+# $1=ラベル $2=入力 JSON $3=期待する出力 JSON (キー順を正規化して full 一致)
+assert_statuses_post() {
+  local label="$1" json="$2" want="$3" got wantc
+  got="$(printf '%s' "$json" | python3 "$STATUSES_POST")" \
+    || fail "$label: decide-statuses-post-action の実行に失敗した"
+  got="$(printf '%s' "$got" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False))')"
+  wantc="$(printf '%s' "$want" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False))')"
+  [ "$got" = "$wantc" ] || fail "$label: 出力が期待と一致しない (got: $got / want: $wantc)"
+}
+
+HALT_REASON='Statuses post 連続失敗が閾値(3)に到達(global halt)'
+# post 失敗 (非 0) -> increment。閾値 3 未満は halt=false
+assert_statuses_post "increment 0->1" '{"current_count":0,"post_exit_code":1}' '{"new_count":1,"halt":false,"reason":""}'
+assert_statuses_post "increment 1->2" '{"current_count":1,"post_exit_code":1}' '{"new_count":2,"halt":false,"reason":""}'
+# 閾値到達 (2->3) で halt=true + reason
+assert_statuses_post "閾値到達 2->3 halt" '{"current_count":2,"post_exit_code":1}' "{\"new_count\":3,\"halt\":true,\"reason\":\"$HALT_REASON\"}"
+# 閾値超過後も失敗なら加算継続 (reset しない・halt 継続。exit code は非 0 なら値によらない)
+assert_statuses_post "閾値超過後も加算 3->4" '{"current_count":3,"post_exit_code":128}' "{\"new_count\":4,\"halt\":true,\"reason\":\"$HALT_REASON\"}"
+# post 成功 (0) -> 0 へ reset (現在値によらない・halt=false)
+assert_statuses_post "成功で reset (2->0)" '{"current_count":2,"post_exit_code":0}' '{"new_count":0,"halt":false,"reason":""}'
+assert_statuses_post "成功で reset (閾値超え 5->0)" '{"current_count":5,"post_exit_code":0}' '{"new_count":0,"halt":false,"reason":""}'
+echo "[9/15] decide-statuses-post-action 判定ケース OK (increment/reset/閾値到達 halt/閾値超過継続・issue #54)"
+
+# 不正入力 exit 2 の境界 (evaluate-stop-condition 等と同じ検証スタイル)
+for bad in \
+  '{"current_count":1}' \
+  '{"post_exit_code":1}' \
+  '{"current_count":true,"post_exit_code":1}' \
+  '{"current_count":1,"post_exit_code":1.5}' \
+  '{"current_count":-1,"post_exit_code":1}' \
+  '[1,2]' \
+  'nope'
+do
+  sp_rc=0
+  sp_out="$(printf '%s' "$bad" | python3 "$STATUSES_POST" 2>&1)" || sp_rc=$?
+  [ "$sp_rc" -eq 2 ] || fail "[9/15] decide-statuses-post-action 不正入力: exit 2 を期待したが $sp_rc (input: $bad)"
+  grep -qF "::error:: decide-statuses-post-action:" <<<"$sp_out" \
+    || fail "[9/15] decide-statuses-post-action 不正入力: script 名 prefix 付き ::error:: が無い (input: $bad / got: $sp_out)"
+done
+echo "[9/15] decide-statuses-post-action 不正入力 exit 2 境界 OK (欠損/型不正/負値/非JSON/非オブジェクト)"
+
 # --- 10. kit 自身の checkout なら複製の一致を検査 ------------------------------
 # (fixture への複製検証とは別。templates が原本、.harness/ は複製)
 if [ -d "$ROOT/.harness" ]; then
@@ -1326,6 +1415,33 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   echo "[11/16] 抽出 script 群 (${#EXTRACTED_SCRIPTS[@]} 件) bash -n OK (shellcheck 未導入のため skip)"
 fi
+
+# 挙動アサート (bash -n 構文チェックを超える): run-orchestrator-evidence-gate.sh が
+# ネットワーク (gh pr view / git fetch / worktree add) に到達する *前* の 2 経路を fixture で固定する
+# (issue #54: PR#41 本文の「14 outcome 網羅の決定論的アサーションで担保」誤記の実質的な穴埋め =
+#  挙動同一性テスト。ネットワーク到達後の worktree 手続きは引き続き smoke 対象外・手動確認)。
+EG_GATE="$ROOT/scripts/run-orchestrator-evidence-gate.sh"
+
+# (a) 引数不足 (< 2) -> exit 2 + usage (CWD/ネットワーク非依存)
+eg_rc=0
+eg_out="$(bash "$EG_GATE" only-one-arg 2>&1)" || eg_rc=$?
+[ "$eg_rc" -eq 2 ] || fail "[11/15] evidence-gate 引数不足: exit 2 を期待したが $eg_rc"
+grep -qF "usage: run-orchestrator-evidence-gate.sh" <<<"$eg_out" \
+  || fail "[11/15] evidence-gate 引数不足: usage 文言が無い (got: $eg_out)"
+
+# (b) evidence.done/test が両方空 -> exit 1 + script 名 prefix 付き ::error:: (ネットワーク非到達)。
+#     item 5 で他 5 本の .py と揃えた `::error:: run-orchestrator-evidence-gate:` prefix を挙動として固定。
+EG_REPO="$TMP/eg-gate-repo"
+git init -q "$EG_REPO"
+mkdir -p "$EG_REPO/.harness"
+printf '%s' '{"project":"eg","updatedAt":"2026-01-01","evidence":{"done":null,"test":null},"steps":[]}' \
+  > "$EG_REPO/.harness/plan-progress.json"
+eg_rc=0
+eg_out="$( cd "$EG_REPO" && bash "$EG_GATE" owner/repo 42 2>&1 )" || eg_rc=$?
+[ "$eg_rc" -eq 1 ] || fail "[11/15] evidence-gate 空 evidence: exit 1 を期待したが $eg_rc (got: $eg_out)"
+grep -qF "::error:: run-orchestrator-evidence-gate: 台帳の evidence.done / evidence.test が空" <<<"$eg_out" \
+  || fail "[11/15] evidence-gate 空 evidence: script 名 prefix 付き ::error:: が無い (got: $eg_out)"
+echo "[11/15] evidence-gate 挙動アサート OK (引数不足 exit 2 / 空 evidence exit 1 + prefix・ネットワーク前の経路のみ・issue #54)"
 
 # --- 12. detect-dispatch-collision (実装役 dispatch 候補のファイル衝突検知・issue #37) --------
 # decide-orchestrator-route 等と同型の pure decision script。衝突なし / 全件衝突 / 部分衝突

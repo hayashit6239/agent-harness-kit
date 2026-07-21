@@ -10,7 +10,7 @@ allowed-tools: [Bash, Agent, PushNotification, Skill, Read]
 
 ## `/goal` 起動文字列の組み立て(issue #60)
 
-実運用では、本コマンドの定期実行を `/loop` に任せるのではなく、Claude Code CLI の `/goal`(Stop hook 機構。各ターン終了時に小さい高速モデルがゴール条件の充足を判定し、未充足ならブロックして続行を強制する仕組み。https://code.claude.com/docs/en/goal )に「本コマンドの手順書を読み込んで停止条件つきで繰り返し実行する」文言を手打ちする運用へ実質移行している。この手打ちは (a) 本コマンドの手順書ロード指示と (b) 停止条件の列挙、の 2 手を毎回繰り返す無駄があり、かつ (b) は下記「失敗経路(単一の need for human review sink)」節がすでに持つ包括的なトリガー一覧の narrow な re-implementation になりがちで drift しやすい。本コマンドは第 1 引数にゴール文言を渡すことでこの 2 手を 1 手(組み立て結果のコピー&ペースト)へ縮める。
+実運用では、本コマンドの定期実行を `/loop` に任せるのではなく、Claude Code CLI の `/goal`(Stop hook 機構。各ターン終了時に小さい高速モデルがゴール条件の充足を判定し、未充足ならブロックして続行を強制する仕組み。https://code.claude.com/docs/en/goal )に「本コマンドの手順書を読み込んで停止条件つきで繰り返し実行する」文言を手打ちする運用へ実質移行している。この手打ちは (a) 本コマンドの手順書ロード指示と (b) 停止条件の列挙、の 2 手を毎回繰り返す無駄があり、かつ (b) は下記「失敗経路(単一の need for human review sink)」節がすでに持つ包括的なトリガー一覧の限定的な再実装になりがちで drift しやすい。本コマンドは第 1 引数にゴール文言を渡すことでこの 2 手を 1 手(組み立て結果のコピー&ペースト)へ縮める。
 
 **技術的制約(正直な明記)**: 本コマンドは `/goal` を完全にはラップできない。skill/command の実行は 1 ラウンドで完結し、そこから hook 設定を動的に書き換えてターン継続を強制する公式な経路が無い(claude-code-guide エージェントが公式ドキュメントを参照して確認済みの制約)。したがって本コマンドが行えるのは「`/goal` に渡す文字列の組み立てと提示」までであり、**`/goal` の実行そのものは引き続きユーザーの手操作を要する**(2 手が 1 手になるだけで 0 手にはならない)。
 
@@ -255,7 +255,7 @@ git-status-guard | git-status ガードが .harness/ への意図しない変更
       print(f"::error:: ledger_write 適用: 引数が6個を超えている ({len(argv)}個)。"
             "この決め打ちパースにパラメータを追加した場合は本ブロックの更新が必要。", file=sys.stderr)
       sys.exit(2)
-  argv = argv + ["false", "dispatchMarker"][len(argv) - 4:]  # <clear_marker>/<marker_field> 省略時の既定
+  argv = argv + ["false", "dispatchMarker"][len(argv) - 4:]  # <clear_marker>/<marker_field> 省略時の既定 (この pad は tests/smoke/run-smoke.sh の APPLY_LW に意図的ミラーあり — 変える時は両方揃える・issue #54)
   plan_path, step_id, route_json, pr_number, clear_marker, marker_field = argv[:6]
   lw = json.loads(route_json)["ledger_write"]  # decision script の出力を消費 (唯一の正)
   if lw is not None or clear_marker == "true":
@@ -325,7 +325,7 @@ git-status-guard | git-status ガードが .harness/ への意図しない変更
 
 1. **`git fetch origin --quiet`**: `origin/main` のリモート追跡参照を最新化する。実装役 dispatch(「developer(実装役)」節手順 2)は `creating-git-worktrees` skill 経由で worktree を作成し、同 skill は既定(`worktree.baseRef=fresh`)で `origin/<default-branch>` から新しい branch を切る。この fetch を怠ると `origin/main` のローカル参照が古いままになり、そこから分岐した worktree も古い main を基点にしてしまう(実測: PR #36 が古い main(`3b38c55`)から分岐した)。fetch は取得のみで、常時 dirty な `.harness/plan-progress.json` を含むローカル main checkout には触れない — `git pull` / `git merge` / `git checkout` は行わない。
 2. **freshness の確認は報告に留め、tick を止めない**: `git rev-list --count HEAD..origin/main` 等でローカル main checkout が `origin/main` からどれだけ遅れているかを把握し、遅れがあれば tick 報告に 1 行 surface する。**tick 全体は停止させない** — F案の台帳は常時 uncommitted-dirty で main 前進のたびに hard-stop すると `/loop` 運用で頻繁に停止するため。欠落 2 の根本対処は 1. の fetch により worktree 側が常に fresh になることで足りており、ローカル main checkout 自体を前進させる必要は無い。
-3. **`git worktree prune`**: `.claude/worktrees/` の admin record 残骸を掃除する(欠落 8。前 tick の異常終了等で登録だけ残った worktree を除去)。実体ディレクトリがまだ残っている場合(`git worktree remove` 前に中断した等)は各ロール節の evidence gate 手順(手順 5)が同一パスへの `add` 失敗時に個別掃除するため、ここでの `prune` は admin record のみを対象とする軽量な前提整備に留める。
+3. **`git worktree prune`**: `.claude/worktrees/` の admin record 残骸を掃除する(欠落 8。前 tick の異常終了等で登録だけ残った worktree を除去)。実体ディレクトリがまだ残っている場合(`git worktree remove` 前に中断した等)は各ロール節の evidence gate 手順(手順 5)が同一パスへの `add` 失敗時に個別掃除するため、ここでの `prune` は admin record のみを対象とする軽量な前提整備に留める。**⚠ 実体ディレクトリ掃除への拡張は挙動変化ありとして慎重に spec 化する(issue #54)**: `prune` を実ディレクトリ削除(`git worktree remove` / `rm -rf`)へ広げるなら、**削除対象を「merge 済み PR の worktree のみ」に限定するガードが必須**。判定根拠は `orchestrate-pr-<N>` の `<N>` を PR 番号として解決し `gh pr view <N> --json state,mergedAt` で **merged を確認できた場合に限り削除する**。**merge 済みと確定できない worktree(状態取得失敗 / open・draft / 番号を解決できない / 手動代行・別セッションが使用中の可能性)は消さない側に倒す(fail-safe)** — 進行中の worktree を消すと稼働中の作業を壊す事故になる。現状の admin record 限定は意図的にこの安全側へ倒してあり、実体掃除のコード実装自体は follow-up とする(本項目は削除条件と fail-safe を spec として固定するに留める)。
 
 ## tick 冒頭 reconciliation(in-flight マーカー・issue #26)
 
@@ -823,11 +823,16 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/report-ledger-status.sh" "<repo>" "<head_sha
 
 `report-ledger-status.sh` が STATE=`success`/`failure` のいずれかを **post できた**場合(スクリプト自体が exit 0)、それは台帳の schema/drift 状態を正しく報告できているので追加対応は不要(STATE=`failure` は台帳側の問題であり別途「台帳の書込経路」節の drift 照合が扱う)。ここで扱うのは、**post という行為そのものが失敗するケース**(`gh api` 呼出の失敗 = `report-ledger-status.sh` 自体が非 0 で終了する。原因は欠落 4 の `gh auth switch` 事故・token 失効・network・rate limit 等)。この失敗は元々 tick に何も表面化させず、`required check`(`harness-gate`)が付かない PR が無言で残る実害があった(実測)。
 
-- **カウンタ(`statusesPostFailCount`・transient・schema 非宣言)**: 台帳 top-level に整数フィールドを持つ(`orchestratorTick` と同型・キー無しは 0 扱い)。`report-ledger-status.sh` を呼ぶたびに終了コードを見る: **非 0 なら 1 加算**、**0(post 成功。STATE の値によらない)なら 0 にリセット**する。
+- **カウンタ(`statusesPostFailCount`・transient・schema 非宣言)**: 台帳 top-level に整数フィールドを持つ(`orchestratorTick` と同型・キー無しは 0 扱い)。`report-ledger-status.sh` を呼ぶたび、現在値と終了コードを `scripts/decide-statuses-post-action.py`(`evaluate-stop-condition.py` と同型の pure decision script・issue #54)へ渡し、**counter の更新値 `new_count` と halt 判定 `halt` を決定論的に受け取る**(閾値ロジックは script が唯一の正・prose に複製しない。他の判定器と同じ設計境界)。判定内容は **post 失敗(非 0)なら 1 加算**、**post 成功(0。STATE の値によらない)なら 0 にリセット**。呼び方:
+```
+FAIL_ACTION=$(printf '{"current_count":%d,"post_exit_code":%d}' "$STATUSES_POST_FAIL_COUNT" "$POST_EXIT" \
+  | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-statuses-post-action.py")
+```
+  返った `new_count` を `statusesPostFailCount` へ書き戻し、`halt` が true なら下記 global halt を実行する。
 - **tick 報告への surface(常時)**: 呼ぶたびに成否を tick 報告(下記「報告」節の dispatch サマリ表)へ 1 列として記載する。これは post が失敗しても成功しても毎回行う(全 step を横断するため症状に合う)。
-- **global halt(連続失敗が閾値に達したら)**: `statusesPostFailCount` が **3 回**(校正根拠の無い best-effort 値。他所の `K`/`N=2` より 1 大きいのは、単発の network flake で即 halt しないための余裕)に達したら、**その時点で処理中の tick の残り候補への dispatch を打ち切る**(既に完了した step のローカル書込は取り消さない — 台帳への書込は post 試行より前に完了しているため、halt は post の失敗そのものへの対応であり、ローカル状態を巻き戻す話ではない)。`PushNotification` で人間に auth/network の復旧を促し、tick 報告に `🛑 global halt` を明記する。**counter はリセットしない**(次 tick も引き継ぐ)。**tick 全体を将来にわたって停止する仕組みは持たない** — 次 tick は通常どおり選別・dispatch を試み、最初の step の post 結果が自然な回復確認(probe)になる。成功すればそこで counter が 0 にリセットされ通常運転に戻る。失敗すれば(counter は既に閾値以上のため)その step の処理後ただちに再度 halt する。
+- **global halt(判定器が `halt: true` を返したら)**: 上の判定器が `halt: true` を返した(= `new_count` が閾値 **3 回** に達した。閾値 3 は校正根拠の無い best-effort 値で、他所の `K`/`N=2` より 1 大きいのは単発の network flake で即 halt しないための余裕。この閾値の単一ソースは `decide-statuses-post-action.py` の `HALT_THRESHOLD`)場合、**その時点で処理中の tick の残り候補への dispatch を打ち切る**(既に完了した step のローカル書込は取り消さない — 台帳への書込は post 試行より前に完了しているため、halt は post の失敗そのものへの対応であり、ローカル状態を巻き戻す話ではない)。`PushNotification` で人間に auth/network の復旧を促し、tick 報告に `🛑 global halt` を明記する。**counter はリセットしない**(次 tick も引き継ぐ)。**tick 全体を将来にわたって停止する仕組みは持たない** — 次 tick は通常どおり選別・dispatch を試み、最初の step の post 結果が自然な回復確認(probe)になる。成功すればそこで counter が 0 にリセットされ通常運転に戻る。失敗すれば(counter は既に閾値以上のため)その step の処理後ただちに再度 halt する。
 - **per-step sink にしない理由**: Statuses post 失敗の主因(`gh auth switch` 事故・token 失効・network・rate limit)は **session 全体で起きる global 障害**であり、特定 step の品質問題ではない。特定 step だけを `need for human review` へ sink しても、他 step の post は同じ障害で失敗し続け実害(required check が付かない PR が無言で残る)が他 step で再発する。かつ、作業自体は正しい step を infra 障害で誤って blocker 化してしまう。global halt はこの mis-target を避ける。
-- **閾値ロジックを prose に置く理由(既知の位置づけ)**: 「連続 N 回失敗で halt」という閾値つき判定は、本来は `evaluate-stop-condition.py` と同型の decision script に載せる方が「規則は script が正」の設計境界と一貫する(衝突検知(欠落 3)を script 化した判断と対称)。v1 では counter の読み書きが 1 行の比較で足り、prose のまま置いても取りこぼしのリスクが低いため script 化を見送る(over-engineering 回避)。実運用で counter 判定の分岐が増えたら script への切り出しを検討する(follow-up・今すぐ決める必要はない)。
+- **閾値ロジックの script 化(issue #54 で実施・旧「見送り」の解消)**: 「連続 N 回失敗で halt」という閾値つき判定は、`evaluate-stop-condition.py` と同型の decision script に載せる方が「規則は script が正」の設計境界と一貫する(衝突検知(欠落 3)を script 化した判断と対称)。v1 は counter の読み書きが 1 行の比較で足りるとして prose のまま見送っていたが、**閾値(`>= 3`)・reset/increment の分岐が untested な prose のまま残るリスク(off-by-one 等が緑のまま素通しになる)を塞ぐため、issue #54 で `scripts/decide-statuses-post-action.py` へ切り出し `tests/smoke/run-smoke.sh` で全分岐(increment 0→1→2・閾値到達 2→3 halt・閾値超過後も失敗なら加算継続(reset しない)・成功で 0 へ reset・不正入力 exit 2)をアサートした**(#87 の decision script 抽出棚卸しから本項目を参照)。
 
 ## 作業レポートの代筆(`reports[]`・issue #52 症状2)
 
