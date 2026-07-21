@@ -54,10 +54,12 @@
 #    期待通り (衝突なし / 全件衝突 / 部分衝突(推移閉包) / 独立した複数組の衝突 /
 #    Implementation Scope 欠落(files 空配列)時の fail-closed / 候補 0 件 / 単一候補 の境界、
 #    不正入力 exit 2 の境界を含む)。加えて issue #55(恒久衝突ペアの直列化)の grouping 層アサート:
-#    wait 占有者 inject で新規候補が同一 group 入り(safe 非出現)/ 占有者 inject 無しなら safe(負の
-#    自己検証 = 占有者離脱後の直列進行モデル)/ redispatch×新規 eligible が同一ファイルで 1 group(経路A)/
-#    占有者と非共有の redispatch は safe(dispatch 経路に残る)を固定する。**代表選出・占有者除外・step id
-#    昇順 tie-break の prose 判断そのものは検証しない(DoD (iv)・script は pure Union-Find で不変)**。
+#    wait 占有者 inject で新規候補が同一 group 入り(safe 非出現)/ 占有者 inject の有無で safe が入力差により
+#    反転する負の自己検証 / redispatch×新規 eligible が同一ファイルで 1 group(経路A)/ 占有者とも他候補とも
+#    非共有の redispatch は safe / fail-closed(files=[])単独候補は占有者が居ても groups に落ち代表選出の
+#    母集団に入らない(+ files 非空なら safe に反転する負の自己検証)を固定する。**代表選出・占有者除外・
+#    fail-closed 持ち越し・step id 昇順 tie-break の prose 判断そのものは検証しない(DoD (iv)・script は
+#    pure Union-Find で不変)**。
 # 13. 共通コア(禁止事項)の単一ソース + 各 dispatch ファイル冒頭 ★最重要★ ブロックへの presence 検査
 #    (issue #52 Phase B・症状1・A3)。CANONICAL_CORE(この script が唯一の単一ソース)の 5 行
 #    (fork / SendMessage / gh auth switch / 台帳保護 / 観測禁止)を、6 dispatch ファイル
@@ -1370,52 +1372,74 @@ assert_collision "(g) 単一候補・非空 files -> safe" \
   '{"groups":[],"safe":["A"]}'
 echo "[12/15] detect-dispatch-collision 判定ケース OK (衝突なし/全件衝突/部分衝突(推移閉包)/独立 2 組/fail-closed/候補 0 件/単一候補)"
 
-# --- issue #55: 恒久衝突ペアの直列化(wait 占有者 inject + 代表選出)の grouping 層アサート ------
+# issue #55: 恒久衝突ペアの直列化(wait 占有者 inject + 代表選出)の grouping 層アサート
+# (平文コメントの見出し。トップレベルの `# --- N.` 区切りは流用しない — これは [12] の一部)
 # 【重要・DoD (iv) の正直な限界】detect-dispatch-collision.py は pure Union-Find grouping のみで、
-# 代表選出(step id 昇順で 1 件)・占有者除外・「占有者が居る group から 0 件」は prose 側
-# (commands/harness-orchestrate.md「ファイル衝突検知」節)の判断であり script は持たない(issue #55 で
-# script は不変)。したがって以下が機械検証するのは「wait 占有者 / redispatch / 新規 eligible を
-# 同一ファイルで同一 group にまとめた入力 -> size>=2 group / safe=[] になる」grouping 層までで、
-# 「代表 1 件」「占有者 group から 0 件」という prose の判断結果そのものではない(この限界は
-# harness-orchestrate.md「既知の制限・拡張ポイント」節にも明記済み)。
+# 代表選出(step id 昇順で 1 件)・占有者除外・「占有者が居る group から 0 件」・fail-closed 単独候補の
+# 持ち越しは prose 側(commands/harness-orchestrate.md「ファイル衝突検知」節)の判断であり script は
+# 持たない(issue #55 で script は不変)。したがって以下が機械検証するのは「wait 占有者 / redispatch /
+# 新規 eligible を同一ファイルで同一 group にまとめた入力 -> size>=2 group / safe=[] になる」「files=[] を
+# 単独 group に落とす」という grouping 層までで、「代表 1 件」「占有者 group から 0 件」「fail-closed は
+# 持ち越し(代表選出しない)」という prose の判断結果そのものではない(この限界は harness-orchestrate.md
+# 「既知の制限・拡張ポイント」節にも明記済み)。
 #
 # (n) 恒久衝突ペア(占有者ゼロ・2 新規 eligible N1/N2 が同一ファイルを恒久共有)-> 1 group / safe=[]
 #     grouping は (b) と同型だが、これが issue #55 が割りたいデッドロック対象(毎 tick 同一 2 候補が
 #     同一 group・safe 空で両方が永久に持ち越される)。prose の代表選出が step id 昇順で N1 を 1 件だけ
-#     dispatch し N2 を持ち越すことで直列に割る。
+#     dispatch し N2 を持ち越すことで直列に割る(この「代表 1 件」判断自体は prose 側・非検証)。
 assert_collision "(n) #55 恒久衝突ペア(占有者ゼロ)-> 1 group" \
   '[{"id":"N1","files":["harness-orchestrate.md"]},{"id":"N2","files":["harness-orchestrate.md"]}]' \
   '{"groups":[["N1","N2"]],"safe":[]}'
 # (o) live wait 占有者 O を inject した衝突 group(O + 新規 eligible N が同一ファイル)-> group [N,O] / safe=[]
-#     N が占有者 O と同一 group に入る(safe に出ない)ことで「1 件目 O が in-flight の間 2 件目 N を
-#     出さない」を成立させる。prose は「占有者が居る group から dispatch 0」で N を持ち越す
-#     (占有者 O は inject 専用・非 dispatch)。
+#     grouping 層の事実として N が占有者 O と同一 group に入る(safe に出ない)ことだけを固定する。この
+#     grouping を根拠に prose 側が「占有者が居る group から dispatch 0」で N を持ち越し・占有者 O は inject
+#     専用で非 dispatch とする(占有者 / dispatch の意味づけは prose の判断・script は関知しない)。
 assert_collision "(o) #55 wait 占有者 inject -> N は占有者と同一 group(safe 非出現)" \
   '[{"id":"O","files":["harness-orchestrate.md"]},{"id":"N","files":["harness-orchestrate.md"]}]' \
   '{"groups":[["N","O"]],"safe":[]}'
-# (o-neg) 負の自己検証: 占有者 O を inject しないと N は単独 safe になり、live 占有者と同一ファイルへ
-#     2 件目が dispatch される(= issue #55 以前のバグ / DoD (ii) 違反)。占有者 inject が load-bearing で
-#     あることの証明(出力が (o) と反転する = (o) が vacuous でないことも兼ねる)。**同時に**、占有者 O が
-#     PR を作成し(pr.number 確定で inject 対象から外れ)抜けた次 tick 相当のモデルでもある — 占有者離脱後に
-#     N が safe = dispatch 可能になる(DoD (i) の直列進行: 1 件目が抜けたら 2 件目が進む)。
-assert_collision "(o-neg) #55 占有者 inject 無し -> N が safe(inject が load-bearing・占有者離脱後の進行)" \
+# (p) 負の自己検証(grouping 層のみ・(o) の対): 占有者 O を inject しない入力では N は単独 safe になり、
+#     inject した (o) では N が group 入りで safe から消える。**grouping 層で N の safe 有無が入力差
+#     (占有者ファイルの有無)で反転する**ことだけを固定する = (o) が vacuous でないことの証明。
+#     「占有者 inject が load-bearing」「占有者離脱後に N が直列進行する(DoD (i))」という占有者・多 tick
+#     semantics の解釈は prose 側の判断であって script は検証しない(冒頭ブロック・DoD (iv) 参照)。
+assert_collision "(p) #55 占有者 inject 無し -> N が safe((o) の対・入力差で safe が反転)" \
   '[{"id":"N","files":["harness-orchestrate.md"]}]' \
   '{"groups":[],"safe":["N"]}'
-# (q) redispatch R × 新規 eligible N が同一ファイル(占有者ゼロ・round3 経路 A)-> group [N,R] / safe=[]
-#     両者が同一の代表枠を争う。prose は step id 昇順で min id を代表 1 件だけ dispatch(高々 1 件)し
-#     他方を持ち越す(round3 で規則X/Y を一本化し decidable になった経路 — 「R も dispatch(2 件同時)」
-#     にはしない)。
+# (q) redispatch R × 新規 eligible N が同一ファイル(占有者ゼロ・経路 A)-> group [N,R] / safe=[]
+#     grouping 層では 2 候補が 1 group に入るだけ。prose 側が step id 昇順で min id を代表 1 件だけ
+#     dispatch(高々 1 件)し他方を持ち越す(規則X/Y の一本化で decidable — 「R も dispatch(2 件同時)」
+#     にはしない。この判断自体は prose 側・非検証)。
 assert_collision "(q) #55 redispatch × 新規 eligible 同一ファイル(経路 A)-> 1 group" \
   '[{"id":"N","files":["harness-orchestrate.md"]},{"id":"R","files":["harness-orchestrate.md"]}]' \
   '{"groups":[["N","R"]],"safe":[]}'
-# (r) 同一ファイルに live wait 占有者を共有しない redispatch R(R は独立ファイル)-> safe=[R]
-#     規則Y(round3 限定): 占有者を共有しない redispatch は #26/#71 機構どおり dispatch 経路に残る
-#     (safe = dispatch 対象)。占有者 O と同一ファイルの N のみが group 入り = 持ち越し。R は O とファイルを
-#     共有しないため止めない(締切 sink を殺さない)。
-assert_collision "(r) #55 占有者非共有の redispatch -> safe(dispatch 経路に残る)" \
+# (r) 占有者とも他候補ともファイルを共有しない redispatch R(R は完全に独立したファイル)-> safe=[R]
+#     規則Y(限定): 占有者を共有しない redispatch は #26/#71 機構どおり dispatch 経路に残す。ただし safe に
+#     落ちる条件は「占有者非共有」だけでは不十分で、**「占有者を共有せず かつ 他候補ともファイル非共有」**
+#     である(同ブロック (q) がその反例 — redispatch が非占有者 N と同一ファイルを共有すると group [N,R] 入りで
+#     safe に出ない。「占有者非共有 ⇔ safe」は成立しない)。ここでは R が run-smoke.sh を単独で持ち他と
+#     共有しないため safe(締切 sink を殺さない)。占有者 O と同一ファイルの N のみが group 入り。
+assert_collision "(r) #55 占有者とも他候補とも非共有の redispatch -> safe" \
   '[{"id":"R","files":["run-smoke.sh"]},{"id":"O","files":["harness-orchestrate.md"]},{"id":"N","files":["harness-orchestrate.md"]}]' \
   '{"groups":[["N","O"]],"safe":["R"]}'
-echo "[12/15] detect-dispatch-collision issue #55 grouping 層 OK (占有者 inject で N 非 safe / 占有者離脱後 N safe(負の自己検証) / redispatch×新規 経路A 1 group / 占有者非共有 redispatch は safe)"
+# (s) fail-closed 単独候補(X: Implementation Scope 欠落で files=[])× live wait 占有者 O
+#     -> groups=[["X"]] / safe=["O"](round2 🔴1 の回帰止め)
+#     script は files=[] の X を(他候補とファイルを共有しなくても)単独 group として groups に落とす
+#     (empty_ids 分岐)。この X は「占有者ゼロの単独 group」に見えるが、prose 側は fail-closed 持ち越し
+#     として扱い代表選出の母集団に含めない(= 代表 1 件 dispatch しない・常に次 tick へ持ち越す)。旧 round の
+#     ように占有者ゼロ group へ無差別に「代表 1 件」を適用すると、X が実際に O のファイルを触る場合に同一
+#     ファイル 2 件同時 in-flight(DoD (ii) 違反)を招く。占有者 O は非空 files の単独 safe = inject 専用で除外。
+#     ※検証できるのは「X が groups に落ちる」grouping 層まで。「X を代表選出しない」判断自体は prose 側・非検証。
+assert_collision "(s) #55 fail-closed 単独候補 × 占有者 -> X は groups(代表選出の母集団外)" \
+  '[{"id":"O","files":["harness-orchestrate.md"]},{"id":"X","files":[]}]' \
+  '{"groups":[["X"]],"safe":["O"]}'
+# (t) 負の自己検証(grouping 層のみ・(s) の対): (s) と占有者 O は同一で X の files だけを [] から
+#     非空・非共有(run-smoke.sh)へ変えると、X は groups から safe へ反転する。**fail-closed 分類(files=[])
+#     こそが X を groups(= 持ち越し母集団)へ落とす load-bearing な入力**であり、対象ファイルが判れば衝突
+#     しない X は safe = dispatch 可能になることを固定する((s) が vacuous でないことの証明)。
+assert_collision "(t) #55 fail-closed の対・X に非共有 files を与える -> X は safe に反転" \
+  '[{"id":"O","files":["harness-orchestrate.md"]},{"id":"X","files":["run-smoke.sh"]}]' \
+  '{"groups":[],"safe":["O","X"]}'
+echo "[12/15] detect-dispatch-collision issue #55 grouping 層 OK (占有者 inject で N 非 safe / (o) の対で safe 反転 / redispatch×新規 経路A 1 group / 占有者とも他候補とも非共有 redispatch は safe / fail-closed 単独候補は占有者が居ても groups(+ 非共有 files で safe に反転))"
 
 # 不正入力 (判定エラーと入力エラーの区別 — 他の decision script と同じ流儀)
 # (h) 配列でない入力 -> exit 2
