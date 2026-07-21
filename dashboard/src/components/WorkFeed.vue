@@ -103,8 +103,8 @@ const rows = computed(() => {
   margin: 0;
   padding: 0;
   list-style: none;
-  /* フィードは残り高さで内部スクロール (DESIGN.md 5.5) */
-  max-height: 420px;
+  /* 縦帯列 (App.vue .feed-col) が 1 ビューポート内スクロールを所有するため、内部の固定キャップ
+     (旧 max-height:420px) は外す (issue #97 🟡5)。列を持たない単体利用の保険として overflow-y は残す。 */
   overflow-y: auto;
 }
 

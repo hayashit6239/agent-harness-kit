@@ -9,7 +9,7 @@
  */
 import { computed, ref, watch, TransitionGroup } from 'vue';
 import type { KanbanCard, KanbanColumn, Phase, StepView, LedgerWarning } from '../lib/derive';
-import { deriveKanban, statusOwner } from '../lib/derive';
+import { colorGroup, deriveKanban, statusOwner } from '../lib/derive';
 
 const props = defineProps<{
   steps: StepView[];
@@ -55,14 +55,21 @@ function warningText(w: LedgerWarning): string {
 }
 
 /**
- * unknown 列は空なら出さない (流れの列ではなく警告列のため)。flow / terminal は空でも表示。
- * PR レーンの implementation-ready 列は表示側フィルタで常に隠す (issue #24 項目 2・決定事項:
- * derive.ts の PR_COLUMN_ORDER / derive.test.ts の enum 一致テストは変更しない。表示層のみで隠す。
- * 該当 step は fail-soft で単純に非表示 (現状 0 件・実害なしと issue 側で確認済み))。
+ * 表示する列の絞り込み (すべて表示層のみ・derive の列順定数と enum 一致テストは変更しない):
+ *   - unknown 列は空なら出さない (流れの列ではなく警告列のため)。
+ *   - 未着手 (null) flow 列はカードを持つときだけ表示する (issue #97 🔴2)。buildLane は全 step を
+ *     両レーンへ配置し「両フェーズ null の step」「PR レーンの未着手列 = いま issue フェーズにいる稼働
+ *     step 全部」は null 列にのみ現れるため、無条件に隠すと盤面から消える。空のときだけ畳む
+ *     (= unknown 列と同じ「空なら隠す」挙動へ揃える)。実運用では PR レーンの未着手列は常時カードを
+ *     持つため通常は表示され、混雑は既存の手動畳み (issue #34) で吸収できる。
+ *   - PR レーンの implementation-ready 列は常に隠す (issue #24 項目 2・常時 0 件・実害なしの空列。
+ *     「常時カードを載せる列」ではないので #97 の null 列とは別扱い)。
+ *   - flow (未着手以外) / terminal は空でも表示 (流れを見せる)。
  */
 function visibleColumns(phase: Phase, columns: KanbanColumn[]): KanbanColumn[] {
   return columns.filter((c) => {
     if (phase === 'pr' && c.status === 'implementation-ready') return false;
+    if (c.kind === 'flow' && c.status === null) return c.cards.length > 0;
     return c.kind !== 'unknown' || c.cards.length > 0;
   });
 }
@@ -74,7 +81,9 @@ function visibleColumns(phase: Phase, columns: KanbanColumn[]): KanbanColumn[] {
 function roleClass(phase: Phase, col: KanbanColumn): string {
   if (col.kind === 'unknown') return 'role-alert';
   const owner = statusOwner(phase, col.status);
-  return owner === null ? 'role-none' : `role-${owner}`;
+  // キャラ identity は 4 値だが列色は colorGroup で 2 色系 (developer / reviewer) へ写像する (issue #97 🟡2)。
+  // 既存 CSS 2 クラス (role-developer / role-reviewer) を据え置き、単一ソース (信号表由来の statusOwner) を保つ。
+  return owner === null ? 'role-none' : `role-${colorGroup(owner)}`;
 }
 
 function cardUrl(phase: Phase, card: KanbanCard): string {

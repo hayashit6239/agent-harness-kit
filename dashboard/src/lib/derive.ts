@@ -14,13 +14,36 @@
  *      仕事でもないため)。issue #88 で issue フェーズにも nfhr sink を新設したため、舞台フラグ
  *      escalate は issueEscalating || prEscalating のいずれかで立つ (エスカレーションだけが両レーンに
  *      跨る非対称 — celebrating は PR 専用)。列集約は phase 別 signal を使い cross-lane 誤点灯を防ぐ。
+ *   規則 5 (実装者 working 昇格・issue #97): issue='ready for implementation' かつ pr=null の step は
+ *     implementer を working (「実装中」) に昇格する。2 相にまたがる条件のため信号表 (issue status
+ *     単独キー) には置けず、折り畳み段の cross-phase 特例として derive() 内に置く (規則 1 の pr!=null
+ *     優先を侵さない = 昇格は pr=null の枝でのみ発火)。台帳に「実装中」専用 status が無い近似。
  * 未知 status は unknown として信号に数えず警告を返す (fail-soft)。
  */
 import type { Ledger, Step } from '../types';
 
-export type CharacterId = 'developer' | 'reviewer';
+/**
+ * ロールキャラの識別子 (issue #97 で 2 値 → 4 値へ拡張)。
+ *   implementer    = 実装者     (issue 'ready for implementation' 昇格 / pr 'implementation-ready')
+ *   responder      = 対応者     (レビュー指摘対応。issue / pr の completed review・starting review work)
+ *   pr-reviewer    = PR レビュー者   (pr の created pr / starting review / waiting for review)
+ *   issue-reviewer = Issue レビュー者 (issue の created issue / starting review / waiting for review)
+ */
+export type CharacterId = 'implementer' | 'responder' | 'pr-reviewer' | 'issue-reviewer';
 export type CharacterState = 'working' | 'waiting' | 'idle';
 export type Phase = 'issue' | 'pr';
+
+/**
+ * キャラ identity (4 値) → Kanban 列色の 2 色系への純粋写像 (issue #97 🟡2)。
+ * キャラ舞台は 4 ロール解像度を持つが、Kanban 列色は既存 CSS 2 クラス (role-developer / role-reviewer)
+ * と色トークン (--dev / --rev) を据え置く。implementer + responder = 制作側 (developer 系) /
+ * pr-reviewer + issue-reviewer = レビュー側 (reviewer 系)。列を 4 色へ増やす案は YAGNI で follow-up
+ * (列は status ラベルで既に判別可能)。単一ソース原則: 列色も信号表由来の statusOwner から導出する。
+ */
+export type ColorGroup = 'developer' | 'reviewer';
+export function colorGroup(id: CharacterId): ColorGroup {
+  return id === 'implementer' || id === 'responder' ? 'developer' : 'reviewer';
+}
 
 export interface Signal {
   character: CharacterId;
@@ -36,12 +59,14 @@ export interface Signal {
  * 舞台フラグで別扱い (規則 4)。PR フェーズ sink の issue 版 (issue #88)。
  */
 export const ISSUE_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = {
-  'created issue': { character: 'reviewer', kind: 'waiting', label: 'レビュー待ち' },
-  'starting review': { character: 'reviewer', kind: 'working', label: 'レビュー中' },
-  'completed review': { character: 'developer', kind: 'waiting', label: '対応待ち' },
-  'ready for implementation': { character: 'developer', kind: 'waiting', label: '実装着手待ち' },
-  'starting review work': { character: 'developer', kind: 'working', label: '指摘対応中' },
-  'waiting for review': { character: 'reviewer', kind: 'waiting', label: '再レビュー待ち' },
+  'created issue': { character: 'issue-reviewer', kind: 'waiting', label: 'レビュー待ち' },
+  'starting review': { character: 'issue-reviewer', kind: 'working', label: 'レビュー中' },
+  'completed review': { character: 'responder', kind: 'waiting', label: '対応待ち' },
+  // ready for implementation は信号表では waiting (「実装着手待ち」)。pr=null のときは derive() で
+  // implementer working (「実装中」) へ昇格する (規則 5・issue #97)。列色 (statusOwner) は本表由来。
+  'ready for implementation': { character: 'implementer', kind: 'waiting', label: '実装着手待ち' },
+  'starting review work': { character: 'responder', kind: 'working', label: '指摘対応中' },
+  'waiting for review': { character: 'issue-reviewer', kind: 'waiting', label: '再レビュー待ち' },
   'need for human review': null, // エスカレーション演出 (舞台フラグ・issue #88)
   'closed issue': null, // 終端
 };
@@ -53,14 +78,14 @@ export const ISSUE_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = 
  * 舞台フラグで別扱い (規則 4)。
  */
 export const PR_SIGNALS: Readonly<Record<string, Readonly<Signal> | null>> = {
-  'implementation-ready': { character: 'developer', kind: 'waiting', label: 'PR 作成待ち' },
-  'created pr': { character: 'reviewer', kind: 'waiting', label: 'レビュー待ち' },
-  'starting review': { character: 'reviewer', kind: 'working', label: 'レビュー中' },
-  'completed review': { character: 'developer', kind: 'waiting', label: '対応待ち' },
+  'implementation-ready': { character: 'implementer', kind: 'waiting', label: 'PR 作成待ち' },
+  'created pr': { character: 'pr-reviewer', kind: 'waiting', label: 'レビュー待ち' },
+  'starting review': { character: 'pr-reviewer', kind: 'working', label: 'レビュー中' },
+  'completed review': { character: 'responder', kind: 'waiting', label: '対応待ち' },
   'need for human review': null, // エスカレーション演出 (舞台フラグ)
   'ready for merge': null, // 祝い演出 (舞台フラグ)
-  'starting review work': { character: 'developer', kind: 'working', label: '指摘対応中' },
-  'waiting for review': { character: 'reviewer', kind: 'waiting', label: '再レビュー待ち' },
+  'starting review work': { character: 'responder', kind: 'working', label: '指摘対応中' },
+  'waiting for review': { character: 'pr-reviewer', kind: 'waiting', label: '再レビュー待ち' },
   'merged pr': null, // 終端
 };
 
@@ -186,8 +211,10 @@ function readStatus(raw: Record<string, unknown> | null): StatusRead {
 export function derive(ledger: Ledger): BoardState {
   const warnings: LedgerWarning[] = [];
   const characters: Record<CharacterId, CharacterView> = {
-    developer: { state: 'idle', tasks: [] },
-    reviewer: { state: 'idle', tasks: [] },
+    implementer: { state: 'idle', tasks: [] },
+    responder: { state: 'idle', tasks: [] },
+    'pr-reviewer': { state: 'idle', tasks: [] },
+    'issue-reviewer': { state: 'idle', tasks: [] },
   };
   let celebrate = false;
   let escalate = false;
@@ -258,7 +285,17 @@ export function derive(ledger: Ledger): BoardState {
     if (prStatus !== null) {
       if (pr.signal) applySignal(pr.signal, stepId, 'pr', prStatus);
     } else if (issue.signal && issueStatus !== null) {
-      applySignal(issue.signal, stepId, 'issue', issueStatus);
+      // 規則 5 (実装者 working 昇格・issue #97 🟡1 / 🟡C): issue='ready for implementation' かつ pr=null は
+      // 「実装作業ウィンドウ」の近似として implementer を working (「実装中」) に昇格する。この条件は 2 相に
+      // またがる (issue status ∧ pr=null) ため信号表 (issue status 単独キー) には書けず、折り畳み段の
+      // cross-phase 特例として置く。この枝は prStatus===null のときだけ通るので、規則 1 (pr!=null なら PR
+      // 信号優先) を侵さない — pr!=null では上の分岐が先に処理し昇格は発火しない。列色 (statusOwner) は
+      // 信号表の waiting 由来のまま (developer 系) で不変。
+      if (issueStatus === 'ready for implementation') {
+        applySignal({ character: 'implementer', kind: 'working', label: '実装中' }, stepId, 'issue', issueStatus);
+      } else {
+        applySignal(issue.signal, stepId, 'issue', issueStatus);
+      }
     }
 
     return {

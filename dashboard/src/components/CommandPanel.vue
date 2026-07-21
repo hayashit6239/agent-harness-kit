@@ -10,7 +10,8 @@ import { ref } from 'vue';
  * そのためフォーム部品はすべて disabled のモック表示。
  */
 
-const open = ref(true);
+// 既定は閉 (issue #97 DoD ②)。開くと細い開閉ストリップから指示センター本体が展開する。
+const open = ref(false);
 
 function toggle(): void {
   open.value = !open.value;
