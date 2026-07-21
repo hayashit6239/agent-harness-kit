@@ -476,6 +476,36 @@ step["issueReviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retr
 
 **issue #26 との共有面(既知の制限)**: 本節が追加する `subjective_escalate` は `scripts/decide-orchestrator-route.py` の `DECISION_TABLE` と `tests/smoke/run-smoke.sh` [8] を、issue #26(dispatch した子の生存監視と失敗の有界化・別 PR)と共有する。#26 は `implementer` に `timeout` outcome を追加し、`no_pr` の連続発生をリトライカウンタ(`reconcile-dispatch-marker.py`)で有界化する改修を別途進めている。**両 PR が並行して `implementer` ブロックへ新エントリを追加するため、どちらかが先に merge された後にもう一方を rebase する際は `DECISION_TABLE`(本ファイル同名スクリプト)・行数ガード(smoke [8])・本節の周辺で軽微なテキスト競合が起こりうる**(意味的な衝突ではなく、同じ辞書リテラルへの追記が近接するだけ)。加えて、`subjective_escalate`(実装役・PR 未作成)の「PR 未作成 → 書込なしで sink」という扱いは、現状 `no_pr`/`ambiguous` と同型の空状態であることを根拠にしているが、**#26 の `no_pr` 有界化(`no_pr_count` によるリトライ集約)が着地した後は、その根拠(`ledger_write=None` の一致)が保たれるか改めて確認する**(`route` は `no_pr`=skip・`subjective_escalate`=sink で元々異なるため、ここでの「同型」は `ledger_write=None` の一点のみであることに注意)。
 
+## discover→enqueue フェーズ(issue #78・#21 能力3 v1=A)
+
+**目的**: 「人間が台帳に step を足す」を「機械が発見して enqueue する」に置き換える(#21 能力3・オーナーが 2026-07-21 に v1=A を明示承認)。v1 の射程は **明示 opt-in ラベル方式(A)= enqueue の自動化**に限る — 発見源はラベル付き open issue のみで、真の discover 自動化(B: CI 失敗 / doc 乖離 / 監査 → 自動起票。LLM を伴う)は **Phase 3 epic #85 傘下の #102 へ切り出し済み**で本フェーズでは扱わない。
+
+**起動点(round2 🔴1)= tick-prep 領域の別レーン**。実行順は **「tick 冒頭 reconciliation」(全マーカーの reconcile 完了)の後・下記「配車テーブル」の選別(jq)の前**。これは step 駆動の配車テーブルとは**別レーン**であり、配車テーブルは従来どおり `issue.status` を読むだけで変えない(下記「配車テーブル」節末尾の (1) 不変)。discover が選別の**上流**で step を作るため、生成した step(`issue.status="created issue"`)は**同一 tick の選別(jq)から見える**ようになり、鶏卵問題(step を*作る* discover を step 駆動テーブルで選別できない)は配置で構造的に解消する — 配車テーブルが「step を作る step」を選ぶ必要がそもそも無い。enqueue された step は同一 tick の issue reviewer 選別に乗るが、1 tick 5 件上限を全カテゴリと共有し(issue reviewer は最低優先)、溢れれば次 tick へ持ち越す(step は台帳に残るため取りこぼしではない)。
+
+**主体(round2 🔴2)= 純関数 script + bounded label クエリ(LLM subagent ではない)**。v1=A は B(LLM を伴う自動起票)を #102 へ切り出し済みのため discover に LLM 判断が構造的に無く、「発見役」独立 subagent・dispatch prompt・`issueReviewLock` 同型の in-flight ロックは**不要**(discover は subagent dispatch ではなく tick 内の同期 script 呼出)。構成は 3 層:
+
+1. **network discover(orchestrator の I/O・散文・smoke 対象外=手動確認)**: 次を 1 回実行し、opt-in ラベル `discover` が付いた open issue の候補 `issue.number` を得る:
+   ```
+   gh issue list --repo <owner/repo> --label discover --state open --json number --jq '[.[].number]'
+   ```
+   - **クエリ失敗時は fail-soft(round3 🟡 L6)**: このクエリ自体が失敗(network 断 / auth 失効 / rate limit)したら、**その tick の discover は no-op で続行し、失敗を tick 報告に 1 行 surface する**(tick 全体は止めない)。これは「tick 開始時の前提整備」節の `git fetch`(「失敗は報告に留め tick を止めない」)と**同型の受容**。空結果(候補 0 件・クエリ成功)の no-op とは**別の失敗モード**であることに注意 — 空結果は下記 script に `candidates: []` として渡り no-op になるが、クエリ失敗はそもそも script に入力すら渡さず、この分岐で no-op に倒す。network 層のため smoke 対象外(手動確認境界)だが、fail-soft を実装裁量に落とさず本行で明記する。
+2. **純 enqueue/dedup(script・smoke 対象)**: 得た候補 numbers と現台帳 steps を `scripts/decide-enqueue-steps.py` へ渡し、追加すべき step 群を得る(既存 `reconcile-dispatch-marker.py` / `decide-orchestrator-route.py` と同型の pure decision script・stdin JSON → stdout・network 非依存・決定論):
+   ```
+   PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
+   ENQUEUE=$(jq -cn --argjson cand "<候補 numbers の JSON 配列>" --slurpfile plan "$PLAN" \
+     '{candidates: $cand, steps: $plan[0].steps}' \
+     | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-enqueue-steps.py")
+   # -> {"enqueue": [<追加 step>, ...]}   (空配列 = no-op)
+   ```
+   入出力契約 = `{候補 issue.number リスト, 現台帳 steps} → {追加 step 群 / no-op}`。この script が **dedup(dedup key=`issue.number` 一致・突合範囲=全 step(終端 `closed issue` / `merged pr` を含む)・終端後の再ラベル=no-op・round1 🔴2)/ batch 採番(同一 tick で複数候補を enqueue する際は max+1, max+2, … と逐次加算・round2 🟡2。固定値 DoD「1 件追加」は単一対象 happy-path として不変)/ step 雛形生成(`id`=既存台帳の形式に追随した max+1 の string(`P<n>` 台帳なら `P<max+1>`・純数値台帳なら `<max+1>`・issue #78 round1 🔴) / `issue={number:<N>, status:"created issue", githubState:"open"}` / `pr={number:null,...}` / `dependsOn` 省略・round1 🟡1)** をすべて決定論的に担う。空入力(候補 0 件)= no-op(round1 🟡2)。
+3. **台帳書込(orchestrator・単一 writer)**: orchestrator が script の返す `enqueue` 配列の各 step を**台帳の `steps` へ append する**(発見役は候補報告のみ・enqueue の台帳書込は orchestrator tick に集約する単一 writer 不変条件・round1 🔴3。discover subagent が直接台帳を書く経路は禁止)。append はローカル台帳の直接編集(F案・`git add`/`commit` はしない)。`enqueue` が空なら書込なし(no-op)。書込後、追加 step は同一 tick の選別(jq)から見える。
+
+**opt-in ラベル `discover` の provisioning(round1 🟢2 / round2 🟢)**: このラベルは `commands/harness-init.md` 手順 5 の `gh label create --force` 対象に含める(導入先 repo での移植性のため人作業にしない)。**`discover` ラベルは人間が issue に付ける*入力*ラベル**であり、orchestrator が付与/除去する status ラベル(`need for human review` / `ready for implementation` 等)とは別種のため、**「label_action の実行」節への create fallback は不要**(orchestrator は `discover` ラベルの存在だけを要求し付与/除去はしないので、label_action の同期対象は増えない)。
+
+**「配車テーブル」節末尾との関係 = 狭い supersede(round2 🔴3)**: 下記「配車テーブル」節末尾は 2 つを主張する — (1) 配車テーブルの issue サイド選別は台帳 `issue.status` を読むだけ、(2) 追加の GitHub ポーリングは実装しない。**(1) は不変**(discover フェーズは選別の上流の別レーンで、配車テーブル自体は従来どおり `issue.status` のみ読む)。#78 が supersede するのは **(2) のみ・かつ discover フェーズについてのみ**であり、これは #78 の承認済みの目的(「機械が発見して enqueue する」)の直接の帰結で新規のアーキ判断ではない。**頻度・コストの有界性**: discover は毎 tick 1 回の bounded な `gh issue list`(候補 number のみ返す 1 往復)。これは (a) tick-prep の毎 tick `git fetch origin --quiet`、(b) #11 の `--drift` 頻度増、と同型の**受容されたコスト**。間引き(N tick に 1 回)は follow-up の最適化で v1 要件ではない(v1 は git-fetch と同じ毎 tick で回す)。
+
+**テスト境界(round2 🟡1)**: network discover(label クエリ・上記 1.)は smoke 対象外=手動の最小動作確認。純 enqueue/dedup script(上記 2.)は smoke 対象で、`tests/smoke/run-smoke.sh` が既存の pure decision script([7]/[8]/[9])と同型に決定論検証する(dedup / batch 採番 / 空入力 / 終端突合 / step 雛形の境界 + 不正入力 exit 2)。
+
 ## 配車テーブル(PR ライフサイクル + issue フェーズ・issue #88)
 
 **`need for human review` ラベル付きの PR は無条件でスキップする**(ラベルの有無は各対象 step ごとに `gh pr view <n> --json labels` で確認)。**1 tick あたりの dispatch 上限は 5 件**(`${CLAUDE_PLUGIN_ROOT}/roles/pr-reviewer.md` の暴走防止パターンを踏襲)。**この上限は「tick 冒頭 reconciliation」の `redispatch` 候補も含めた合計に適用する**(redispatch だけを上限の外に置くと、複数 step が同時に締切超過した場合に 1 tick で 5 件を大きく超える dispatch が起こりうるため。詳細は下記「選別(jq)」節参照)。
@@ -494,7 +524,7 @@ step["issueReviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retr
 
 **注**: 終端は人間の専権だが、人間の明示指示がある場合のエージェントによる代行は例外として認められる — 詳細は `.harness/CLAUDE.harness.md`『終端の記録と merge 代行』節を参照。`reviewLock` の書込・解除の詳細は「reviewer / 対応役の in-flight ロック」節を参照。
 
-issue サイドの走査は台帳の `issue.status` を読むだけ(追加の GitHub ポーリングは実装しない)。
+issue サイドの走査は台帳の `issue.status` を読むだけ(追加の GitHub ポーリングは実装しない)。**(#78)** 上記「discover→enqueue フェーズ」がこの主張の **(2)「追加の GitHub ポーリングは実装しない」を、discover フェーズに限って狭く supersede する**(毎 tick 1 回の bounded な `gh issue list --label discover`。git fetch / `--drift` と同型の受容コスト)。**(1)「配車テーブルの選別は `issue.status` を読むだけ」は不変** — discover は選別の上流の別レーンで、配車テーブル自体は追加ポーリングしない。
 
 ### 選別(jq)
 
