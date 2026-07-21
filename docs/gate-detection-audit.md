@@ -75,15 +75,18 @@ Phase 2(有人自律運転 = `ready for merge` まで人間の中間介入ゼロ
 
 ## 注入対象プール(injection target pool)
 
-`scripts/` の pure decision script 5 本 + shell 実行体 2 本。
+`scripts/` の pure decision script 7 本 + shell 実行体 2 本(上流ソース = `docs/prose-decision-inventory.md`
+「現状の抽出実績」表・issue #87)。
 
 | 種別 | ファイル | smoke の検査セクション |
 |---|---|---|
 | decision script | `scripts/decide-orchestrator-route.py` | セク8 |
 | decision script | `scripts/detect-dispatch-collision.py` | セク12 |
+| decision script | `scripts/select-dispatch-representatives.py` | セク12(下流・代表選出・issue #87) |
 | decision script | `scripts/evaluate-stop-condition.py` | セク7 |
 | decision script | `scripts/reaggregate-has-blocker.py` | セク6 |
 | decision script | `scripts/reconcile-dispatch-marker.py` | セク9 |
+| decision script | `scripts/decide-statuses-post-action.py` | セク9(statusesPostFailCount・issue #54) |
 | shell 実行体 | `scripts/report-ledger-status.sh` | セク11(#82 で機能テスト拡充予定) |
 | shell 実行体 | `scripts/run-orchestrator-evidence-gate.sh` | セク11(#82 で機能テスト拡充予定) |
 
