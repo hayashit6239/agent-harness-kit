@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { CharacterId, CharacterState, CharacterView } from '../lib/derive';
+// ロールキャラのピクセルアート (issue #97 part3)。均一スレート bg を端 flood-fill color-key で透過済み
+// (dashboard/scripts/make-transparent.py)。Vite が import を URL 文字列へ解決する (*.png は vite/client 型)。
+import implementerImg from '../assets/chactor1.png';
+import responderImg from '../assets/chactor2.png';
+import prReviewerImg from '../assets/chactor3.png';
+import issueReviewerImg from '../assets/chactor4.png';
 
 /**
  * ピクセルオフィスステージ (issue #25 レイヤ4・DESIGN.md 第6章)。
@@ -34,30 +40,46 @@ interface Spot {
 }
 
 /**
- * オフィスの席割り (office_config 相当の宣言 — DESIGN.md 6.2)。
+ * オフィスの席割り (office_config 相当の宣言 — DESIGN.md 6.2)。issue #97 で 4 ロールへ拡張。
  * state → スポットの対応が「BoardState 由来の配置」の実体:
- *   working = 自席 (developer は制作デスク / reviewer はレビュー室のテーブル)
+ *   working = 自席 (実装者 / 対応者 = 制作デスク d1/d2 / PR・Issue レビュー者 = レビュー室のテーブル 2 席)
  *   waiting = 受信箱前 (待ち仕事を取りに行く)
  *   idle    = 休憩ラウンジのソファ (待機の長い社員はラウンジへ — 7 章の挙動)
+ * 座標は STAGE 620×420 論理系。4 体が重なりにくいよう分散配置 (最終的な微調整は手動目視スコープ)。
  */
 const SPOTS: Record<CharacterId, Record<CharacterState, Spot>> = {
-  developer: {
-    working: { x: 148, y: 218 },
-    waiting: { x: 252, y: 168 },
-    idle: { x: 448, y: 352 },
+  implementer: {
+    working: { x: 118, y: 216 },
+    waiting: { x: 205, y: 150 },
+    idle: { x: 382, y: 346 },
   },
-  reviewer: {
-    working: { x: 468, y: 178 },
-    waiting: { x: 322, y: 168 },
-    idle: { x: 548, y: 352 },
+  responder: {
+    working: { x: 228, y: 236 },
+    waiting: { x: 288, y: 170 },
+    idle: { x: 440, y: 362 },
+  },
+  'pr-reviewer': {
+    working: { x: 458, y: 150 },
+    waiting: { x: 392, y: 150 },
+    idle: { x: 500, y: 346 },
+  },
+  'issue-reviewer': {
+    working: { x: 548, y: 186 },
+    waiting: { x: 470, y: 170 },
+    idle: { x: 560, y: 362 },
   },
 };
 
-/** 画面上の表示名は「main developer / pr reviewer」、コード上の識別子は developer / reviewer (issue #9 決定事項) */
-const CHARACTER_META: Record<CharacterId, { label: string; face: string; workingNote: string }> = {
-  developer: { label: 'main developer', face: '🧑‍💻', workingNote: 'カタカタ実装・修正中…' },
-  reviewer: { label: 'pr reviewer', face: '🕵️', workingNote: 'じっくりレビュー中…' },
+/** ロールの表示名 + ピクセルアート + working 吹き出しの一言 (identity は derive の CharacterId・issue #97) */
+const CHARACTER_META: Record<CharacterId, { label: string; img: string; workingNote: string }> = {
+  implementer: { label: '実装者', img: implementerImg, workingNote: 'カタカタ実装中…' },
+  responder: { label: '対応者', img: responderImg, workingNote: '指摘に対応中…' },
+  'pr-reviewer': { label: 'PR レビュー者', img: prReviewerImg, workingNote: 'PR をじっくりレビュー中…' },
+  'issue-reviewer': { label: 'Issue レビュー者', img: issueReviewerImg, workingNote: 'Issue をじっくりレビュー中…' },
 };
+
+/** ステージ・舞台下リストで固定の描画順 (z-index は下記 actors で y 座標により別途決まる) */
+const CHARACTER_ORDER = ['implementer', 'responder', 'pr-reviewer', 'issue-reviewer'] as const;
 
 const STATE_LABEL: Record<CharacterState, string> = {
   working: '作業中',
@@ -72,7 +94,7 @@ const STATE_ICON: Record<CharacterState, string> = {
 };
 
 const actors = computed(() =>
-  (['developer', 'reviewer'] as const).map((id) => {
+  CHARACTER_ORDER.map((id) => {
     const view = props.characters[id];
     const spot = SPOTS[id][view.state];
     return {
@@ -109,7 +131,7 @@ function pieceStyle(i: number): Record<string, string> {
 
     <!-- モニター風ベゼル額装 (DESIGN.md 5.6) の中に論理座標系のシーンを敷く -->
     <div class="bezel">
-      <div class="scene" role="img" aria-label="AI オフィスの俯瞰図。developer と reviewer の稼働状況をキャラクターで表示">
+      <div class="scene" role="img" aria-label="AI オフィスの俯瞰図。実装者・対応者・PR レビュー者・Issue レビュー者の稼働状況をキャラクターで表示">
         <!-- レイヤ0: 背景 (CSS プレースホルダ。後で office_bg.png 1 枚絵へ差替え — 6.3) -->
         <div class="bg wall" aria-hidden="true">
           <span class="window w1"></span>
@@ -169,9 +191,10 @@ function pieceStyle(i: number): Record<string, string> {
             <p v-for="(task, i) in a.view.tasks.slice(0, 2)" :key="`${i}:${task}`" class="bubble-task">{{ task }}</p>
             <p v-if="a.view.tasks.length > 2" class="bubble-task bubble-more">…他 {{ a.view.tasks.length - 2 }} 件</p>
           </div>
-          <!-- レイヤ1: スプライト (絵文字プレースホルダ。生成スプライトが出来たら透過 PNG の <img> へ差替え — 6.3) -->
+          <!-- レイヤ1: スプライト (透過ピクセルアート PNG・issue #97 part3。image-rendering:pixelated + 共通表示高)。
+               working 時は .state-working .face の work-bob (上下ゆれ) で動く = option B (手足フレームは follow-up) -->
           <div class="sprite">
-            <span class="face">{{ a.meta.face }}</span>
+            <img class="face" :src="a.meta.img" :alt="a.meta.label" />
             <span class="shadow" aria-hidden="true"></span>
           </div>
           <!-- レイヤ2: 名前チップ (キャラ足元に追従 — 5.8) -->
@@ -184,7 +207,8 @@ function pieceStyle(i: number): Record<string, string> {
     <div class="assignments">
       <article v-for="a in actors" :key="a.id" class="assign" :data-character="a.id">
         <h2 class="assign-name">
-          {{ a.meta.face }} {{ a.meta.label }}
+          <img class="assign-face" :src="a.meta.img" alt="" aria-hidden="true" />
+          {{ a.meta.label }}
           <span class="assign-state" :class="`pill-${a.view.state}`">{{ STATE_LABEL[a.view.state] }}</span>
         </h2>
         <ul v-if="a.view.tasks.length" class="tasks">
@@ -222,6 +246,8 @@ function pieceStyle(i: number): Record<string, string> {
   --alert-bg: #4e1712;
   --alert-border: #c3372e;
   --alert-title: #f2c063;
+  /* キャラスプライトの共通表示高 (issue #97 🟡A)。元解像度がばらつく 4 体をこの高さへ揃える。手動調整可 */
+  --sprite-h: 46px;
 
   position: relative;
   padding: 14px 16px 16px;
@@ -467,9 +493,13 @@ function pieceStyle(i: number): Record<string, string> {
 .face {
   position: relative;
   z-index: 1;
-  font-size: 26px;
-  line-height: 1;
-  display: inline-block;
+  display: block;
+  /* 整数倍でない拡大でも nearest-neighbor でドット感を保つ (DESIGN.md 6.4)。元解像度は 4 体でばらつく
+     (chactor4 は他の約半分) が、共通の表示高 --sprite-h で on-screen サイズを揃える
+     (issue #97 🟡A の (b): 共通表示高 + width:auto で縦横比維持)。 */
+  height: var(--sprite-h, 46px);
+  width: auto;
+  image-rendering: pixelated;
 }
 
 .shadow {
@@ -477,7 +507,7 @@ function pieceStyle(i: number): Record<string, string> {
   bottom: -3px;
   left: 50%;
   transform: translateX(-50%);
-  width: 26px;
+  width: 30px;
   height: 7px;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.35);
@@ -531,10 +561,11 @@ function pieceStyle(i: number): Record<string, string> {
   white-space: nowrap;
 }
 
-/* レイヤ3: 状態吹き出し (キャラ上端・下向きしっぽ — 5.8) */
+/* レイヤ3: 状態吹き出し (キャラ上端・下向きしっぽ — 5.8)。
+   bottom は絵文字時代の 36px から、透過ピクセルアート (--sprite-h 46px) の頭上を確実に越える高さへ引き上げ */
 .bubble {
   position: absolute;
-  bottom: 36px;
+  bottom: 52px;
   left: 50%;
   transform: translateX(-50%);
   width: max-content;
@@ -693,12 +724,16 @@ function pieceStyle(i: number): Record<string, string> {
   background: var(--panel);
 }
 
-.assign[data-character='developer'] {
+/* キャラ 4 値 → 舞台下カードの色も colorGroup と同じ 2 色系へ写像 (issue #97 🟡2 と整合):
+   実装者 + 対応者 = developer 系 (琥珀) / PR・Issue レビュー者 = reviewer 系 (青緑) */
+.assign[data-character='implementer'],
+.assign[data-character='responder'] {
   --role: var(--dev);
   --role-dim: var(--dev-dim);
 }
 
-.assign[data-character='reviewer'] {
+.assign[data-character='pr-reviewer'],
+.assign[data-character='issue-reviewer'] {
   --role: var(--rev);
   --role-dim: var(--rev-dim);
 }
@@ -711,6 +746,14 @@ function pieceStyle(i: number): Record<string, string> {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 舞台下リストのロール見出しに添える小さなピクセルアート (絵文字 face の置き換え・issue #97) */
+.assign-face {
+  height: 22px;
+  width: auto;
+  image-rendering: pixelated;
+  flex: none;
 }
 
 .assign-state {

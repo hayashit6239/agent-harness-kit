@@ -98,13 +98,21 @@ function formatTime(iso: string): string {
       <span v-if="ledger">— 前回取得分を表示しています (ポーリング継続中)</span>
     </div>
 
+    <!--
+      4 段 grid (issue #97 🟡5): 指示センター (既定閉の開閉ストリップ) | 作業フィード (縦帯) |
+      カンバン 2 レーン | キャラステージ。WorkFeed を旧・右側柱 (.side) から独立列へ移し、
+      .side はステージ単独にした。狭い画面では単一列へ縦積み (指示センター → カンバン → WorkFeed → ステージ)。
+    -->
     <main v-if="board" class="layout">
-      <!-- 左: コマンド送信パネル (枠 + 開閉のみ — issue #25 レイヤ6。実送信は別 issue) -->
+      <!-- 1: コマンド送信パネル (枠 + 開閉のみ — issue #25 レイヤ6。実送信は別 issue) -->
       <CommandPanel class="command" />
-      <KanbanBoard :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
+      <!-- 2: 作業フィード (指示センターとカンバンの間の縦帯 — issue #97 🟡5) -->
+      <WorkFeed class="feed-col" :items="feed" :now="fetchedAt" />
+      <!-- 3: カンバン 2 レーン -->
+      <KanbanBoard class="board" :steps="board.steps" :warnings="board.warnings" :repo-slug="repoSlug" />
+      <!-- 4: キャラステージ (右側柱・ステージ単独) -->
       <aside class="side">
         <CharacterStage :characters="board.characters" :celebrate="board.celebrate" :escalate="board.escalate" />
-        <WorkFeed :items="feed" :now="fetchedAt" />
       </aside>
     </main>
     <p v-else-if="!errorMessage" class="loading mono">台帳を読み込み中<span class="cursor">▋</span></p>
@@ -120,14 +128,14 @@ function formatTime(iso: string): string {
 }
 
 /*
- * 左パネル (auto = 開閉で伸縮) + カンバン (可変幅) + 右側柱 (ステージ + フィード) の 3 段組。
- * 右側柱 (.side) は画面全体の約 1/3 を目標に可変化 (issue #34)。
- * 母数 = この .layout の inline 幅 (.dashboard の content 幅・max-width 1720px 基準)。
- * 下限 360px (旧固定値を維持) / 目標 33%。等分ではなく「下限つき比率上限」方式。
+ * 4 段組 (issue #97 🟡5): 指示センター (auto = 開閉で伸縮) | 作業フィード (縦帯) |
+ * カンバン (可変幅) | キャラステージ (右側柱・約 1/3 目標で可変・issue #34)。
+ * WorkFeed を旧・右側柱から独立列へ移設。母数 = この .layout の inline 幅
+ * (.dashboard の content 幅・max-width 1720px 基準)。列幅の具体値は手動目視で調整可 (part2 は手動確認スコープ)。
  */
 .layout {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(360px, 33%);
+  grid-template-columns: auto minmax(230px, 288px) minmax(0, 1fr) minmax(340px, 31%);
   gap: 18px;
   align-items: start;
 }
@@ -137,6 +145,18 @@ function formatTime(iso: string): string {
   top: 16px;
 }
 
+/*
+ * 作業フィード列: 列自身が 1 ビューポート内スクロールを所有する (issue #97 🟡5)。
+ * WorkFeed 内部の max-height:420px キャップは列所有により緩める (WorkFeed.vue 側で解除)。
+ */
+.feed-col {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+/* 右側柱はステージ単独 (WorkFeed 移設後)。ステージが縦に伸びても 1 ビューポートに収める */
 .side {
   position: sticky;
   top: 16px;
@@ -147,15 +167,32 @@ function formatTime(iso: string): string {
   overflow-y: auto;
 }
 
-/* 幅が足りない画面では縦積みに戻す (キャラは下段) */
+/*
+ * 幅が足りない画面では単一列へ縦積み (issue #97 🟡5)。
+ * 順序: 指示センター → カンバン → WorkFeed → ステージ (order で DOM 順を上書き)。
+ */
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: minmax(0, 1fr);
   }
-  .side,
-  .command {
+  .command,
+  .feed-col,
+  .side {
     position: static;
   }
+  .command {
+    order: 1;
+  }
+  .board {
+    order: 2;
+  }
+  .feed-col {
+    order: 3;
+  }
+  .side {
+    order: 4;
+  }
+  .feed-col,
   .side {
     max-height: none;
     overflow-y: visible;
