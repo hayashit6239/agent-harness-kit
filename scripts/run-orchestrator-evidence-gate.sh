@@ -52,7 +52,7 @@ print(done)
 PY
 )
 if [ -z "$EVIDENCE_DONE" ]; then
-  echo "::error:: 台帳の evidence.done / evidence.test が空(未設定)" >&2
+  echo "::error:: run-orchestrator-evidence-gate: 台帳の evidence.done / evidence.test が空(未設定)" >&2
   exit 1
 fi
 
