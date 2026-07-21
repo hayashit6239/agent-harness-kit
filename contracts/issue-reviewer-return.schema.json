@@ -2,28 +2,28 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "issue-reviewer-return.schema.json",
   "title": "issue-reviewer-return",
-  "description": "issue reviewer(judge)が orchestrator(`commands/harness-orchestrate.md`「issue reviewer」節)へ返す JSON の形を規定する。PR フェーズの `reviewer-return.schema.json` を issue フェーズへ対称に写したもの。issue reviewer 自身は台帳(`.harness/plan-progress.json`)・ラベルへ直接書き込まず、この形の値を返すだけに留める(doer≠judge・単一書込主体は orchestrator)。orchestrator はこの値を検証してから issue.status の遷移・ラベル同期・reports[] の代筆を行う。判定確定時は has_blocker/blocker_count/escalate/review_markdown の 4 フィールドを返し、レビュー中に人間の判断が必要と感じた場合は、これに加えて escalate_to_human を返してよい(`rules/escalate-to-human.md` 準拠。他フィールドとの共存可 — 客観的な escalate(round/blocker trend の停止条件)とは独立のシグナルで排他ではない)。この形は skill 出力(`reviewing-github-issues` が返す `{review_markdown, has_blocker, recommended_label?}`)の superset であり、dispatch wrapper(`roles/issue-reviewer-dispatch.md`)が blocker_count(review_markdown の 🔴 件数を計数)・escalate(`scripts/evaluate-stop-condition.py` を呼んで補完)・marker(投稿コメント末尾の `<!-- harness-review-issue: round=N has_blocker=B blocker_count=M escalate=E -->`。PR 正準 `harness-review-pr` と同型で `escalate=` 欄も持つ・round1 🟡8/🟡9)を補完する。skill が返す任意 recommended_label は dispatch wrapper が捨てる(issue に適用しない・本契約に載せない)— ラベル同期は単一書込主体 orchestrator の専権で issue フェーズラベルは `need for human review` のみ(sink 時に orchestrator が付与)。issue 側には PR の `reaggregate-has-blocker.py` に相当する再集計 script は無い(多 source ゴム印対策は不要な単一 source のため blocker_count = 🔴 件数で足りる)。",
+  "description": "issue reviewer(judge)が orchestrator(`commands/harness-orchestrate.md`「issue reviewer」節)へ返す JSON の形を規定する。PR フェーズの `reviewer-return.schema.json` を issue フェーズへ対称に写したもの。issue reviewer 自身は台帳(`.harness/plan-progress.json`)・ラベルへ直接書き込まず、この形の値を返すだけに留める(doer≠judge・単一書込主体は orchestrator)。orchestrator はこの値を検証してから issue.status の遷移・ラベル同期・reports[] の代筆を行う。判定確定時は has_blocker/blocker_count/escalate/review_markdown の 4 フィールドを返し、レビュー中に人間の判断が必要と感じた場合は、これに加えて escalate_to_human を返してよい(`rules/escalate-to-human.md` 準拠。他フィールドとの共存可 — 客観的な escalate(round/blocker trend の停止条件)とは独立のシグナルで排他ではない)。この形は判定エンジンの出力の superset である。判定エンジンは 2 モード(issue #93): 既定 `ISSUE_REVIEW_MODE=spec` は kit 同梱 spec `roles/issue-reviewer.md`(8 観点 / 3 ファミリー rubric を inline・可搬)を実行し、opt-in `ISSUE_REVIEW_MODE=skill` は個人 skill `reviewing-github-issues` へ委譲する(PR 側の既定 `code-review` / opt-in `multi-angle` と対称・skill 不在時は既定 spec へ fail-soft)。どちらのモードもレビュー本文 + `has_blocker`(🔴 が 1 件以上で true)を produce し、dispatch wrapper(`roles/issue-reviewer-dispatch.md`)が blocker_count(review_markdown の 🔴 件数を計数)・escalate(`scripts/evaluate-stop-condition.py` を呼んで補完)・marker(投稿コメント末尾の `<!-- harness-review-issue: round=N has_blocker=B blocker_count=M escalate=E -->`。PR 正準 `harness-review-pr` と同型で `escalate=` 欄も持つ・round1 🟡8/🟡9)を補完する。opt-in skill が返す任意 recommended_label は dispatch wrapper が捨てる(issue に適用しない・本契約に載せない)— ラベル同期は単一書込主体 orchestrator の専権で issue フェーズラベルは `need for human review` のみ(sink 時に orchestrator が付与)。issue 側には PR の `reaggregate-has-blocker.py` に相当する再集計 script は無い(多 source ゴム印対策は不要な単一 source のため blocker_count = 🔴 件数で足りる)。",
   "type": "object",
   "additionalProperties": false,
   "required": ["has_blocker", "blocker_count", "escalate", "review_markdown"],
   "properties": {
     "has_blocker": {
       "type": "boolean",
-      "description": "🔴 の finding が 1 件以上あるか(`reviewing-github-issues` skill の出力。issue reviews は arch/google のような source 区別が無い単一 source のため、🔴 の有無がそのまま has_blocker)。orchestrator の outcome 解決(`clean_pass`/`blockers`)に使う。"
+      "description": "🔴 の finding が 1 件以上あるか(判定エンジン(既定=kit spec `roles/issue-reviewer.md` / opt-in=個人 skill `reviewing-github-issues`・issue #93)の出力。issue reviews は arch/google のような source 区別が無い単一 source のため、🔴 の有無がそのまま has_blocker)。orchestrator の outcome 解決(`clean_pass`/`blockers`)に使う。"
     },
     "blocker_count": {
       "type": "integer",
       "minimum": 0,
-      "description": "blocker(🔴)件数。skill は blocker_count を返さないため、dispatch wrapper が review_markdown の 🔴 件数を計数して補完する(PR 側の `reaggregate-has-blocker.py` に相当する再集計 script は issue 側では新設しない)。停止条件判定(round_flag/trend_flag)の履歴推移(直近マーカーとの比較)に使う。"
+      "description": "blocker(🔴)件数。判定エンジン(spec / skill いずれのモードも)は blocker_count を返さないため、dispatch wrapper が review_markdown の 🔴 件数を計数して補完する(PR 側の `reaggregate-has-blocker.py` に相当する再集計 script は issue 側では新設しない)。停止条件判定(round_flag/trend_flag)の履歴推移(直近マーカーとの比較)に使う。"
     },
     "escalate": {
       "type": "boolean",
-      "description": "停止条件(round_flag/trend_flag)による客観的エスカレーション(`scripts/evaluate-stop-condition.py` の出力。同 script は無改修で流用 — marker パーサが prefix 非依存のため issue-review マーカーをそのまま渡せる)。skill は escalate を produce しないため dispatch wrapper が評価器を呼んで補完する。true 時の orchestrator 側の遷移手順は `commands/harness-orchestrate.md`「ルーティング判定」節が唯一の正(ここでは複製しない)。escalate_to_human(主観的エスカレーション)とは独立のシグナル。"
+      "description": "停止条件(round_flag/trend_flag)による客観的エスカレーション(`scripts/evaluate-stop-condition.py` の出力。同 script は無改修で流用 — marker パーサが prefix 非依存のため issue-review マーカーをそのまま渡せる)。判定エンジン(spec / skill)は escalate を produce しないため dispatch wrapper が評価器を呼んで補完する。true 時の orchestrator 側の遷移手順は `commands/harness-orchestrate.md`「ルーティング判定」節が唯一の正(ここでは複製しない)。escalate_to_human(主観的エスカレーション)とは独立のシグナル。"
     },
     "review_markdown": {
       "type": "string",
       "minLength": 1,
-      "description": "`reviewing-github-issues` skill が生成したレビュー本文(dispatch wrapper が末尾に `<!-- harness-review-issue: round=N has_blocker=B blocker_count=M escalate=E -->` マーカーを埋め込み、`# Issue Reviewer - レビュー実施` を H1 として issue へ投稿する。投稿は dispatch wrapper の責務。この値は tick 報告用に返す)。findings 0 件の場合も空文字列ではなく本文(『findings 0 件 ✅』等)を返す。"
+      "description": "判定エンジン(既定=kit spec `roles/issue-reviewer.md` / opt-in=個人 skill `reviewing-github-issues`)が生成したレビュー本文(dispatch wrapper が末尾に `<!-- harness-review-issue: round=N has_blocker=B blocker_count=M escalate=E -->` マーカーを埋め込み、`# Issue Reviewer - レビュー実施` を H1 として issue へ投稿する。投稿は dispatch wrapper の責務。この値は tick 報告用に返す)。findings 0 件の場合も空文字列ではなく本文(『findings 0 件 ✅』等)を返す。"
     },
     "escalate_to_human": {
       "type": "object",
