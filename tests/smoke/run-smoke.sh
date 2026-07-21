@@ -2045,7 +2045,29 @@ assert_enqueue "(h) 既存 step 無し -> 起点 id=1" \
 assert_enqueue "(i) 非数値 id は max 計算から除外 -> 数値 max+1" \
   '{"candidates":[78],"steps":[{"id":"seed","issue":{"number":40,"status":"closed issue","githubState":"closed"},"pr":{"number":null,"status":null,"githubState":null}},{"id":"3","issue":{"number":41,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}' \
   '{"enqueue":[{"id":"4","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
-echo "[16/17] decide-enqueue-steps 判定ケース OK (単一追加/冪等 no-op/batch 採番/batch 内重複/空入力/終端突合/起点 id/非数値 id 除外)"
+# --- `P<n>` id 規約への追随 (issue #78 round1 🔴・PR #103) --------------------------------------
+# この repo の実台帳は `P1`..`P21` のような `P<n>` 形式を採る。旧実装は `int(sid)` で `P<n>` を
+# 全除外し起点を 1 に落としていた (P<n> 台帳へ enqueue すると id が "P22" ではなく "1" になり
+# 名前空間が分断される)。新規 id は既存台帳の形式に追随して `P<max+1>` を返すことを lock する。
+# `P<n>` step の共通フラグメント (id=P1,P2,P7 / 数値部の最大は 7 -> 起点 P8。数値部の "max" であって
+# "件数" でないことも同時に検証する)。
+STEP_P1='{"id":"P1","issue":{"number":60,"status":"closed issue","githubState":"closed"},"pr":{"number":11,"status":"merged pr","githubState":"merged"}}'
+STEP_P2='{"id":"P2","issue":{"number":61,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}'
+STEP_P7='{"id":"P7","issue":{"number":62,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}'
+STEPS_P="$STEP_P1,$STEP_P2,$STEP_P7"
+# (a2) `P<n>` 台帳: 単一候補 -> `P<max+1>` (P7 が最大 -> P8。int(sid) 版は "1" に落ちて失敗する)
+assert_enqueue "(a2) P<n> 台帳: 単一候補 -> P<max+1>" \
+  "{\"candidates\":[78],\"steps\":[$STEPS_P]}" \
+  '{"enqueue":[{"id":"P8","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+# (d2) `P<n>` 台帳 batch: 新規 2 件 -> `P<max+1>,P<max+2>` (P8,P9 の逐次加算・同形式)
+assert_enqueue "(d2) P<n> 台帳 batch: 新規2件 -> P<max+1>,P<max+2>" \
+  "{\"candidates\":[78,79],\"steps\":[$STEPS_P]}" \
+  '{"enqueue":[{"id":"P8","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}},{"id":"P9","issue":{"number":79,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+# (i2) `P<n>` + 非数値 id 混在: 非数値 (seed) を除外し `P<n>` 形式で採番 (P7 が最大 -> P8)
+assert_enqueue "(i2) P<n>+非数値 id 混在 -> 非数値除外して P<max+1>" \
+  "{\"candidates\":[78],\"steps\":[{\"id\":\"seed\",\"issue\":{\"number\":40,\"status\":\"closed issue\",\"githubState\":\"closed\"},\"pr\":{\"number\":null,\"status\":null,\"githubState\":null}},$STEP_P7]}" \
+  '{"enqueue":[{"id":"P8","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+echo "[16/17] decide-enqueue-steps 判定ケース OK (単一追加/冪等 no-op/batch 採番/batch 内重複/空入力/終端突合/起点 id/非数値 id 除外/P<n> 形式追随)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — 他の decision script と同じ流儀)
 # (j) candidates キー欠損 -> exit 2

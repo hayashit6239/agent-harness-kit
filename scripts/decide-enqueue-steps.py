@@ -21,12 +21,16 @@ python3 標準ライブラリのみの 1 ファイル。
     `closed issue` / `merged pr` を含む)。**終端後の再ラベル = no-op** — 一度 enqueue した
     `issue.number` は終端済みでも再 enqueue しない。全 step を突合対象にするため、終端 step の
     `issue.number` に一致する候補は自然に no-op になる (status を見ずに number だけで閉じる)。
-  - **batch 採番 = max+1, max+2, … 逐次加算** (round2 🟡2)。既存 step の最大 id (数値 string と
-    見なせるもの) + 1 を起点に、dedup を通過した候補へ連番を振る。同一 tick で N 件同時 enqueue
-    しても衝突しない (単一 writer 不変条件は tick 跨ぎの衝突しか防がないため、batch 内の連番は
-    本 script が振る)。既存 step が無ければ起点は 1。
+  - **batch 採番 = max+1, max+2, … 逐次加算** (round2 🟡2)。既存 step の id を **英字 prefix +
+    数値部** に分解し、最大の数値部 + 1 を起点に dedup を通過した候補へ連番を振る。同一 tick で
+    N 件同時 enqueue しても衝突しない (単一 writer 不変条件は tick 跨ぎの衝突しか防がないため、
+    batch 内の連番は本 script が振る)。既存 step が無ければ起点は 1。
+  - **新規 id は既存台帳の形式に追随する** (issue #78 round1 🔴)。この repo の実台帳は `P1`..`P21`
+    のような **`P<n>` 形式** を採るため、`P<n>` 台帳へ enqueue すると新 id は `P<max+1>` になる
+    (旧実装は `int(sid)` で `P<n>` を全除外し起点を 1 に落とす = id 名前空間の分断だった)。純数値
+    台帳なら従来どおり `<max+1>`。採番スキーム (prefix と最大数値) は `_id_scheme` を参照。
   - **step 雛形** (round1 🟡1・schema `step.required=[id, issue, pr]` を充足):
-      {"id": "<max+1 以降の string>",
+      {"id": "<既存形式の max+1 以降の string。例: P<n> 台帳なら P22>",
        "issue": {"number": <N>, "status": "created issue", "githubState": "open"},
        "pr": {"number": null, "status": null, "githubState": null}}
     `dependsOn` は付けない (自動 enqueue step は依存なし = 常に eligible)。`created issue` は
@@ -57,6 +61,7 @@ round3 🟡 L6) は、その前段の orchestrator prose の責務。本 script 
 """
 
 import json
+import re
 import sys
 
 
@@ -85,27 +90,53 @@ def _existing_numbers(steps):
     return numbers
 
 
-def _max_id(steps):
-    """既存 step の id を数値 string と見なして最大値を返す (batch 採番の起点)。数値化できない
-    id は max 計算から除外する (新規 id は数値なので非数値 id とは衝突しない)。数値 id が
-    1 つも無ければ 0 を返す (起点 = max+1 = 1)。"""
-    current_max = 0
+# id を (英字 prefix, 数値部) に分解する regex。`P21` -> ("P", 21) / `21` -> ("", 21)。
+# 数値部を持たない id (`seed` 等) や規約外の形 (`P1x` 等) はマッチせず max 計算から除外する。
+_ID_RE = re.compile(r"^([A-Za-z]*)([0-9]+)$")
+
+
+def _parse_id(sid):
+    """id string を (prefix, numeric) に分解する。数値部を抽出できなければ None。
+    `P21` -> ("P", 21) / `3` -> ("", 3) / `seed` -> None / `P1x` -> None。"""
+    if not isinstance(sid, str):
+        return None
+    m = _ID_RE.match(sid.strip())
+    if m is None:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def _id_scheme(steps):
+    """既存 step の id から採番スキーム (prefix, 最大数値) を導く (batch 採番の起点)。
+
+    この repo の実台帳は `P1`..`P21` のような **`P<n>` 形式** を採る (schema `step.id` は
+    パターン制約なしの string なので実際の規約は台帳側が握る)。旧実装は `int(sid)` で純数値
+    string しか解析できず、`P<n>` id を全除外して起点を 1 に落としていた (id 名前空間の分断・
+    issue #78 round1 🔴)。ここでは id の **英字 prefix と数値部を regex で分離**し:
+      - 最大の数値部を持つ id の prefix を新規 id の prefix として採用する
+        (uniform な `P<n>` 台帳なら常に `P`、純数値台帳なら空文字 = 後方互換で `<max+1>`)。
+      - 数値部を抽出できない id (`seed` 等) は max 計算から除外する (寛容に読み飛ばす)。
+    prefix と数値混在の台帳では「最大数値を持つ id の prefix」を採るのが決定論的な tie-break。
+    数値部を持つ id が 1 つも無ければ ("", 0) を返す (起点 = ""+1 = "1"・従来どおり)。
+    """
+    best_prefix = ""
+    best_num = 0
+    found = False
     for step in steps:
-        sid = step.get("id")
-        if isinstance(sid, str):
-            try:
-                n = int(sid)
-            except ValueError:
-                continue
-            if n > current_max:
-                current_max = n
-    return current_max
+        parsed = _parse_id(step.get("id"))
+        if parsed is None:
+            continue
+        prefix, num = parsed
+        if not found or num > best_num:
+            best_prefix, best_num, found = prefix, num, True
+    return best_prefix, best_num
 
 
 def decide_enqueue(candidates, steps):
     """候補 issue.number 群と現台帳 steps から、追加すべき step 群を返す (純関数・決定論)。"""
     existing = _existing_numbers(steps)
-    next_id = _max_id(steps) + 1
+    prefix, current_max = _id_scheme(steps)
+    next_num = current_max + 1
     enqueue = []
     seen = set()  # batch 内で既に enqueue した number (batch 内重複の dedup)
     for number in candidates:
@@ -114,11 +145,12 @@ def decide_enqueue(candidates, steps):
             continue
         seen.add(number)
         enqueue.append({
-            "id": str(next_id),
+            # 既存 id と同じ形式で採番する (`P<n>` 台帳なら `P<max+1>`、純数値台帳なら `<max+1>`)。
+            "id": f"{prefix}{next_num}",
             "issue": {"number": number, "status": "created issue", "githubState": "open"},
             "pr": {"number": None, "status": None, "githubState": None},
         })
-        next_id += 1
+        next_num += 1
     return {"enqueue": enqueue}
 
 
