@@ -491,12 +491,13 @@ step["issueReviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retr
    - **クエリ失敗時は fail-soft(round3 🟡 L6)**: このクエリ自体が失敗(network 断 / auth 失効 / rate limit)したら、**その tick の discover は no-op で続行し、失敗を tick 報告に 1 行 surface する**(tick 全体は止めない)。これは「tick 開始時の前提整備」節の `git fetch`(「失敗は報告に留め tick を止めない」)と**同型の受容**。空結果(候補 0 件・クエリ成功)の no-op とは**別の失敗モード**であることに注意 — 空結果は下記 script に `candidates: []` として渡り no-op になるが、クエリ失敗はそもそも script に入力すら渡さず、この分岐で no-op に倒す。network 層のため smoke 対象外(手動確認境界)だが、fail-soft を実装裁量に落とさず本行で明記する。
 2. **純 enqueue/dedup(script・smoke 対象)**: 得た候補 numbers と現台帳 steps を `scripts/decide-enqueue-steps.py` へ渡し、追加すべき step 群を得る(既存 `reconcile-dispatch-marker.py` / `decide-orchestrator-route.py` と同型の pure decision script・stdin JSON → stdout・network 非依存・決定論):
    ```
+   PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
    ENQUEUE=$(jq -cn --argjson cand "<候補 numbers の JSON 配列>" --slurpfile plan "$PLAN" \
      '{candidates: $cand, steps: $plan[0].steps}' \
      | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-enqueue-steps.py")
    # -> {"enqueue": [<追加 step>, ...]}   (空配列 = no-op)
    ```
-   入出力契約 = `{候補 issue.number リスト, 現台帳 steps} → {追加 step 群 / no-op}`。この script が **dedup(dedup key=`issue.number` 一致・突合範囲=全 step(終端 `closed issue` / `merged pr` を含む)・終端後の再ラベル=no-op・round1 🔴2)/ batch 採番(同一 tick で複数候補を enqueue する際は max+1, max+2, … と逐次加算・round2 🟡2。固定値 DoD「1 件追加」は単一対象 happy-path として不変)/ step 雛形生成(`id`=既存 max+1 の string / `issue={number:<N>, status:"created issue", githubState:"open"}` / `pr={number:null,...}` / `dependsOn` 省略・round1 🟡1)** をすべて決定論的に担う。空入力(候補 0 件)= no-op(round1 🟡2)。
+   入出力契約 = `{候補 issue.number リスト, 現台帳 steps} → {追加 step 群 / no-op}`。この script が **dedup(dedup key=`issue.number` 一致・突合範囲=全 step(終端 `closed issue` / `merged pr` を含む)・終端後の再ラベル=no-op・round1 🔴2)/ batch 採番(同一 tick で複数候補を enqueue する際は max+1, max+2, … と逐次加算・round2 🟡2。固定値 DoD「1 件追加」は単一対象 happy-path として不変)/ step 雛形生成(`id`=既存台帳の形式に追随した max+1 の string(`P<n>` 台帳なら `P<max+1>`・純数値台帳なら `<max+1>`・issue #78 round1 🔴) / `issue={number:<N>, status:"created issue", githubState:"open"}` / `pr={number:null,...}` / `dependsOn` 省略・round1 🟡1)** をすべて決定論的に担う。空入力(候補 0 件)= no-op(round1 🟡2)。
 3. **台帳書込(orchestrator・単一 writer)**: orchestrator が script の返す `enqueue` 配列の各 step を**台帳の `steps` へ append する**(発見役は候補報告のみ・enqueue の台帳書込は orchestrator tick に集約する単一 writer 不変条件・round1 🔴3。discover subagent が直接台帳を書く経路は禁止)。append はローカル台帳の直接編集(F案・`git add`/`commit` はしない)。`enqueue` が空なら書込なし(no-op)。書込後、追加 step は同一 tick の選別(jq)から見える。
 
 **opt-in ラベル `discover` の provisioning(round1 🟢2 / round2 🟢)**: このラベルは `commands/harness-init.md` 手順 5 の `gh label create --force` 対象に含める(導入先 repo での移植性のため人作業にしない)。**`discover` ラベルは人間が issue に付ける*入力*ラベル**であり、orchestrator が付与/除去する status ラベル(`need for human review` / `ready for implementation` 等)とは別種のため、**「label_action の実行」節への create fallback は不要**(orchestrator は `discover` ラベルの存在だけを要求し付与/除去はしないので、label_action の同期対象は増えない)。
