@@ -7,6 +7,10 @@ import implementerImg from '../assets/chactor1.png';
 import responderImg from '../assets/chactor2.png';
 import prReviewerImg from '../assets/chactor3.png';
 import issueReviewerImg from '../assets/chactor4.png';
+// オフィス俯瞰の背景 1 枚絵 (issue #104)。author 提供のピクセルアート (488×339) をレイヤ0 背景に敷く。
+// 焼き込みキャラ矩形は dashboard/scripts/clean-office-bg.py で木床パターンへ塗り潰し済み
+// (ライブキャラとの二重表示を防ぐ・DoD③)。
+import officeBgImg from '../assets/office.png';
 
 /**
  * ピクセルオフィスステージ (issue #25 レイヤ4・DESIGN.md 第6章)。
@@ -14,11 +18,10 @@ import issueReviewerImg from '../assets/chactor4.png';
  * 方式 = 「1 枚絵の背景 + DOM オーバーレイ」(6.1):
  *   レイヤ0 背景 / レイヤ1 キャラスプライト / レイヤ2 名前チップ (キャラ下端追従) /
  *   レイヤ3 状態吹き出し (キャラ上端追従) / z-order は y 座標昇順 (下ほど手前)。
- * 座標系 (6.2) = 論理座標 (STAGE 620×420) を % に射影し、外側コンテナに追従してスケール。
- * 素材 (6.3 段階戦略 = 選択肢 C1) = CSS + 絵文字プレースホルダで先に組む。
- *   生成素材が出来たら .scene の背景を office_bg.png 1 枚絵へ、.sprite の中身を
- *   透過 PNG (<img image-rendering: pixelated>) へ差し替える — 座標系・チップ・吹き出しの
- *   ロジックは素材と独立に完成している (差し替えてもこのファイルの script は不変)。
+ * 座標系 (6.2) = 論理座標 (STAGE = 背景画像実寸 488×339) を % に射影し、外側コンテナに追従してスケール。
+ * 素材 (6.3) = レイヤ0 背景に author 提供のオフィス俯瞰 1 枚絵 office.png を敷き (issue #104)、
+ *   キャラは透過 PNG (<img image-rendering: pixelated>) を重ねる。座標系・チップ・吹き出しの
+ *   ロジックは素材と独立 (背景差し替えでこのファイルの座標ロジックは不変)。
  *
  * 駆動源は既存の BoardState (characters / celebrate / escalate) のみ。
  * セッション直読みはしない (issue #25 決定事項 A案 — 台帳中心思想)。
@@ -31,8 +34,9 @@ const props = defineProps<{
   escalate: boolean;
 }>();
 
-/** 論理座標系 (DESIGN.md 6.2)。背景素材を差し替えてもこの系で座標を維持する */
-const STAGE = { w: 620, h: 420 } as const;
+/** 論理座標系 (DESIGN.md 6.2)。背景 office.png の実寸 (488×339) に一致させ、
+ *  % 射影した SPOTS が画像内のゾーンへ正確に乗るようにする (issue #104)。 */
+const STAGE = { w: 488, h: 339 } as const;
 
 interface Spot {
   x: number;
@@ -41,32 +45,34 @@ interface Spot {
 
 /**
  * オフィスの席割り (office_config 相当の宣言 — DESIGN.md 6.2)。issue #97 で 4 ロールへ拡張。
- * state → スポットの対応が「BoardState 由来の配置」の実体:
- *   working = 自席 (実装者 / 対応者 = 制作デスク d1/d2 / PR・Issue レビュー者 = レビュー室のテーブル 2 席)
- *   waiting = 受信箱前 (待ち仕事を取りに行く)
- *   idle    = 休憩ラウンジのソファ (待機の長い社員はラウンジへ — 7 章の挙動)
- * 座標は STAGE 620×420 論理系。4 体が重なりにくいよう分散配置 (最終的な微調整は手動目視スコープ)。
+ * 座標は背景 office.png の実寸 488×339 系で実測 (issue #104)。アンカーは足元 (.sprite bottom)。
+ * state → スポットの対応 (「BoardState 由来の配置」の実体):
+ *   working = 自席 (実装者/対応者 = 左の制作デスク 2 台 / PR・Issue レビュー者 = 右のレビュー室テーブル)
+ *   waiting = 自席の手前 (待ち仕事を取りに行く。画像に「受信箱前」ゾーンが無いため自席近傍へ寄せた)
+ *   idle    = 中央下の空き床 (画像に「休憩ラウンジ」が無いため、焼き込み除去で空いた下部床へ分散)
+ * dev 系 (実装者/対応者) は左、reviewer 系は右に固め、各 state 内で 4 体が重ならないよう分散
+ * (最終的な微調整は手動目視スコープ)。
  */
 const SPOTS: Record<CharacterId, Record<CharacterState, Spot>> = {
   implementer: {
-    working: { x: 118, y: 216 },
-    waiting: { x: 205, y: 150 },
-    idle: { x: 382, y: 346 },
+    working: { x: 68, y: 170 },
+    waiting: { x: 100, y: 205 },
+    idle: { x: 110, y: 262 },
   },
   responder: {
-    working: { x: 228, y: 236 },
-    waiting: { x: 288, y: 170 },
-    idle: { x: 440, y: 362 },
+    working: { x: 176, y: 170 },
+    waiting: { x: 185, y: 210 },
+    idle: { x: 205, y: 280 },
   },
   'pr-reviewer': {
-    working: { x: 458, y: 150 },
-    waiting: { x: 392, y: 150 },
-    idle: { x: 500, y: 346 },
+    working: { x: 348, y: 152 },
+    waiting: { x: 350, y: 196 },
+    idle: { x: 352, y: 262 },
   },
   'issue-reviewer': {
-    working: { x: 548, y: 186 },
-    waiting: { x: 470, y: 170 },
-    idle: { x: 560, y: 362 },
+    working: { x: 432, y: 152 },
+    waiting: { x: 432, y: 200 },
+    idle: { x: 440, y: 280 },
   },
 };
 
@@ -132,30 +138,8 @@ function pieceStyle(i: number): Record<string, string> {
     <!-- モニター風ベゼル額装 (DESIGN.md 5.6) の中に論理座標系のシーンを敷く -->
     <div class="bezel">
       <div class="scene" role="img" aria-label="AI オフィスの俯瞰図。実装者・対応者・PR レビュー者・Issue レビュー者の稼働状況をキャラクターで表示">
-        <!-- レイヤ0: 背景 (CSS プレースホルダ。後で office_bg.png 1 枚絵へ差替え — 6.3) -->
-        <div class="bg wall" aria-hidden="true">
-          <span class="window w1"></span>
-          <span class="sign">AGENT HARNESS OFFICE</span>
-          <span class="window w2"></span>
-          <span class="clock">🕐</span>
-        </div>
-        <div class="bg room-works" aria-hidden="true">
-          <span class="room-label">🏷 制作デスク</span>
-          <span class="desk d1">🖥️</span>
-          <span class="desk d2">🖥️</span>
-          <span class="inbox-obj">📥</span>
-          <span class="plant p1">🪴</span>
-        </div>
-        <div class="bg room-meeting" aria-hidden="true">
-          <span class="room-label">🏷 レビュー室</span>
-          <span class="table"></span>
-        </div>
-        <div class="bg room-lounge" aria-hidden="true">
-          <span class="room-label">🏷 休憩ラウンジ</span>
-          <span class="sofa s1"></span>
-          <span class="sofa s2"></span>
-          <span class="plant p2">🪴</span>
-        </div>
+        <!-- レイヤ0: 背景 (office.png 1 枚絵。焼き込みキャラは塗り潰し済み — issue #104 / DESIGN.md 6.1/6.3) -->
+        <img class="office-bg" :src="officeBgImg" alt="" aria-hidden="true" />
 
         <!-- 祝い: 紙吹雪 (celebrate は舞台全体の演出フラグ — 規則 3) -->
         <div v-if="celebrate" class="confetti" aria-hidden="true">
@@ -225,21 +209,10 @@ function pieceStyle(i: number): Record<string, string> {
 /*
  * ステージ層のパレット (DESIGN.md 3.2 / 3.3)。ページ全体は管制室ダークのままにし、
  * 「暗い枠の中に暖色のドット絵世界が窓のように開く」対比だけをこの component 内で作る。
- * (--px-* はステージ専用トークン — style.css のグローバルには足さない)
+ * (背景の木床/レンガ/家具の色は office.png へ焼き込み済み — issue #104。ここに残すのは
+ *  DOM オーバーレイ = 吹き出し/チップ/アラート + ベゼル枠の色のみ)
  */
 .stage {
-  --px-brick: #7c4b2a;
-  --px-brick-shadow: #5e3820;
-  --px-floor: #a9793f;
-  --px-floor-dark: #8c6132;
-  --px-wood-dark: #4a3018;
-  --px-desk: #6e4623;
-  --px-meeting-floor: #24443c;
-  --px-meeting-glass: #2f6053;
-  --px-lounge-sofa: #a63e30;
-  --px-check-light: #e9e0ce;
-  --px-check-dark: #201812;
-  --px-window: #f5d98a;
   --stage-bezel: #17110b;
   --bubble-bg: rgba(22, 15, 9, 0.92);
   --bubble-name: #e4b96a;
@@ -291,182 +264,27 @@ function pieceStyle(i: number): Record<string, string> {
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
 }
 
-/* --- シーン: 論理座標 620×420 の窓。% 配置でコンテナ幅に追従スケール (6.2) --- */
+/* --- シーン: 論理座標 488×339 (背景画像実寸) の窓。% 配置でコンテナ幅に追従スケール (6.2) --- */
 .scene {
   position: relative;
-  aspect-ratio: 620 / 420;
+  aspect-ratio: 488 / 339;
   width: 100%;
   overflow: hidden;
   border-radius: 8px;
-  /* 床 (レイヤ0 の地): 木の床板 + 継ぎ目。office_bg.png へ差替えたらここを background-image に */
-  background: repeating-linear-gradient(90deg, var(--px-floor-dark) 0 2px, var(--px-floor) 2px 42px);
+  /* 背景 img の読込前・端数丸め時のフォールバック地色 (ベゼル暗色に馴染ませる) */
+  background: var(--stage-bezel);
 }
 
-.bg {
+/* レイヤ0: オフィス俯瞰の背景 1 枚絵 (issue #104)。aspect-ratio が画像実比 488/339 と一致するので
+   歪みなく敷き詰まる。整数倍でない拡大でも nearest-neighbor でドット感を保つ (DESIGN.md 6.4) */
+.office-bg {
   position: absolute;
-  z-index: 1;
-}
-
-/* レンガ壁 (上帯): 目地の横線 + 縦継ぎ目の簡略パターン */
-.wall {
-  inset: 0 0 auto 0;
-  height: 16%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  background:
-    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.2) 0 2px, transparent 2px 11px),
-    repeating-linear-gradient(90deg, var(--px-brick-shadow) 0 2px, var(--px-brick) 2px 26px);
-  border-bottom: 3px solid var(--px-wood-dark);
-}
-
-.sign {
-  padding: 2px 10px;
-  border: 2px solid #2e1d0c;
-  border-radius: 3px;
-  background: var(--px-wood-dark);
-  color: var(--px-window);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  white-space: nowrap;
-}
-
-.window {
-  width: 9%;
-  height: 55%;
-  border: 3px solid var(--px-wood-dark);
-  border-radius: 2px;
-  background: var(--px-window);
-  box-shadow: inset 0 0 8px rgba(255, 178, 64, 0.75);
-}
-
-.clock {
-  font-size: 13px;
-}
-
-/* 制作デスク (左 works エリア) */
-.room-works {
-  left: 3%;
-  top: 22%;
-  width: 44%;
-  height: 42%;
-}
-
-.desk {
-  position: absolute;
-  width: 34%;
-  height: 26%;
-  border-radius: 3px;
-  background: var(--px-desk);
-  border: 2px solid var(--px-wood-dark);
-  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.25);
-  font-size: 15px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.desk.d1 {
-  left: 6%;
-  top: 30%;
-}
-
-.desk.d2 {
-  left: 52%;
-  top: 30%;
-}
-
-.inbox-obj {
-  position: absolute;
-  left: 76%;
-  top: -8%;
-  font-size: 15px;
-}
-
-/* レビュー室 (右上・ティール床 + ガラスパーティション) */
-.room-meeting {
-  right: 2.5%;
-  top: 20%;
-  width: 33%;
-  height: 27%;
-  border: 2px solid var(--px-meeting-glass);
-  border-radius: 4px;
-  background:
-    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.03) 0 6px, transparent 6px 12px),
-    var(--px-meeting-floor);
-}
-
-.table {
-  position: absolute;
-  left: 50%;
-  top: 58%;
-  width: 56%;
-  height: 34%;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: var(--px-desk);
-  border: 3px solid var(--px-wood-dark);
-}
-
-/* 休憩ラウンジ (右下・市松床 + 赤ソファ) */
-.room-lounge {
-  right: 2.5%;
-  bottom: 3%;
-  width: 40%;
-  height: 30%;
-  border: 2px solid var(--px-wood-dark);
-  border-radius: 4px;
-  background: repeating-conic-gradient(var(--px-check-light) 0% 25%, var(--px-check-dark) 0% 50%) 0 0 / 22px 22px;
-}
-
-.sofa {
-  position: absolute;
-  bottom: 12%;
-  width: 34%;
-  height: 30%;
-  border-radius: 5px 5px 3px 3px;
-  background: var(--px-lounge-sofa);
-  border: 2px solid #6e2118;
-  box-shadow: inset 0 5px 0 rgba(255, 255, 255, 0.12);
-}
-
-.sofa.s1 {
-  left: 8%;
-}
-
-.sofa.s2 {
-  right: 8%;
-}
-
-.plant {
-  position: absolute;
-  font-size: 14px;
-}
-
-.plant.p1 {
-  left: -6%;
-  top: 70%;
-}
-
-.plant.p2 {
-  right: 2%;
-  top: -18%;
-}
-
-.room-label {
-  position: absolute;
-  top: -9px;
-  left: 6px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--bubble-bg);
-  color: #f0e6d2;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  white-space: nowrap;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
 }
 
 /* --- アクター (レイヤ1〜3 の親)。座標は % で追従、z は y 昇順 (script 側で採番) --- */
