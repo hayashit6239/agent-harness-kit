@@ -42,6 +42,8 @@ NEAR-LOOSE = ^(pr|issue)[[:space:]]+[0-9]+[[:space:]]*$
 
 構造化モードでは、下記の凍結雛形から `<N>` を**文字列置換するだけ**で `/goal` 文字列を組み立てる。**#60 の自由文モードのような「平易な日本語で言い換える」パラフレーズ手順は構造化モードでは一切行わない**(同一入力 → 同一出力を構造的に担保する = DoD-1 決定性)。
 
+**生成される goal 文のテンプレート要件 (a)(b)(issue #110)**: 両モード雛形が生成する `/goal` 文は次の 2 要件を満たす。**(a) コマンド名のスラッシュ起動を指示しない** — `/harness-orchestrate` のスラッシュ起動を goal 文へ書くと、引数あり分岐(= `/goal` 文字列の組み立てモード)へ誤入し「goal 文が goal 文の生成を指示する」再帰になるため。下記凍結雛形はいずれもコマンド名のスラッシュ起動を含まず、この要件を満たす。**(b) 手順書ファイルを正として参照する literal 文言を含める** — 生成 goal 文へ「手順は手順書 `commands/harness-orchestrate.md` を正として参照して進めて」の一文を差し込む(下記雛形に焼き込み済み)。これは*生成される goal 文*が下流の fresh session でも手順書を辿れるようにする自己参照責務であり、**自由文モード(#60)の item-1「本ファイルは既に context にロード済み・追加読込不要」(=*組み立てセッション自身*の context の話) とはレイヤが別**である — item-1 は組み立てセッションに無用な再読込を強いないための記述であって (b) を骨抜きにするものではない(両者を混同して item-1 を書き換えない)。
+
 停止条件は次の「凍結停止条件マニフェスト」を単一ソースとする。**このマニフェストの 18 個の outcome トークンは `scripts/decide-orchestrator-route.py` の `route=="sink"` outcome(PR フェーズ 11 + issue フェーズ 6 = 17。issue #88)+ `git-status-guard`(decision script 外・1)= 18 にアンカーし、smoke `[14]` が集合一致を機械検証する**(散文表の行数ではなく decision script が単一の正)。人間可読な `/goal` 文字列はこのトークン付きソースからの literal 連結で組み立てる — その際 `subjective_escalate`(PR ×3 / issue ×2)と reviewLock / issueReviewLock `timeout`(PR ×2 / issue ×2)は雛形側で各フェーズ 1 文へ畳み込み済み(18 トークン → 13 文)であり、**組み立て時に LLM で畳み直さない**(畳み込みは凍結ソースに焼き込む):
 
 <!-- FROZEN-STOP-CONDITIONS:BEGIN -->
@@ -74,13 +76,13 @@ git-status-guard | git-status ガードが .harness/ への意図しない変更
 **PR モード雛形**(`$1` = `pr <N>`。`<N>` を番号へ・`<STOP>` を上の 13 文へ literal 置換する):
 
 ```
-/goal 「PR #<N> を ready for merge になるまでレビュー・対応を繰り返して。次のいずれかに該当したら停止して人間に報告して: <STOP>。人間のタッチポイントは (i) この /goal 実行の承認 (ii) 停止条件到達(sink)時 (iii) ready for merge 到達後の merge 代行判断、の 3 点のみで、それ以外の途中の人間確認は無い。ready for merge に到達したら、規約『終端の記録と merge 代行』節に従い人間が merge を代行してよい — この /goal 文言(委譲条項が見える状態)を人間が読んで実行した行為が同節の言う"明示指示"に相当する。merge 前提確認(status=ready for merge かつ CI 緑、外れたら拒否・エスカレーション)は同節が定める人間の手動ゲートであり、この goal ループの停止条件ではない(自動ループの到達点は ready for merge 止まり)。」
+/goal 「PR #<N> を ready for merge になるまでレビュー・対応を繰り返して。手順は手順書 `commands/harness-orchestrate.md` を正として参照して進めて。次のいずれかに該当したら停止して人間に報告して: <STOP>。人間のタッチポイントは (i) この /goal 実行の承認 (ii) 停止条件到達(sink)時 (iii) ready for merge 到達後の merge 代行判断、の 3 点のみで、それ以外の途中の人間確認は無い。ready for merge に到達したら、規約『終端の記録と merge 代行』節に従い人間が merge を代行してよい — この /goal 文言(委譲条項が見える状態)を人間が読んで実行した行為が同節の言う"明示指示"に相当する。merge 前提確認(status=ready for merge かつ CI 緑、外れたら拒否・エスカレーション)は同節が定める人間の手動ゲートであり、この goal ループの停止条件ではない(自動ループの到達点は ready for merge 止まり)。」
 ```
 
 **issue モード雛形**(`$1` = `issue <N>`。一気通貫・v1):
 
 ```
-/goal 「issue #<N> を issue レビュー → ready for implementation → PR 作成 → PR レビュー・対応 → ready for merge まで一気通貫で進めて。次のいずれかに該当したら停止して人間に報告して: <STOP>。人間のタッチポイントは (i) この /goal 実行の承認 (ii) 停止条件到達(sink)時 (iii) ready for merge 到達後の merge 代行判断、の 3 点のみで、それ以外の途中の人間確認は無い。ready for merge に到達したら、規約『終端の記録と merge 代行』節に従い人間が merge を代行してよい(提示された本文言を読んで実行した行為が同節の"明示指示"に相当。precheck: status=ready for merge かつ CI 緑・外れたら拒否)。なお本雛形が凍結する停止条件 `<STOP>` は上記 13 文(18 トークン)で issue 相・PR 相の両フェーズを覆う — issue #88 で issue フェーズの sink outcome(issue reviewer の escalate(round 上限 / blocker trend)・dispatch 結果失敗・主観的エスカレーション・issueReviewLock の hang / issue review worker の主観的エスカレーション・issueReviewLock の hang)を decision script に成文化したため、issue 相にもレビューが収束しない失敗モードを自動 halt する停止条件が備わり、本雛形はそれらを含めて組み立てる。」
+/goal 「issue #<N> を issue レビュー → ready for implementation → PR 作成 → PR レビュー・対応 → ready for merge まで一気通貫で進めて。手順は手順書 `commands/harness-orchestrate.md` を正として参照して進めて。次のいずれかに該当したら停止して人間に報告して: <STOP>。人間のタッチポイントは (i) この /goal 実行の承認 (ii) 停止条件到達(sink)時 (iii) ready for merge 到達後の merge 代行判断、の 3 点のみで、それ以外の途中の人間確認は無い。ready for merge に到達したら、規約『終端の記録と merge 代行』節に従い人間が merge を代行してよい(提示された本文言を読んで実行した行為が同節の"明示指示"に相当。precheck: status=ready for merge かつ CI 緑・外れたら拒否)。なお本雛形が凍結する停止条件 `<STOP>` は上記 13 文(18 トークン)で issue 相・PR 相の両フェーズを覆う — issue #88 で issue フェーズの sink outcome(issue reviewer の escalate(round 上限 / blocker trend)・dispatch 結果失敗・主観的エスカレーション・issueReviewLock の hang / issue review worker の主観的エスカレーション・issueReviewLock の hang)を decision script に成文化したため、issue 相にもレビューが収束しない失敗モードを自動 halt する停止条件が備わり、本雛形はそれらを含めて組み立てる。」
 ```
 
 **Phase 3(#85)再利用の境界(1 行制約)**: この「構造化対象指定 → verbatim goal 文字列」の展開部品は、入出力境界(入力 = `pr <N>` / `issue <N>` の構造化指定 / 出力 = 上記 verbatim goal 文字列)を、Phase 3(#85)の無人トリガーが人間の `/goal` 実行を置き換える際にそのまま食える形に保つ(この境界を崩す拡張をしない)。
@@ -94,10 +96,10 @@ git-status-guard | git-status ガードが .harness/ への意図しない変更
 3. `$1` のゴール文言と、変換した停止条件を、次のサンプルと同じ構造で 1 つの `/goal` コマンド文字列に組み立てる:
 
    ```
-   /goal 「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して。次のいずれかに該当したら停止して人間に報告して: issue reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ issue reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ issue reviewer・issue review worker いずれかが主観的エスカレーションを返した / issue reviewer・issue review worker の issueReviewLock が締切超過(dispatch の hang・timeout)/ git-status ガードが .harness/ への意図しない変更を検知した」
+   /goal 「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して。手順は手順書 `commands/harness-orchestrate.md` を正として参照して進めて。次のいずれかに該当したら停止して人間に報告して: issue reviewer dispatch が escalate=true を返した(round/trend 停止条件)/ issue reviewer dispatch の返答が JSON でない(dispatch 結果失敗)/ issue reviewer・issue review worker いずれかが主観的エスカレーションを返した / issue reviewer・issue review worker の issueReviewLock が締切超過(dispatch の hang・timeout)/ git-status ガードが .harness/ への意図しない変更を検知した」
    ```
 
-   サンプルの「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して」の部分を `$1` の内容に差し替える。**上記サンプルは issue フェーズのゴール向けに issue フェーズの停止条件のみを選んだ例**(issue #88)。PR フェーズまで回すゴールなら PR フェーズの停止条件(reviewer/実装役/対応役の escalate・dispatch 失敗・evidence gate 失敗・ambiguous・reviewLock hang・subjective_escalate)も同じ粒度で列挙する(`subjective_escalate` は同フェーズ複数ロールを 1 文に、`timeout` 系も同種を 1 文にまとめてよい)。
+   サンプルの「issue #42 を ready for implementation になるまでレビュー・対応を繰り返して」の部分を `$1` の内容に差し替える。**サンプル中の「手順は手順書 `commands/harness-orchestrate.md` を正として参照して進めて」の一文は要件 (b)(issue #110)であり、`$1` の内容に差し替えず必ず残す** — これは*生成される goal 文*が下流の fresh session でも手順書を辿れるようにする自己参照責務であり、上記 item-1(*組み立てセッション自身*は既に手順書を context ロード済み・追加読込不要)とはレイヤが別である(item-1 と混同して (b) を落とさない)。また要件 (a) として、組み立てる goal 文にコマンド名のスラッシュ起動(`/harness-orchestrate ...`)を書かない(組み立てモードへの再帰誤入を封じる)。**上記サンプルは issue フェーズのゴール向けに issue フェーズの停止条件のみを選んだ例**(issue #88)。PR フェーズまで回すゴールなら PR フェーズの停止条件(reviewer/実装役/対応役の escalate・dispatch 失敗・evidence gate 失敗・ambiguous・reviewLock hang・subjective_escalate)も同じ粒度で列挙する(`subjective_escalate` は同フェーズ複数ロールを 1 文に、`timeout` 系も同種を 1 文にまとめてよい)。
 4. 組み立てた `/goal <文言>` をそのままコピー&ペーストできる形で提示して終了する。**このコマンド自身は `/goal` を実行しない**(実行はユーザーの操作)。
 
 **`$1` が省略された場合**: 従来どおり、本コマンドは 1 回の orchestrator tick を実行する(以下の手順)。
@@ -969,10 +971,27 @@ PY
 
 ## loop での回し方
 
+本節は本コマンドの **2 モード運用の正式宣言**である。本コマンドの二分岐(`$1` あり = `/goal` 文字列の組み立て / なし = 通常 tick 実行。#60 / #89)には、次の 2 つの運用モードが対応する — **常設運用は `/loop`・有期キャンペーンは `/goal`**。両者は代替関係ではなく用途の分担であり(#107 の 2 ループ運用モデルのうち、本コマンドは orchestrate ループ側の運用形を担う)、同一台帳に対しては択一(下記「二重オーケストレーターの排他」)。
+
+| モード | 駆動 | 用途 | 停止 |
+|---|---|---|---|
+| **モード2: 常設巡航**(`$1` なし = 通常 tick を 1 回実行) | `/loop N /harness-orchestrate`(定期発火・1 発火 = 1 tick) | **discover(#78)駆動で仕事を回し続ける常設運用**。仕事が無ければ 0 件 tick の 1 行報告で終わり、`discover` ラベルが付けば次 tick で自然に流れ込む | 明示停止(`/loop` 解除)。空転時の退避・完了通知は #84(Phase 4)が将来部品 |
+| **モード1: 有期キャンペーン**(`$1` = 自由文 / `pr <N>` / `issue <N>` → `/goal` 文字列を組み立てて提示。#60 / #89) | `/goal`(Stop hook・goal 評価器)を人間が実行 | **「この issue / phase を終端まで」の目標到達型**の集中運転 | 目標達成 or 停止条件(sink 13 文)到達で評価器が停止する。goal 評価器が価値を持つ用途 |
+
+- **モード選択の基準**: 「終わりが定義できて、そこに到達したら止めたい」なら `/goal`(有期)。「discover 駆動で仕事が来る限り回し続けたい」なら `/loop`(常設)。**常設巡航を `/goal` で行おうとすると (1) 組み立てモードへの誤入(再帰)(2) 枯渇 / 永久停止のジレンマ (3) goal 評価器の常時コスト、の 3 問題が生じる**ため常設は `/loop` を使う(モード2 では各 tick が完結し、tick 跨ぎの状態は in-flight マーカー + reconciliation(#26)が本来の設計どおり担うため、goal 文が不要になり 3 問題が構造的に消える)。
+- **#107 manage ループとの接点は `discover` ラベルただ 1 つ**: manage ループ(`/harness-product-manage` を `/loop` で日単位・#107)が `discover` ラベルを貼り、本 orchestrate ループ(モード2)が次 tick でそれを拾って流し込む。GitHub がキューとして機能する疎結合であり、両ループは台帳・ラベル以外で直接結合しない。
+
+### 常設巡航(モード2 = `/loop`)の回し方
+
 - 試行: `/loop 15m /harness-orchestrate`(review-mode=code-review 既定、15 分間隔)。
 - review-mode を明示したい場合: `/loop 15m /harness-orchestrate "" multi-angle`。
 - `/loop` は起動時の引数をそのまま毎 tick 再実行するため、review-mode は起動時の引数が毎 tick 引き継がれる。追加の状態保持は不要。
 - **ゴール文言(`$1`)を渡すモードは `/loop` と併用しない**: `/loop` は起動時の引数をそのまま毎 tick 再実行するため、`$1` 付きで `/loop` に渡すと「`/goal` 文字列を組み立てて提示するだけ」の処理(通常 tick を実行しない)が毎 tick 繰り返され、実質的に何も進まない。`$1` 付き起動は 1 回限りの単発呼出として使い、提示された `/goal <文言>` をユーザーが実行することで初めて継続実行が始まる(上記「`/goal` 起動文字列の組み立て」節参照)。
+
+### 二重オーケストレーターの排他(軸1 = A・規約明記。issue #110)
+
+- **同一台帳に対して `/loop` 常設巡航(モード2)と `/goal` 有期キャンペーン(モード1)は択一とし、並行起動しない。** 両モードを同一台帳へ同時に走らせると単一 writer が 2 人になり、F案(#11)のローカル台帳は競合検知を持たないため、同時書込は後勝ちが無音で前の書込を消す(#81 Problem・実観測済み)。`dispatchMarker` / `reviewLock` は step 単位の in-flight ロックで、tick(orchestrator セッション)単位の排他はカバーしない。
+- **この規約は機械強制ゼロの受容コストを持つ(正直な明記)**: 「運用規約で守れる」は楽観であり、人間が巡航中に別セッションで `/goal` を開けば後勝ち無音上書きは実際に起きる。機械強制(tick 排他ロック)は #81 として #77(無人トリガー)着手時 = Phase 4 に defer する(#77 着手が A→B 移行の forcing function)。受容コストの詳細は `.harness/CLAUDE.harness.md`「台帳の書込経路」節に記録する。
 
 ## 既知の制限・拡張ポイント
 
