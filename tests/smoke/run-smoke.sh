@@ -91,7 +91,16 @@
 #    batch 内重複 / 空入力 = no-op / 終端 step 突合(全 step・終端後再ラベル no-op)/ 起点 id /
 #    非数値 id 除外 の境界と、不正入力 exit 2 の境界を含む。network discover(gh issue list
 #    --label)は smoke 対象外=手動確認 (round2 🟡1)。
-# 16. すべて通れば "SMOKE OK" を出して exit 0
+# 17. issue #109: issue tree 規約 + 起票規約の kit 同梱の機械検証([13]/[14] と同型の
+#    presence + 参照整合 + 負の自己検証)。(a) rules 2 ファイル(rules/issue-tree.md 文法 +
+#    rules/issue-authoring.md 起票書式)の presence。(b) .harness/CLAUDE.harness.md と byte 一致
+#    必須の templates/CLAUDE.harness.md の両 copy が両 rules ファイルを参照していること(未配線 /
+#    ファイル削除の検知)。参照*文言*自体は [10](byte 一致 diff)が守るので増分は presence +
+#    未配線検知だけで安く閉じる(round1 🟡1)。参照を 1 本抜いたコピーが fail する負の自己検証付き。
+#    新設 rules は rules/ 単一配置(escalate-to-human.md と同じく COPY_PAIRS 対象ではない)。
+#    templates/roadmap.json(phase→epic 対応表 seed・真に空)は [10] の COPY_EXCLUDED に登録
+#    (導入先で書き換わるインスタンスデータ・plan-progress.init.json と同型)。
+# 18. すべて通れば "SMOKE OK" を出して exit 0
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -1364,9 +1373,12 @@ if [ -d "$ROOT/.harness" ]; then
     "templates/plan-progress.schema.json:.harness/plan-progress.schema.json"
     "templates/CLAUDE.harness.md:.harness/CLAUDE.harness.md"
   )
-  # 複製対象外の既知除外 (init.json は導入先で書き換わる雛形なので複製一致を求めない)
+  # 複製対象外の既知除外 (導入先で書き換わる雛形は複製一致を求めない)
   COPY_EXCLUDED=(
     "templates/plan-progress.init.json"
+    # roadmap.json は phase→epic 対応表のインスタンスデータ (issue #109)。導入先ごとに中身が
+    # 分岐し .harness/roadmap.json との byte 一致は要求しない (plan-progress.init.json と同型)
+    "templates/roadmap.json"
   )
 
   # 列挙の fail-open 防止: templates/ に新ファイルが増えたのにペア列挙への追記が
@@ -2106,6 +2118,52 @@ printf '%s' '["not","an","object"]' | python3 "$ENQUEUE" >/dev/null 2>&1 || enq_
 [ "$enq_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $enq_rc"
 echo "[16/17] decide-enqueue-steps 不正入力 exit 2 境界 OK"
 
-# --- 17. 完了 -----------------------------------------------------------------
-echo "[17/17] 全アサーション通過"
+# --- 17. issue #109: issue tree 規約 + 起票規約の kit 同梱(rules 2 ファイル presence +
+#     CLAUDE.harness.md 両 copy からの参照)---------------------------------------
+# issue #109: tree 文法(rules/issue-tree.md)と起票書式(rules/issue-authoring.md)を kit の
+# rules/ 層へ同梱し、.harness/CLAUDE.harness.md と byte 一致必須の templates/CLAUDE.harness.md の
+# 両方が両 rules ファイルを参照することを機械検証する([13]/[14] と同型の presence + 負の自己検証)。
+# 参照*文言*自体は [10](byte 一致 diff)が守るので、増分は「ファイル削除 / 未配線の検知」だけで
+# 安く閉じる(round1 🟡1)。新設 rules ファイルは rules/ 単一配置(escalate-to-human.md と同じく
+# .harness/↔templates/ の byte 一致複製対象ではない = [10] の COPY_PAIRS に含めない)。
+ISSUE_TREE_RULE="$ROOT/rules/issue-tree.md"
+ISSUE_AUTHORING_RULE="$ROOT/rules/issue-authoring.md"
+
+# (a) rules 2 ファイル presence(item 14 の spec presence と同型・無条件)
+[ -f "$ISSUE_TREE_RULE" ] || fail "[17/18] (a) rules ファイルが存在しない: $ISSUE_TREE_RULE"
+[ -f "$ISSUE_AUTHORING_RULE" ] || fail "[17/18] (a) rules ファイルが存在しない: $ISSUE_AUTHORING_RULE"
+echo "[17/18] (a) issue tree / authoring rules presence OK (rules/issue-tree.md + rules/issue-authoring.md)"
+
+# (b) CLAUDE.harness.md 両 copy からの参照。両 rules ファイルを参照するか判定
+#     (0=両方参照 / 1=いずれか欠落)。fail を直接呼ばず戻り値で返し、正・負の両方に使う([14] と同流儀)。
+RULE_REFS=('rules/issue-tree.md' 'rules/issue-authoring.md')
+harness_refs_both_rules() {
+  local file="$1" ref
+  for ref in "${RULE_REFS[@]}"; do
+    grep -Fq "$ref" "$file" || return 1
+  done
+  return 0
+}
+# templates/CLAUDE.harness.md は常に存在する
+harness_refs_both_rules "$ROOT/templates/CLAUDE.harness.md" \
+  || fail "[17/18] (b) templates/CLAUDE.harness.md が新設 rules ファイルを参照していない(未配線)"
+# .harness/CLAUDE.harness.md は kit checkout でのみ存在([10] と同じガード)。存在すれば同様に要求する
+if [ -f "$ROOT/.harness/CLAUDE.harness.md" ]; then
+  harness_refs_both_rules "$ROOT/.harness/CLAUDE.harness.md" \
+    || fail "[17/18] (b) .harness/CLAUDE.harness.md が新設 rules ファイルを参照していない(未配線)"
+  echo "[17/18] (b) CLAUDE.harness.md 両 copy からの rules 参照 OK (templates/ + .harness/)"
+else
+  echo "[17/18] (b) CLAUDE.harness.md rules 参照 OK (templates/ のみ・.harness/ 無し = kit checkout ではない)"
+fi
+
+# (b) 負の自己検証: issue-tree.md への参照を抜いたコピーは fail(参照検査が vacuous でない証明)
+NEG_HARNESS_REF="$TMP/neg-harness-ref.md"
+grep -vF "${RULE_REFS[0]}" "$ROOT/templates/CLAUDE.harness.md" > "$NEG_HARNESS_REF"
+if harness_refs_both_rules "$NEG_HARNESS_REF"; then
+  fail "[17/18] (b) 参照検査が vacuous(issue-tree.md 参照を抜いても pass した)"
+fi
+echo "[17/18] (b) rules 参照検査の負のケース OK (issue-tree.md 参照を抜いたコピーは fail 判定)"
+
+# --- 18. 完了 -----------------------------------------------------------------
+echo "[18/18] 全アサーション通過"
 echo "SMOKE OK"
