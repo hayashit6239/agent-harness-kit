@@ -85,12 +85,15 @@
 #        空白・末尾空白)検出を固定する。
 #    (c) DoD-1 決定性(構造的担保 + fixture lock): verbatim 雛形(両モード雛形 / 9 文 <STOP> /
 #        merge 代行"明示指示"条項 / round3 で確定した issue 相の正直な注記)の presence 検査で drift を塞ぐ。
-# 15. decide-enqueue-steps (discover→enqueue の純 enqueue/dedup 判定・issue #78) の単体判定が
-#    期待通り (候補 issue.number + 現台帳 steps → 追加 step / no-op)。単一追加(DoD 1 件追加)/
+# 15. decide-enqueue-steps (discover→enqueue の純 enqueue/dedup/epic 除外 判定・issue #78/#107) の
+#    単体判定が期待通り (候補 + 現台帳 steps → 追加 step / no-op)。単一追加(DoD 1 件追加)/
 #    冪等 no-op(既存 issue.number 一致 = 二重登録なし)/ batch 採番(max+1, max+2 逐次加算)/
 #    batch 内重複 / 空入力 = no-op / 終端 step 突合(全 step・終端後再ラベル no-op)/ 起点 id /
-#    非数値 id 除外 の境界と、不正入力 exit 2 の境界を含む。network discover(gh issue list
-#    --label)は smoke 対象外=手動確認 (round2 🟡1)。
+#    非数値 id 除外 の境界に加え、issue #107 の epic 除外 fail-safe(isEpic:true を drop・id 番号を
+#    消費しない)と拡張 candidate 契約(裸 int | {number, isEpic, ...} の受理・未知キー無視 =
+#    #111 dependsOn の前方拡張点・round2 🟡1)を含む。不正入力 exit 2(number 欠落 / isEpic 非 bool
+#    を含む)の境界も。network discover(gh issue list --label ... epic 判定材料の取得)は smoke
+#    対象外=手動確認 (round2 🟡1)。
 # 17. issue #109: issue tree 規約 + 起票規約の kit 同梱の機械検証([13]/[14] と同型の
 #    presence + 参照整合 + 負の自己検証)。(a) rules 2 ファイル(rules/issue-tree.md 文法 +
 #    rules/issue-authoring.md 起票書式)の presence。(b) .harness/CLAUDE.harness.md と byte 一致
@@ -1996,15 +1999,17 @@ assert_present '同節の言う"明示指示"に相当する'
 assert_present 'issue #88 で issue フェーズの sink outcome(issue reviewer の escalate(round 上限 / blocker trend)・dispatch 結果失敗・主観的エスカレーション・issueReviewLock の hang / issue review worker の主観的エスカレーション・issueReviewLock の hang)を decision script に成文化したため、issue 相にもレビューが収束しない失敗モードを自動 halt する停止条件が備わり、本雛形はそれらを含めて組み立てる。'
 echo "[15/17] (c) DoD-1 雛形 verbatim presence 検査 OK (両モード雛形 + 手順書参照 literal(b)/#110 / 13 文 <STOP> / merge 代行明示指示 / issue 相の停止条件注記)"
 
-# --- 16. decide-enqueue-steps (discover→enqueue の純 enqueue/dedup 判定・issue #78) ----------
+# --- 16. decide-enqueue-steps (discover→enqueue の純 enqueue/dedup/epic 除外 判定・issue #78/#107) ---
 # decide-orchestrator-route / reconcile-dispatch-marker / evaluate-stop-condition と同型の
 # pure decision script (network 非依存・LLM 非依存・stdin JSON → stdout・決定論)。discover→enqueue
-# フェーズの中間層 (候補 issue.number + 現台帳 steps → 追加 step / no-op) を検証する。network
-# discover (gh issue list --label) は smoke 対象外=手動確認 (round2 🟡1)。dedup key=issue.number・
-# 突合範囲=全 step (終端含む)・終端後の再ラベル=no-op (round1 🔴2)、batch 採番=max+1,max+2,…
-# 逐次加算 (round2 🟡2)、空入力=no-op (round1 🟡2)、step 雛形 (round1 🟡1) を境界込みで固定する。
-# DoD「1 件追加・二重登録なし」と batch fixture「既存 1 + 新規 2 (1 件 issue.number 重複) →
-# 追加 1 件・id=max+1・重複 no-op」を含む。
+# フェーズの中間層 (候補 + 現台帳 steps → 追加 step / no-op) を検証する。network discover
+# (gh issue list --label ... epic 判定材料の取得) は smoke 対象外=手動確認 (round2 🟡1)。
+# dedup key=issue.number・突合範囲=全 step (終端含む)・終端後の再ラベル=no-op (round1 🔴2)、
+# batch 採番=max+1,max+2,… 逐次加算 (round2 🟡2)、空入力=no-op (round1 🟡2)、step 雛形 (round1 🟡1)、
+# **issue #107 の epic 除外 fail-safe (isEpic:true を dedup/採番の前段で drop・id 番号を消費しない・D1)**
+# と **拡張 candidate 契約 (裸 int | {number, isEpic, ...} の受理・未知キー無視 = #111 dependsOn の
+# 前方拡張点・round2 🟡1)** を境界込みで固定する。DoD「1 件追加・二重登録なし」と batch fixture
+# 「既存 1 + 新規 2 (1 件 issue.number 重複) → 追加 1 件・id=max+1・重複 no-op」を含む。
 ENQUEUE="$ROOT/scripts/decide-enqueue-steps.py"
 
 # $1=ラベル $2=入力 JSON $3=期待する出力 JSON (フル一致。キー順・空白を正規化して比較)
@@ -2081,7 +2086,36 @@ assert_enqueue "(d2) P<n> 台帳 batch: 新規2件 -> P<max+1>,P<max+2>" \
 assert_enqueue "(i2) P<n>+非数値 id 混在 -> 非数値除外して P<max+1>" \
   "{\"candidates\":[78],\"steps\":[{\"id\":\"seed\",\"issue\":{\"number\":40,\"status\":\"closed issue\",\"githubState\":\"closed\"},\"pr\":{\"number\":null,\"status\":null,\"githubState\":null}},$STEP_P7]}" \
   '{"enqueue":[{"id":"P8","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
-echo "[16/17] decide-enqueue-steps 判定ケース OK (単一追加/冪等 no-op/batch 採番/batch 内重複/空入力/終端突合/起点 id/非数値 id 除外/P<n> 形式追随)"
+# --- epic 除外 fail-safe + 拡張 candidate 契約 (issue #107・D1 / round2 🟡1・🟢3) -----------------
+# candidate 要素の拡張 (裸 int | {number, isEpic, ...}) と epic 除外 (isEpic:true を drop) を lock する。
+# epic 判定 (epic ラベル / `epic:` prefix) 自体は network 側 prose の責務 (smoke 対象外) で、
+# script は渡された isEpic を信頼して決定論的に drop するだけ。未知キー無視 (#111 が dependsOn を
+# 破壊的変更なしに足せる前方拡張点・round2 🟡1) も併せて固定する。
+# (r) dict 形式・非 epic (isEpic:false) -> 裸 int と同じく enqueue (拡張契約の後方互換パリティ)
+assert_enqueue "(r) dict 非 epic {number,isEpic:false} -> enqueue (裸 int パリティ)" \
+  '{"candidates":[{"number":78,"isEpic":false}],"steps":[]}' \
+  '{"enqueue":[{"id":"1","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+# (s) dict 形式・epic (isEpic:true) -> 除外 (no-op)。誤って discover ラベルが付いた epic を台帳 step 化しない
+assert_enqueue "(s) dict epic {number,isEpic:true} -> 除外 (no-op)" \
+  '{"candidates":[{"number":78,"isEpic":true}],"steps":[]}' \
+  '{"enqueue":[]}'
+# (t) 混在: 非 epic 78 + epic 79 -> 78 だけ enqueue (epic だけ落とす)
+assert_enqueue "(t) 混在 [78 非epic, 79 epic] -> 78 だけ enqueue" \
+  '{"candidates":[{"number":78,"isEpic":false},{"number":79,"isEpic":true}],"steps":[]}' \
+  '{"enqueue":[{"id":"1","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+# (u) epic は id 番号を消費しない: [epic 78, 非epic 79] -> 79 が起点 id=1 を取る (epic を先に drop するため)
+assert_enqueue "(u) epic は id 番号を消費しない [epic 78, 79] -> 79 が id=1" \
+  '{"candidates":[{"number":78,"isEpic":true},{"number":79}],"steps":[]}' \
+  '{"enqueue":[{"id":"1","issue":{"number":79,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+# (v) 裸 int と dict の混在 (要素ごとに正規化する)
+assert_enqueue "(v) 裸 int + dict 混在 [78, {79,epic}, {80}] -> 78,80 enqueue" \
+  '{"candidates":[78,{"number":79,"isEpic":true},{"number":80}],"steps":[]}' \
+  '{"enqueue":[{"id":"1","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}},{"id":"2","issue":{"number":80,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+# (w) 前方拡張点 (round2 🟡1): 未知キー (#111 の dependsOn 相当) は無視して enqueue -> #107 実装を壊さず載る
+assert_enqueue "(w) 未知キー (dependsOn) 無視 -> enqueue (#111 の前方拡張点)" \
+  '{"candidates":[{"number":78,"isEpic":false,"dependsOn":["P3"]}],"steps":[]}' \
+  '{"enqueue":[{"id":"1","issue":{"number":78,"status":"created issue","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}}]}'
+echo "[16/17] decide-enqueue-steps 判定ケース OK (単一追加/冪等 no-op/batch 採番/batch 内重複/空入力/終端突合/起点 id/非数値 id 除外/P<n> 形式追随/epic 除外/拡張 candidate 契約/未知キー無視)"
 
 # 不正入力 (判定エラーと入力エラーの区別 — 他の decision script と同じ流儀)
 # (j) candidates キー欠損 -> exit 2
@@ -2116,7 +2150,24 @@ printf '%s' '{"candidates":[78],"steps":["x"]}' | python3 "$ENQUEUE" >/dev/null 
 enq_rc=0
 printf '%s' '["not","an","object"]' | python3 "$ENQUEUE" >/dev/null 2>&1 || enq_rc=$?
 [ "$enq_rc" -eq 2 ] || fail "(q) 非オブジェクト入力で exit 2 を期待したが exit $enq_rc"
-echo "[16/17] decide-enqueue-steps 不正入力 exit 2 境界 OK"
+# 拡張 candidate 契約の入力検証 (issue #107)
+# (r2) dict 要素に有効な number が無い -> exit 2 (isEpic だけの dict は無効)
+enq_rc=0
+printf '%s' '{"candidates":[{"isEpic":true}],"steps":[]}' | python3 "$ENQUEUE" >/dev/null 2>&1 || enq_rc=$?
+[ "$enq_rc" -eq 2 ] || fail "(r2) dict に number 無しで exit 2 を期待したが exit $enq_rc"
+# (s2) dict 要素の number が bool (int 派生だが number として扱わない) -> exit 2
+enq_rc=0
+printf '%s' '{"candidates":[{"number":true}],"steps":[]}' | python3 "$ENQUEUE" >/dev/null 2>&1 || enq_rc=$?
+[ "$enq_rc" -eq 2 ] || fail "(s2) dict number が bool で exit 2 を期待したが exit $enq_rc"
+# (t2) dict 要素の isEpic が bool でない (文字列) -> exit 2
+enq_rc=0
+printf '%s' '{"candidates":[{"number":78,"isEpic":"yes"}],"steps":[]}' | python3 "$ENQUEUE" >/dev/null 2>&1 || enq_rc=$?
+[ "$enq_rc" -eq 2 ] || fail "(t2) dict isEpic 非 bool で exit 2 を期待したが exit $enq_rc"
+# (u2) candidate 要素が int でも dict でもない (list) -> exit 2
+enq_rc=0
+printf '%s' '{"candidates":[[78]],"steps":[]}' | python3 "$ENQUEUE" >/dev/null 2>&1 || enq_rc=$?
+[ "$enq_rc" -eq 2 ] || fail "(u2) candidate 要素が list で exit 2 を期待したが exit $enq_rc"
+echo "[16/17] decide-enqueue-steps 不正入力 exit 2 境界 OK (拡張 candidate 契約の number/isEpic 検証を含む)"
 
 # --- 17. issue #109: issue tree 規約 + 起票規約の kit 同梱(rules 2 ファイル presence +
 #     CLAUDE.harness.md 両 copy からの参照)---------------------------------------
