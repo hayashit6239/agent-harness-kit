@@ -328,7 +328,7 @@ git-status-guard | git-status ガードが .harness/ への意図しない変更
 各 tick の選別(jq)より前に、次を 1 回実行する:
 
 1. **`git fetch origin --quiet`**: `origin/main` のリモート追跡参照を最新化する。実装役 dispatch(「developer(実装役)」節手順 2)は `creating-git-worktrees` skill 経由で worktree を作成し、同 skill は既定(`worktree.baseRef=fresh`)で `origin/<default-branch>` から新しい branch を切る。この fetch を怠ると `origin/main` のローカル参照が古いままになり、そこから分岐した worktree も古い main を基点にしてしまう(実測: PR #36 が古い main(`3b38c55`)から分岐した)。fetch は取得のみで、常時 dirty な `.harness/plan-progress.json` を含むローカル main checkout には触れない — `git pull` / `git merge` / `git checkout` は行わない。
-2. **freshness の確認は報告に留め、tick を止めない**: `git rev-list --count HEAD..origin/main` 等でローカル main checkout が `origin/main` からどれだけ遅れているかを把握し、遅れがあれば tick 報告に 1 行 surface する。**tick 全体は停止させない** — F案の台帳は常時 uncommitted-dirty で main 前進のたびに hard-stop すると `/loop` 運用で頻繁に停止するため。欠落 2 の根本対処は 1. の fetch により worktree 側が常に fresh になることで足りており、ローカル main checkout 自体を前進させる必要は無い。
+2. **freshness の確認は報告に留め、tick を止めない**: `git rev-list --count HEAD..origin/main` 等でローカル main checkout が `origin/main` からどれだけ遅れているかを把握し、遅れがあれば tick 報告に 1 行 surface する。**tick 全体は停止させない** — F案の台帳は常時 uncommitted-dirty で main 前進のたびに hard-stop すると `/loop` 運用で頻繁に停止するため。欠落 2 の根本対処は 1. の fetch により worktree 側が常に fresh になることで足りており、ローカル main checkout 自体を前進させる必要は無い。**退避 tick(下記「空転検知と退避 + 完了通知」節・`evacuate == true`)ではこの freshness の `git rev-list` 計算と surface を skip する**(安価 no-op tick の一部)。退避判定は選別後に確定するため、実装上は freshness の計算・surface を「空転検知と退避」判定の後(`evacuate == false` の通常経路)へ回してよい — 手順 1 の `git fetch` は両経路で実行する。
 3. **`git worktree prune`**: `.claude/worktrees/` の admin record 残骸を掃除する(欠落 8。前 tick の異常終了等で登録だけ残った worktree を除去)。実体ディレクトリがまだ残っている場合(`git worktree remove` 前に中断した等)は各ロール節の evidence gate 手順(手順 5)が同一パスへの `add` 失敗時に個別掃除するため、ここでの `prune` は admin record のみを対象とする軽量な前提整備に留める。**⚠ 実体ディレクトリ掃除への拡張は挙動変化ありとして慎重に spec 化する(issue #54)**: `prune` を実ディレクトリ削除(`git worktree remove` / `rm -rf`)へ広げるなら、**削除対象を「merge 済み PR の worktree のみ」に限定するガードが必須**。判定根拠は `orchestrate-pr-<N>` の `<N>` を PR 番号として解決し `gh pr view <N> --json state,mergedAt` で **merged を確認できた場合に限り削除する**。**merge 済みと確定できない worktree(状態取得失敗 / open・draft / 番号を解決できない / 手動代行・別セッションが使用中の可能性)は消さない側に倒す(fail-safe)** — 進行中の worktree を消すと稼働中の作業を壊す事故になる。現状の admin record 限定は意図的にこの安全側へ倒してあり、実体掃除のコード実装自体は follow-up とする(本項目は削除条件と fail-safe を spec として固定するに留める)。
 
 ## tick 冒頭 reconciliation(in-flight マーカー・issue #26)
@@ -665,6 +665,76 @@ kind は prose が解決する(状況→トークンの解決 seam は prose 側
 
 **5 カテゴリ(対応役 / pr reviewer / 実装役 / issue review worker / issue reviewer)を合算して 上限 5 件**に切り詰める(issue #88: issue フェーズ 2 ロールも PR 3 カテゴリと**同じ 1 tick 5 件枠を共有**する — 独立枠を持たせない)。**優先順は「対応役 > pr reviewer > 実装役 > issue review worker > issue reviewer」**(round1 🟡5 決定)— PR フェーズを issue フェーズより優先する(in-flight のダウンストリーム作業を先に閉じる)。PR フェーズ内は手戻り修正を優先し新規 dispatch は余裕がある時だけ、issue フェーズ内も同型に issue review worker(指摘対応)> issue reviewer(新規レビュー)とする。実装役カテゴリ内では `redispatch` 候補(締切超過が古いもの優先)を新規 eligible 対象より先に数える。この優先順位付け自体は機械的な tie-break であり、レビュー判断ではない。実装役枠から溢れた `redispatch` 候補は「tick 冒頭 reconciliation」節のとおり marker を書き換えずに次 tick へ持ち越す。**各対象を処理する前の無条件スキップは、PR は `gh pr view <n> --json labels` の `need for human review` ラベル確認、issue は台帳の `issue.status == "need for human review"` 確認(status 自身が選別から外すため実質は選別 jq が兼ねる)で行う**。**ファイル衝突検知は実装役固有**で issue フェーズには適用しない(issue ロールはリポジトリ内ファイルを触らないため・round1 🟡5(iv))。
 
+## 空転検知と退避 + 完了通知(issue #84・Phase 3)
+
+**目的**: 選別ゼロ tick が続くとき(空転)に、監視ノイズ(#79 死活監視に混ざる「生きているが無意味な tick」)と空転コストを退避で削減し、全 step が終端に達したら系の完了を明示的に通知する。主動機 `/loop` は起動時引数を毎 tick 再実行する方式で **自身の発火間隔を tick 途中で変えられない**(「常設巡航」節)ため、退避 action は「発火間隔延長」ではなく **「安価 no-op tick」**(`idleTickCount >= N` の間、reconciliation・選別・discover だけ実行し freshness 報告と冗長な再通知を skip・通知は notify-once で 1 回・早期 return)に確定した(真の発火間隔削減は #77 のトリガー機構を要する — 決定事項 🔴 L8/L1)。
+
+**実行位置**: 各 tick の **「tick 冒頭 reconciliation」→「discover→enqueue」→「選別(jq)」の後、dispatch フェーズの前**。選別が返した候補件数(eligible)と台帳の marker / 終端 / sink 状態が揃った時点で **1 回だけ**判定する。**閾値判定・退避判定・完了/退避 の文言分岐・notify-once・リセットは決定 script `scripts/decide-idle-evacuation.py` が唯一の正**(prose に閾値 N の比較や notify-once の二重フラグ配線を複製しない。既存 `decide-statuses-post-action.py` / `evaluate-stop-condition.py` と同じ設計境界 —「I/O は prose・判定は script で決定論」)。
+
+**idle 4 条件(script が判定・prose は入力を解決)**: 次の 8 入力を台帳と選別結果から算出して script へ渡す。script は **idle counter を +1 する条件を 4 つ(1. eligible=0 / 2. in-flight marker=0 / 3. not all-sink / 4. sink への推移的 dependsOn ブロック無し)すべて真の tick に限る** — これにより (b) in-flight(遅い実装役 / reviewer)・(c) all-sink・第 4 状態(some-sink + 推移的ブロック)を idle から除外する(生の「選別件数=0」で数えると健全な in-flight 中に誤って退避・誤って完了通知が発火する。根拠は issue #84 決定事項 round1 🔴 L2/L6 + round2 🔴 L6/L2)。入力算出での **terminal の定義は `issue.status == "closed issue"` または `pr.status == "merged pr"`**、**sink は `issue.status == "need for human review"` または `pr.status == "need for human review"`**:
+
+```
+# eligible_count =「選別(jq)」節が返した 5 カテゴリ合算の候補件数(redispatch 候補を含む・上限 5 件切り詰め前の母集団サイズ)。
+#   選別が 0 件ならここも 0。prose が既に保持しているので再計算しない。
+ELIGIBLE_COUNT=<選別が返した候補総数>
+# 残り 4 つ(marker/terminal/sink/blocked)を台帳から一括算出する:
+IDLE_STATE=$(jq -c '
+  ( [ .steps[] | select((.issue.status != "closed issue") and (.pr.status != "merged pr")) ] ) as $nonterm
+  | ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $dep_terminal   # 選別 jq の dependsOn terminal(closed issue)と同基準
+  | {
+      inflight_marker_count:
+        ( [ .steps[] | select((.dispatchMarker != null) or (.reviewLock != null) or (.issueReviewLock != null)) ] | length ),
+      all_terminal: ( ($nonterm | length) == 0 ),
+      all_sink:
+        ( ($nonterm | length) > 0
+          and ( $nonterm | all( (.issue.status == "need for human review") or (.pr.status == "need for human review") ) ) ),
+      blocked_behind_sink:
+        ( ( [ $nonterm[]
+              | select((.dispatchMarker == null) and (.reviewLock == null) and (.issueReviewLock == null))
+              | select( (.dependsOn // []) | map(. as $d | ($dep_terminal | index($d)) == null) | any ) ]
+            | length ) > 0 )
+    }
+' "$PLAN")
+IDLE_ACTION=$(jq -cn --argjson eligible "$ELIGIBLE_COUNT" --argjson st "$IDLE_STATE" --slurpfile plan "$PLAN" \
+  '{eligible_count: $eligible,
+    inflight_marker_count: $st.inflight_marker_count,
+    all_sink: $st.all_sink,
+    blocked_behind_sink: $st.blocked_behind_sink,
+    all_terminal: $st.all_terminal,
+    current_idle_count: ($plan[0].idleTickCount // 0),
+    current_idle_notified: ($plan[0].idleNotified // false),
+    current_complete_notified: ($plan[0].completeNotified // false)}' \
+  | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-idle-evacuation.py")
+# -> {"new_idle_count":<int>,"evacuate":<bool>,"notify":<bool>,"notify_kind":<"complete"|"idle"|null>,"new_idle_notified":<bool>,"new_complete_notified":<bool>}
+```
+
+- **eligible_count が「discover enqueue のリセット」も畳む**: discover(#78)が新規 step(`issue.status="created issue"`)を enqueue すると、その step は同一 tick の issue reviewer 選別で eligible になり `eligible_count > 0` になる → script が counter を 0 へリセットし `idleNotified` を再武装する。決定事項 round1 のリセット 3 条件のうち「discover が新規 step を enqueue」は、別入力を持たず `eligible_count` 経由で実現する(固定入力契約を観測可能な選別後状態に閉じるための設計。依存ブロックで非 eligible な稀な enqueue は blocked 側へ倒れる — 受容コスト)。
+
+**書き戻し(単一 writer・transient フィールド)**: script が返す `new_idle_count` / `new_idle_notified` / `new_complete_notified` を台帳 top-level の `idleTickCount`(整数)/ `idleNotified`(boolean)/ `completeNotified`(boolean)へ書き戻す(`orchestratorTick` と同流儀のローカル編集・commit しない・型/形の正は `plan-progress.schema.json` の optional 宣言・validator/drift/smoke の検査対象外・キー無しは 0/false 扱い):
+
+```
+python3 - "$PLAN" "$IDLE_ACTION" <<'PY'
+import json, os, sys
+plan_path, action = sys.argv[1], json.loads(sys.argv[2])
+with open(plan_path, encoding="utf-8") as f:
+    plan = json.load(f)
+plan["idleTickCount"] = action["new_idle_count"]
+plan["idleNotified"] = action["new_idle_notified"]
+plan["completeNotified"] = action["new_complete_notified"]
+with open(plan_path + ".tmp", "w", encoding="utf-8") as f:
+    json.dump(plan, f, ensure_ascii=False, indent=2)
+os.replace(plan_path + ".tmp", plan_path)
+PY
+```
+
+**退避(`evacuate == true`)= 安価 no-op tick**: `evacuate` が真なら今 tick を **安価 no-op tick** にする — **freshness 報告(「tick 開始時の前提整備」節手順 2 の `git rev-list` surface)と dispatch フェーズを skip し、下記通知(必要時)を出して早期 return する**。reconciliation・選別・discover はこの判定の前に既に実行済み(= 復帰検知に必要な最小集合)なので、仕事が復帰(eligible 出現 / marker 出現 / discover enqueue)すれば次 tick で自然に検知され `evacuate` が偽へ戻る(#78 自然復帰)。**`evacuate == false` の通常 tick は従来どおり**(freshness 報告 + dispatch を実行)。
+
+**通知(`notify == true`)= notify-once(退避=`idleNotified` / 完了=`completeNotified` の独立 2 系統)**: `notify` が真のとき **1 回だけ** `PushNotification` を出す。`notify_kind` で文言を分岐する:
+- **`notify_kind == "idle"`(退避通知)**: 「orchestrator が空転(eligible=0・未終端 step 残り)で N 連続に達し退避(安価 no-op tick)に入った」。notify-once は `idleNotified`(仕事復帰 = counter リセットで false へ再武装)が担う。
+- **`notify_kind == "complete"`(完了通知)**: 「全 step が終端に達した(系の完了)」。notify-once は `completeNotified`(all-terminal が true→false へ崩れたら再武装)が担う。**退避通知が先行して `idleNotified=true` でも、完了通知は独立フラグのため抑止されない**(round4 🔴 L1/L2 — 「最後の PR が空転して待たされた末に merge され全終端に至る」最頻経路で完了通知が届くことを構造保証する)。
+
+`evacuate` が真でも `notify` が偽の tick(既に通知済み = notify-once の early-skip)は、通知を出さずに安価 no-op tick として早期 return する(退避通知自身が冗長な再通知を再生産しない)。**N=2**(固定値・best-effort・`decide-idle-evacuation.py` の `IDLE_EVACUATION_THRESHOLD` が単一ソース。prose に閾値を複製しない)。
+
 ## dispatch 先ごとの委譲方式(転写しない)
 
 各ロールは **dispatch → 状況を outcome トークンに解決 → 判定器(「ルーティング判定」節)→ route / label_action 実行**。dispatch prompt(委譲の中身)は転写せず参照させる方式を維持する。**ルーティング規則は判定器 script が正**なので、各ロール節は「どう outcome に解決するか」だけを書き、書込・sink・ラベルの規則は複製しない。
@@ -974,7 +1044,7 @@ PY
 台帳の書込はローカルファイル編集のため、誤りがあれば手動で `pr.status` / `issue.status` を巻き戻し、`need for human review` ラベルを外して、次 tick で再評価させる。
 ````
 
-0 件 tick の場合は「dispatch 対象なし」の 1 行報告に簡略化する。
+0 件 tick の場合は「dispatch 対象なし」の 1 行報告に簡略化する。**退避 tick(「空転検知と退避 + 完了通知」節・`evacuate == true`)は安価 no-op tick のため freshness 行と dispatch サマリ表を省いた最小報告にする** — `idleTickCount=<N>` と、通知を出した tick なら `notify_kind`(`idle`=退避に入った / `complete`=系が完了した)を 1 行 surface する(既に通知済みで `notify == false` の tick は「退避継続中(通知済み・安価 no-op tick)」の 1 行に留める)。
 
 ## 2 モード運用(`/goal` 有期 / `/loop` 常設)
 
@@ -983,7 +1053,7 @@ PY
 | モード | 駆動 | 用途 | 停止 |
 |---|---|---|---|
 | **モード1: 有期キャンペーン**(`$1` = 自由文 / `pr <N>` / `issue <N>` → `/goal` 文字列を組み立てて提示。#60 / #89) | `/goal`(Stop hook・goal 評価器)を人間が実行 | **「この issue / phase を終端まで」の目標到達型**の集中運転 | 目標達成 or 停止条件(sink 13 文)到達で評価器が停止する。goal 評価器が価値を持つ用途 |
-| **モード2: 常設巡航**(`$1` なし = 通常 tick を 1 回実行) | `/loop N /harness-orchestrate`(定期発火・1 発火 = 1 tick) | **discover(#78)駆動で仕事を回し続ける常設運用**。仕事が無ければ 0 件 tick の 1 行報告で終わり、`discover` ラベルが付けば次 tick で自然に流れ込む | 明示停止(`/loop` 解除)。空転時の退避・完了通知は #84(Phase 4)が将来部品 |
+| **モード2: 常設巡航**(`$1` なし = 通常 tick を 1 回実行) | `/loop N /harness-orchestrate`(定期発火・1 発火 = 1 tick) | **discover(#78)駆動で仕事を回し続ける常設運用**。仕事が無ければ 0 件 tick の 1 行報告で終わり、`discover` ラベルが付けば次 tick で自然に流れ込む | 明示停止(`/loop` 解除)。空転時の退避(安価 no-op tick)・完了通知は本 issue #84(Phase 3・`phase3` / #106 epic)で実装済み(下記「空転検知と退避 + 完了通知」節。#77 のトリガー機構が入れば真の発火間隔削減へ拡張) |
 
 - **モード選択の基準**: 「終わりが定義できて、そこに到達したら止めたい」なら `/goal`(有期)。「discover 駆動で仕事が来る限り回し続けたい」なら `/loop`(常設)。**常設巡航を `/goal` で行おうとすると (1) 組み立てモードへの誤入(再帰)(2) 枯渇 / 永久停止のジレンマ (3) goal 評価器の常時コスト、の 3 問題が生じる**ため常設は `/loop` を使う(モード2 では各 tick が完結し、tick 跨ぎの状態は in-flight マーカー + reconciliation(#26)が本来の設計どおり担うため、goal 文が不要になり 3 問題が構造的に消える)。
 - **#107 manage ループとの接点は `discover` ラベルただ 1 つ**: manage ループ(`/harness-product-manage` を `/loop` で日単位・#107)が兆候から issue を**起票**し、**v1(Alternatives A)では `discover` ラベルは人間が付与する**(PM は本文へ「discover 推奨」を明示するだけで自分では貼らない = WIP ゲート)。本 orchestrate ループ(モード2)が次 tick でその `discover` ラベル付き issue を拾って流し込む。GitHub がキューとして機能する疎結合であり、両ループは台帳・ラベル以外で直接結合しない(PM が自動でラベルを貼る全自動 = Alternatives B は目標状態だが規約改定が先行依存で v1 では採らない・`roles/product-manager.md`「提案止まりの境界」節)。
