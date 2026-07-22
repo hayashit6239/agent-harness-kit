@@ -18,7 +18,9 @@ epic 除外の決定論的な判定は script 側」。**network 非依存・LLM
 
 確定した仕様 (issue #78 の round1/round2 レビューで収束・issue #107 で epic 除外を追加):
   - **epic 除外 fail-safe (issue #107・D1)**: `isEpic: true` の候補は enqueue 対象から**決定論的に
-    落とす** (dedup / 採番の前段で drop する。id 番号を消費しない)。epic は最下層の実装単位ではなく
+    落とす** (dedup / 採番の前段で drop する。id 番号を消費しない)。**除外は batch 全体・順序非依存**
+    (round1 🟡6): 同一 batch 内で同じ number が epic と非 epic の両形で現れても (退化入力) その number は
+    enqueue しない (epic 判定を先に batch 全体から集めてから畳む)。epic は最下層の実装単位ではなく
     PR で close できないため、誤って `discover` ラベルが付いても台帳 step 化しない
     (`rules/issue-tree.md` §1-§2 の層意味論の唯一の機械的裏打ち)。epic 判定 (epic ラベル /
     `epic:` prefix) 自体は network 側 (orchestrator prose) が行い `isEpic` として渡す — 本 script は
@@ -179,16 +181,27 @@ def _id_scheme(steps):
 
 def decide_enqueue(normalized, steps):
     """正規化済み候補 `[(number, is_epic), ...]` と現台帳 steps から、追加すべき step 群を返す
-    (純関数・決定論)。epic 除外 (issue #107) → dedup → batch 採番の順で決定論的に畳む。"""
+    (純関数・決定論)。epic 除外 (issue #107) → dedup → batch 採番の順で決定論的に畳む。
+
+    **epic 除外は batch 全体・順序非依存** (issue #107 round1 🟡6): 同一 batch 内に同じ number が
+    epic と非 epic の両形で現れる退化入力 (例 `[{78,epic:true},{78,epic:false}]`) でも、その number は
+    enqueue しない。epic 判定を**先に batch 全体から集めて** (epic_numbers) から非 epic を畳むため、
+    epic-first / 非epic-first のどちらの順序でも結果が同じ (fail-safe を「除外側に倒す」設計と整合)。
+    現行 discover jq は 1 issue 1 要素しか生成しないため文書化経路からは到達しない退化入力だが、
+    fail-safe の防御として number 単位でも包含側に倒れないよう閉じておく。"""
     existing = _existing_numbers(steps)
     prefix, current_max = _id_scheme(steps)
     next_num = current_max + 1
+    # epic 除外 fail-safe を batch 全体・順序非依存にするため epic の number を先に集める
+    # (issue #107・D1 / round1 🟡6)。id 番号は消費しない (集めるだけ・enqueue しない)。
+    epic_numbers = {number for number, is_epic in normalized if is_epic}
     enqueue = []
     seen = set()  # batch 内で既に enqueue した number (batch 内重複の dedup)
     for number, is_epic in normalized:
-        if is_epic:
-            # epic 除外 fail-safe (issue #107・D1): dedup / 採番の前段で落とす (id 番号を消費しない)。
-            # epic は最下層の実装単位でなく PR で close できないため台帳 step 化しない。
+        if is_epic or number in epic_numbers:
+            # epic 除外 fail-safe (issue #107・D1): epic 判定された number は dedup / 採番の前段で落とす
+            # (id 番号を消費しない)。同一 batch に非 epic 重複があっても epic_numbers で巻き込んで弾く
+            # (順序非依存・round1 🟡6)。epic は最下層の実装単位でなく PR で close できないため台帳 step 化しない。
             continue
         if number in existing or number in seen:
             # dedup: 既存 step と一致 (終端含む)、または同一 tick batch 内で既出 = no-op

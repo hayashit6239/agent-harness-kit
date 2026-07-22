@@ -985,7 +985,7 @@ PY
 | **モード2: 常設巡航**(`$1` なし = 通常 tick を 1 回実行) | `/loop N /harness-orchestrate`(定期発火・1 発火 = 1 tick) | **discover(#78)駆動で仕事を回し続ける常設運用**。仕事が無ければ 0 件 tick の 1 行報告で終わり、`discover` ラベルが付けば次 tick で自然に流れ込む | 明示停止(`/loop` 解除)。空転時の退避・完了通知は #84(Phase 4)が将来部品 |
 
 - **モード選択の基準**: 「終わりが定義できて、そこに到達したら止めたい」なら `/goal`(有期)。「discover 駆動で仕事が来る限り回し続けたい」なら `/loop`(常設)。**常設巡航を `/goal` で行おうとすると (1) 組み立てモードへの誤入(再帰)(2) 枯渇 / 永久停止のジレンマ (3) goal 評価器の常時コスト、の 3 問題が生じる**ため常設は `/loop` を使う(モード2 では各 tick が完結し、tick 跨ぎの状態は in-flight マーカー + reconciliation(#26)が本来の設計どおり担うため、goal 文が不要になり 3 問題が構造的に消える)。
-- **#107 manage ループとの接点は `discover` ラベルただ 1 つ**: manage ループ(`/harness-product-manage` を `/loop` で日単位・#107)が `discover` ラベルを貼り、本 orchestrate ループ(モード2)が次 tick でそれを拾って流し込む。GitHub がキューとして機能する疎結合であり、両ループは台帳・ラベル以外で直接結合しない。
+- **#107 manage ループとの接点は `discover` ラベルただ 1 つ**: manage ループ(`/harness-product-manage` を `/loop` で日単位・#107)が兆候から issue を**起票**し、**v1(Alternatives A)では `discover` ラベルは人間が付与する**(PM は本文へ「discover 推奨」を明示するだけで自分では貼らない = WIP ゲート)。本 orchestrate ループ(モード2)が次 tick でその `discover` ラベル付き issue を拾って流し込む。GitHub がキューとして機能する疎結合であり、両ループは台帳・ラベル以外で直接結合しない(PM が自動でラベルを貼る全自動 = Alternatives B は目標状態だが規約改定が先行依存で v1 では採らない・`roles/product-manager.md`「提案止まりの境界」節)。
 
 ### 常設巡航(モード2 = `/loop`)の回し方
 

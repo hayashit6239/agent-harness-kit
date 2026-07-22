@@ -41,7 +41,7 @@ allowed-tools: [Read, Glob, Grep, Bash, Agent, Skill]
 3. **棚卸し**(epic 帰属漏れ・ラベル不整合・迷子 issue)— `rules/issue-tree.md` §3.3 の 3 シグナル不整合で機械判定。§5 の `.harness/roadmap.json`(phase→epic 逆引き)に依拠する
 4. **レビュー残件**(round レビューの 🟡 残件・振り返りの follow-up 未起票)
 
-- **roadmap.json 不在時の fail-soft(D6)**: 棚卸し型(第 1 型ではなく上記 3.)が依拠する `.harness/roadmap.json` の provisioning 所有者は **`/harness-init`**(`rules/issue-tree.md` §6.1)であり本コマンドではない。未整備(ファイル欠損 / `phases: []`)の間、当該検査は §6.3 fail-soft で「解決不能」を 1 行 surface して skip する(crash しない)。**DoD (i)「4 型スキャンが走る」は、この型が fail-soft skip = no-op でも満たす**。
+- **roadmap.json 不在時の fail-soft(D6)**: 棚卸し型(第 1 型ではなく上記 3.)が依拠する `.harness/roadmap.json` の provisioning 所有者は **`/harness-init`**(書込主体の定義は `rules/issue-tree.md` §6.3「書込主体・…縮退」。§6.1 はパス・形式のみ)であり本コマンドではない。未整備(ファイル欠損 / `phases: []`)の間、当該検査は §6.3 fail-soft で「解決不能」を 1 行 surface して skip する(crash しない)。**DoD (i)「4 型スキャンが走る」は、この型が fail-soft skip = no-op でも満たす**。
 - **whitelist 外は拾わない**: バックログのノイズ膨張を防ぐため、v1 は上記 4 型に限る(機械的兆候源 = CI 失敗 / doc 乖離 / 監査は #102 の射程・スコープ外)。
 
 ### 3. 候補ごとの裏取り(起票前) → DoD (ii)
@@ -50,19 +50,14 @@ allowed-tools: [Read, Glob, Grep, Bash, Agent, Skill]
 
 ### 4. 起票前 dedup(2 レイヤ)→ DoD (iii)
 
-**PM の起票前 dedup と、enqueue 側 `decide-enqueue-steps.py` の dedup は別レイヤ(D3)**:
-
-- **前段フィルタ(決定論・script 化可)**: 決定論キーがある粗い突合のみ — タイトル完全一致 / 同一 URL / 既存 open issue が既に持つ file:line 根拠の一致。
-- **本判定(内容ベース・LLM・非決定論)**: 「既存 issue と同じ問題か」の意味的判断。**起票前の候補は番号未採番**のため `issue.number` 一致で閉じる enqueue 側 dedup(採番済み突合)とは本質的に別物 — 「pure script に切る」は dedup 全体には成立しない。
-
-既存 open/closed issue を `gh issue list` / `gh search issues` で検索し、意味的に重複する候補は起票しない。この LLM 判断部は smoke 対象外 = 手動の最小動作確認(本文のテスト境界と整合)。
+- 既存 open/closed issue を `gh issue list` / `gh search issues` で検索し、意味的に重複する候補は**起票しない**。
+- **dedup の機序は spec が単一の正・ここでは転写しない**: 2 レイヤ構成(決定論キーの粗い前段フィルタ + 内容ベースの本判定・LLM)と、enqueue 側 `decide-enqueue-steps.py` の number-dedup との**別レイヤ関係(D3)**は `${CLAUDE_PLUGIN_ROOT}/roles/product-manager.md`「安全防護」節が定義する(policy/spec で二重に書くと drift 源になるため機序は spec に寄せる)。本判定(LLM・非決定論)部は smoke 対象外 = 手動の最小動作確認(本文のテスト境界と整合)。
 
 ### 5. 起票上限 N と超過時挙動(暴走防止)
 
 - **N = 1 tick の起票上限**。v1 目安 = **3**(policy 層の小さな既定値・運用観測で調整可・D2)。
-- **候補が N を超えたとき = 兆候型の確信度順に N 件だけ起票し、残りは破棄して次 tick 再スキャン(持ち越さない)**(D2)。選抜順は上記 2. の 4 型順(約束の不履行 > 依存の鮮度 > 棚卸し > レビュー残件)、同型内は検出順(安定)で tie-break。
-  - **なぜ持ち越さないか**: enqueue の step は台帳に残るため持ち越せるが、**PM の起票は不可逆**(GitHub に issue が生える)。溢れた候補を持ち越すと二重起票リスクになる。まだ有効な兆候は次 tick で再浮上し、既起票分は上記 dedup が閉じる。
-- **機械 backstop は持たない(D7)**: 上限 / dedup / whitelist の 3 点は v1 では L1(本手順の遵守)で受容する(公開起票の不可逆性を承知の上)。起票数の hard cap 等は誤起票が観測された場合の follow-up 候補。
+- **候補が N を超えたとき = 兆候型の確信度順に N 件だけ起票し、残りは破棄して次 tick 再スキャン(持ち越さない)**(D2)。選抜順は上記 2. の 4 型順(約束の不履行 > 依存の鮮度 > 棚卸し > レビュー残件)、同型内は検出順(安定)で tie-break。**「持ち越さない」根拠(PM の起票は不可逆で溢れの持ち越しは二重起票リスク)は `roles/product-manager.md`「安全防護」節が正 — ここでは転写しない。**
+- **機械 backstop は持たない(D7)**: 上限 / dedup / whitelist の 3 点は v1 では L1(本手順の遵守)で受容する(公開起票の不可逆性を承知の上)。詳細は spec「安全防護」節。
 
 ### 6. 起票 → DoD (ii)
 
@@ -78,10 +73,8 @@ allowed-tools: [Read, Glob, Grep, Bash, Agent, Skill]
 
 ## 書込境界 / 禁止事項(doer ≠ judge をこの経路でも保つ)
 
-- **自律で許すのは GitHub への issue 起票と提案コメントまで**。台帳(`.harness/plan-progress.json`)には**一切触れない**(Read も編集も。単一 writer は orchestrator)。epic 配線(sub-issue)・ラベル操作(`discover` 含む)・close・優先度変更は**提案止まり**(人間または人間の明示指示でのみ)。
-- **fan-out するなら `general-purpose`**: 兆候スキャンや裏取りで subagent を fan-out する場面は `subagent_type: "general-purpose"` で起動する(`fork` は呼出元文脈を丸ごと継承し狭い directive を無視して最上位タスクを再実行する)。文脈は各 subagent へ自己完結する形で渡す。
-- **`gh auth switch` を実行しない**(active アカウントを変えると他セッションの `gh` が壊れる)。GitHub 操作は `gh` CLI のみ。
-- **観測していないことを書かない**: 「エラー」と「処理中」を区別する。裏取りできない兆候は「未確認」と報告し、起票しない。
+- **自律で許すのは GitHub への issue 起票と提案コメントまで**。台帳(`.harness/plan-progress.json`)には**一切触れない**(Read も編集も。単一 writer は orchestrator)。epic 配線(sub-issue)・ラベル操作(`discover` 含む)・close・優先度変更は**提案止まり**(人間または人間の明示指示でのみ)。GitHub 操作は `gh` CLI のみ。
+- **全ロール共通コア 5 項目(fork/general-purpose・`SendMessage` 禁止・`gh auth switch` 禁止・台帳不触・観測していないこと)は本コマンドでは転写しない(honest downgrade・issue #107 round1 🔴)**: 単一の正は `${CLAUDE_PLUGIN_ROOT}/roles/product-manager.md` 冒頭の ★最重要★ ブロック(= smoke `run-smoke.sh` の `CANONICAL_CORE` が逐語検査する DISPATCH_FILES 登録済みの単一ソース)。本コマンドは policy 層 = `/loop` 直起動の入口であり orchestrator に dispatch される prompt ではない(`commands/harness-orchestrate.md` が共通コアの逐語検査対象外なのと同じ扱い)。共通コアを本ファイルへ paraphrase 複製すると単一ソースから drift しうるため複製しない。上記「このコマンドは転写しない」に従い**手順 0 の前に必ず spec を Read する**ので、兆候スキャン/裏取りで subagent を fan-out する時点では共通コア 5 項目が文脈に載っている。
 
 ## 参照
 
