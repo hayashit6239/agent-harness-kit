@@ -123,3 +123,12 @@ PR フェーズ (10 status):
 - **スコープ外(意図的)**: 本節が定義するのは PR merge に伴う終端記録の代行のみ。PR を伴わない issue 単体の close 代行(人間の明示指示によるスタンドアロン close)は本節の対象外とし、必要になった時点で別途手順を定義する。
 - **1. の事前確認が失敗した場合 (`pr.status != "ready for merge"` または CI 未緑)、エージェントは merge を拒否し、状況を人間へ報告してエスカレーションする。** 人間の明示指示があっても、機械検証可能なゲートを自己判断で上書きしない — doer ≠ judge の精神を merge 代行にも適用する。
 - **merge commit を既定にする根拠**: 各 round のレビュー往復そのものが「経験還元」の記録であり (issue #1 の設計思想)、squash で潰すとこの記録が失われる。
+
+## issue tree 規約と起票規約 (`rules/`)
+
+issue の構造規約 (文法) と起票書式は role 横断規約として `rules/` に置き、`${CLAUDE_PLUGIN_ROOT}/rules/` 経由で配布する (`rules/escalate-to-human.md` と同じ置き場)。product manager ロール・orchestrator の discover→enqueue フェーズ・issue reviewer・人間の起票、の 4 者が共通参照する。規約の改定は人間の判断による (ロールは提案できるが自律で書き換えない)。
+
+- **`rules/issue-tree.md`** — tree の 3 層構造 (rfc → epic → 実装 / 決定 issue)・prefix 語彙 13 種 → 3 層の全射割当 (語彙の唯一の正)・ラベルの 3 直交信号 (帰属 = phase ラベル + `epic` / 着手指示 = `discover` / 状態 = `ready for merge` 等)・sub-issue 配線の取得契約 (`gh api graphql` の `parent` / `subIssues`。`gh issue view --json` では読めない)・帰属と逸脱 (迷子) の機械判定可能な定義・インスタンスデータ `.harness/roadmap.json` (phase → epic 対応表) の契約を定義する。
+- **`rules/issue-authoring.md`** — タイトル prefix の選定フロー・Problem / Context / Alternatives (+ Implementation Scope) の本文構成・起票前チェックリスト・HEREDOC 実行例を定義する (prefix 語彙は `rules/issue-tree.md` を唯一の正として参照する)。
+
+`.harness/roadmap.json` (phase → epic 対応表) は導入先ごとに中身が分岐するインスタンスデータで、`/harness-init` が `templates/roadmap.json` (真に空の `{"phases": []}`) から seed する。台帳 (`plan-progress.json`) と同じくロールは自律で書き換えず、人間 / `/harness-init` が編集する (規約 = kit の `rules/`・インスタンスデータ = repo 側、の分離)。空 / 欠損 / 型不正時は消費者が fail-soft で 1 行 surface するだけで壊れない (詳細は `rules/issue-tree.md` §6)。
