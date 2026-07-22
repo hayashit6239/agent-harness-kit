@@ -488,29 +488,31 @@ step["issueReviewLock"] = {"dispatched_tick": tick, "deadline_tick": tick, "retr
 
 **主体(round2 🔴2)= 純関数 script + bounded label クエリ(LLM subagent ではない)**。v1=A は B(LLM を伴う自動起票)を #102 へ切り出し済みのため discover に LLM 判断が構造的に無く、「発見役」独立 subagent・dispatch prompt・`issueReviewLock` 同型の in-flight ロックは**不要**(discover は subagent dispatch ではなく tick 内の同期 script 呼出)。構成は 3 層:
 
-1. **network discover(orchestrator の I/O・散文・smoke 対象外=手動確認)**: 次を 1 回実行し、opt-in ラベル `discover` が付いた open issue の候補 `issue.number` を得る:
+1. **network discover(orchestrator の I/O・散文・smoke 対象外=手動確認)**: 次を 1 回実行し、opt-in ラベル `discover` が付いた open issue の候補を、**epic 判定材料(epic ラベル / `epic:` prefix)を添えた `{number, isEpic}` オブジェクト配列**として得る(epic 除外 fail-safe の入力・issue #107・D1):
    ```
-   gh issue list --repo <owner/repo> --label discover --state open --json number --jq '[.[].number]'
+   gh issue list --repo <owner/repo> --label discover --state open --json number,labels,title \
+     --jq '[.[] | {number, isEpic: ((.labels | map(.name) | index("epic") != null) or (.title | test("^epic(\\(.*\\))?!?:")))}]'
    ```
+   - **epic 判定は 2 シグナルの OR(round2 🟢3)**: `epic` **ラベル**を持つ、または **タイトルが `epic` prefix**(Conventional Commits 形 `epic:` / `epic(scope):` / `epic!:`)で始まる、のいずれかで `isEpic=true`。**ラベル単一シグナルだと `epic` ラベルの無い prefix-only epic を取りこぼす**ため、`--json` に `title` を含めて prefix も判定する(層意味論の正は `rules/issue-tree.md` §1-§2)。判定を epic 側へ寄せる fail-safe なので、稀な誤判定は「除外側に倒れる」= 安全側。
    - **クエリ失敗時は fail-soft(round3 🟡 L6)**: このクエリ自体が失敗(network 断 / auth 失効 / rate limit)したら、**その tick の discover は no-op で続行し、失敗を tick 報告に 1 行 surface する**(tick 全体は止めない)。これは「tick 開始時の前提整備」節の `git fetch`(「失敗は報告に留め tick を止めない」)と**同型の受容**。空結果(候補 0 件・クエリ成功)の no-op とは**別の失敗モード**であることに注意 — 空結果は下記 script に `candidates: []` として渡り no-op になるが、クエリ失敗はそもそも script に入力すら渡さず、この分岐で no-op に倒す。network 層のため smoke 対象外(手動確認境界)だが、fail-soft を実装裁量に落とさず本行で明記する。
-2. **純 enqueue/dedup(script・smoke 対象)**: 得た候補 numbers と現台帳 steps を `scripts/decide-enqueue-steps.py` へ渡し、追加すべき step 群を得る(既存 `reconcile-dispatch-marker.py` / `decide-orchestrator-route.py` と同型の pure decision script・stdin JSON → stdout・network 非依存・決定論):
+2. **純 enqueue/dedup/epic 除外(script・smoke 対象)**: 得た候補オブジェクト配列と現台帳 steps を `scripts/decide-enqueue-steps.py` へ渡し、追加すべき step 群を得る(既存 `reconcile-dispatch-marker.py` / `decide-orchestrator-route.py` と同型の pure decision script・stdin JSON → stdout・network 非依存・決定論):
    ```
    PLAN="$(git rev-parse --show-toplevel)/.harness/plan-progress.json"
-   ENQUEUE=$(jq -cn --argjson cand "<候補 numbers の JSON 配列>" --slurpfile plan "$PLAN" \
+   ENQUEUE=$(jq -cn --argjson cand "<候補オブジェクト配列(上記 discover の出力・{number,isEpic})>" --slurpfile plan "$PLAN" \
      '{candidates: $cand, steps: $plan[0].steps}' \
      | python3 "${CLAUDE_PLUGIN_ROOT}/scripts/decide-enqueue-steps.py")
    # -> {"enqueue": [<追加 step>, ...]}   (空配列 = no-op)
    ```
-   入出力契約 = `{候補 issue.number リスト, 現台帳 steps} → {追加 step 群 / no-op}`。この script が **dedup(dedup key=`issue.number` 一致・突合範囲=全 step(終端 `closed issue` / `merged pr` を含む)・終端後の再ラベル=no-op・round1 🔴2)/ batch 採番(同一 tick で複数候補を enqueue する際は max+1, max+2, … と逐次加算・round2 🟡2。固定値 DoD「1 件追加」は単一対象 happy-path として不変)/ step 雛形生成(`id`=既存台帳の形式に追随した max+1 の string(`P<n>` 台帳なら `P<max+1>`・純数値台帳なら `<max+1>`・issue #78 round1 🔴) / `issue={number:<N>, status:"created issue", githubState:"open"}` / `pr={number:null,...}` / `dependsOn` 省略・round1 🟡1)** をすべて決定論的に担う。空入力(候補 0 件)= no-op(round1 🟡2)。
+   入出力契約 = `{候補 (裸 int | {number, isEpic, ...}) リスト, 現台帳 steps} → {追加 step 群 / no-op}`。この script が **epic 除外 fail-safe(`isEpic:true` の候補を dedup/採番の前段で決定論的に drop・id 番号を消費しない・issue #107・D1。epic は最下層の実装単位でなく PR で close できないため、誤って `discover` ラベルが付いても台帳 step 化しない)/ dedup(dedup key=`issue.number` 一致・突合範囲=全 step(終端 `closed issue` / `merged pr` を含む)・終端後の再ラベル=no-op・round1 🔴2)/ batch 採番(同一 tick で複数候補を enqueue する際は max+1, max+2, … と逐次加算・round2 🟡2。固定値 DoD「1 件追加」は単一対象 happy-path として不変)/ step 雛形生成(`id`=既存台帳の形式に追随した max+1 の string(`P<n>` 台帳なら `P<max+1>`・純数値台帳なら `<max+1>`・issue #78 round1 🔴) / `issue={number:<N>, status:"created issue", githubState:"open"}` / `pr={number:null,...}` / `dependsOn` 省略・round1 🟡1)** をすべて決定論的に担う。空入力(候補 0 件)= no-op(round1 🟡2)。**候補要素は後方互換で裸の `issue.number`(int)も受理する**が、epic 除外を効かせるには上記のとおり `{number, isEpic}` を渡す(裸 int は `isEpic=false` 扱い = 除外しない)。**下流 #111 との共有契約**: 同じ `candidates` 要素へ #111 が `dependsOn`(`Depends-on: #N` の parse 結果)を後から追加する予定で、script は dict の**未知キーを無視する**ため #107 の `{number, isEpic}` を壊さず載る(着地順 = #107 先行 → #111 追随・round2 🟡1)。
 3. **台帳書込(orchestrator・単一 writer)**: orchestrator が script の返す `enqueue` 配列の各 step を**台帳の `steps` へ append する**(発見役は候補報告のみ・enqueue の台帳書込は orchestrator tick に集約する単一 writer 不変条件・round1 🔴3。discover subagent が直接台帳を書く経路は禁止)。append はローカル台帳の直接編集(F案・`git add`/`commit` はしない)。`enqueue` が空なら書込なし(no-op)。書込後、追加 step は同一 tick の選別(jq)から見える。
 
 **opt-in ラベル `discover` の provisioning(round1 🟢2 / round2 🟢)**: このラベルは `commands/harness-init.md` 手順 5 の `gh label create --force` 対象に含める(導入先 repo での移植性のため人作業にしない)。**`discover` ラベルは人間が issue に付ける*入力*ラベル**であり、orchestrator が付与/除去する status ラベル(`need for human review` / `ready for implementation` 等)とは別種のため、**「label_action の実行」節への create fallback は不要**(orchestrator は `discover` ラベルの存在だけを要求し付与/除去はしないので、label_action の同期対象は増えない)。
 
-**tree 規約への参照(issue #109)**: 発見される issue の層・帰属・prefix 意味論は kit の `${CLAUDE_PLUGIN_ROOT}/rules/issue-tree.md`(role 横断の tree 文法)が定義する。discover→enqueue はこの文法の消費者の 1 つ(round1 🔴1(b) の 4 消費者)。**epic を実装 step として enqueue しない epic 除外 fail-safe**(構造層 = `epic` prefix / `epic` ラベルの issue は最下層の実装単位ではない・`rules/issue-tree.md` §1-§2)は本 v1 のスコープ外(#107 / #78 follow-up 側の論点)だが、その判定は本規約の層意味論を参照する — 文法の正は `rules/issue-tree.md` 側に一元化する(discover 側で層意味論を再定義しない)。
+**tree 規約への参照(issue #109)**: 発見される issue の層・帰属・prefix 意味論は kit の `${CLAUDE_PLUGIN_ROOT}/rules/issue-tree.md`(role 横断の tree 文法)が定義する。discover→enqueue はこの文法の消費者の 1 つ(round1 🔴1(b) の 4 消費者)。**epic を実装 step として enqueue しない epic 除外 fail-safe**(構造層 = `epic` prefix / `epic` ラベルの issue は最下層の実装単位ではない・`rules/issue-tree.md` §1-§2)は **issue #107 が所有し実装済み**(所有権を #107 に一意確定・D1。旧記述「本 v1 のスコープ外(#107 / #78 follow-up 側の論点)」が #107 と相互に送り返していた**循環参照を解消**した)。実装位置は上記 2. の script 側(`decide-enqueue-steps.py` が `isEpic:true` を決定論的に drop・smoke 閉ループ)で、判定材料(epic ラベル / `epic:` prefix)の取得は上記 1. の network prose が担う。文法の正は `rules/issue-tree.md` 側に一元化する(discover 側で層意味論を再定義しない)。
 
 **「配車テーブル」節末尾との関係 = 狭い supersede(round2 🔴3)**: 下記「配車テーブル」節末尾は 2 つを主張する — (1) 配車テーブルの issue サイド選別は台帳 `issue.status` を読むだけ、(2) 追加の GitHub ポーリングは実装しない。**(1) は不変**(discover フェーズは選別の上流の別レーンで、配車テーブル自体は従来どおり `issue.status` のみ読む)。#78 が supersede するのは **(2) のみ・かつ discover フェーズについてのみ**であり、これは #78 の承認済みの目的(「機械が発見して enqueue する」)の直接の帰結で新規のアーキ判断ではない。**頻度・コストの有界性**: discover は毎 tick 1 回の bounded な `gh issue list`(候補 number のみ返す 1 往復)。これは (a) tick-prep の毎 tick `git fetch origin --quiet`、(b) #11 の `--drift` 頻度増、と同型の**受容されたコスト**。間引き(N tick に 1 回)は follow-up の最適化で v1 要件ではない(v1 は git-fetch と同じ毎 tick で回す)。
 
-**テスト境界(round2 🟡1)**: network discover(label クエリ・上記 1.)は smoke 対象外=手動の最小動作確認。純 enqueue/dedup script(上記 2.)は smoke 対象で、`tests/smoke/run-smoke.sh` が既存の pure decision script([7]/[8]/[9])と同型に決定論検証する(dedup / batch 採番 / 空入力 / 終端突合 / step 雛形の境界 + 不正入力 exit 2)。
+**テスト境界(round2 🟡1)**: network discover(label クエリ + epic 判定材料の取得・上記 1.)は smoke 対象外=手動の最小動作確認。純 enqueue/dedup/epic 除外 script(上記 2.)は smoke 対象で、`tests/smoke/run-smoke.sh` が既存の pure decision script([7]/[8]/[9])と同型に決定論検証する(dedup / batch 採番 / 空入力 / 終端突合 / step 雛形 / **epic 除外(`isEpic:true` を drop・id 番号を消費しない)/ 拡張 candidate 契約(裸 int | {number,isEpic,...} の受理・未知キー無視)** の境界 + 不正入力 exit 2)。**epic 除外が閉ループ(fail-safe が決定論テストに乗る)**なのは判定 drop を script 側に置いたためで、prose 側(epic 判定材料の取得)は smoke 対象外に残る(round2 🟢3 の受容境界)。
 
 ## 配車テーブル(PR ライフサイクル + issue フェーズ・issue #88)
 
@@ -983,7 +985,7 @@ PY
 | **モード2: 常設巡航**(`$1` なし = 通常 tick を 1 回実行) | `/loop N /harness-orchestrate`(定期発火・1 発火 = 1 tick) | **discover(#78)駆動で仕事を回し続ける常設運用**。仕事が無ければ 0 件 tick の 1 行報告で終わり、`discover` ラベルが付けば次 tick で自然に流れ込む | 明示停止(`/loop` 解除)。空転時の退避・完了通知は #84(Phase 4)が将来部品 |
 
 - **モード選択の基準**: 「終わりが定義できて、そこに到達したら止めたい」なら `/goal`(有期)。「discover 駆動で仕事が来る限り回し続けたい」なら `/loop`(常設)。**常設巡航を `/goal` で行おうとすると (1) 組み立てモードへの誤入(再帰)(2) 枯渇 / 永久停止のジレンマ (3) goal 評価器の常時コスト、の 3 問題が生じる**ため常設は `/loop` を使う(モード2 では各 tick が完結し、tick 跨ぎの状態は in-flight マーカー + reconciliation(#26)が本来の設計どおり担うため、goal 文が不要になり 3 問題が構造的に消える)。
-- **#107 manage ループとの接点は `discover` ラベルただ 1 つ**: manage ループ(`/harness-product-manage` を `/loop` で日単位・#107)が `discover` ラベルを貼り、本 orchestrate ループ(モード2)が次 tick でそれを拾って流し込む。GitHub がキューとして機能する疎結合であり、両ループは台帳・ラベル以外で直接結合しない。
+- **#107 manage ループとの接点は `discover` ラベルただ 1 つ**: manage ループ(`/harness-product-manage` を `/loop` で日単位・#107)が兆候から issue を**起票**し、**v1(Alternatives A)では `discover` ラベルは人間が付与する**(PM は本文へ「discover 推奨」を明示するだけで自分では貼らない = WIP ゲート)。本 orchestrate ループ(モード2)が次 tick でその `discover` ラベル付き issue を拾って流し込む。GitHub がキューとして機能する疎結合であり、両ループは台帳・ラベル以外で直接結合しない(PM が自動でラベルを貼る全自動 = Alternatives B は目標状態だが規約改定が先行依存で v1 では採らない・`roles/product-manager.md`「提案止まりの境界」節)。
 
 ### 常設巡航(モード2 = `/loop`)の回し方
 
