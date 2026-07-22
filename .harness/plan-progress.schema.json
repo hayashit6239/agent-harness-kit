@@ -26,6 +26,19 @@
     "steps": {
       "type": "array",
       "items": { "$ref": "#/definitions/step" }
+    },
+    "idleTickCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "(任意・transient) orchestrator の空転検知カウンタ (issue #84)。idle 4 条件 (eligible=0 / in-flight marker=0 / not all-sink / sink への推移的 dependsOn ブロック無し) をすべて満たす tick で +1、仕事が在る/復帰した tick で 0 へリセットする。閾値 N (=2) に達すると退避 (安価 no-op tick) する。orchestratorTick / statusesPostFailCount と同流儀で validator/drift/smoke の検査対象外・キー無しは 0 扱い (判定ロジックの正は scripts/decide-idle-evacuation.py・閾値の単一ソースはその IDLE_EVACUATION_THRESHOLD)"
+    },
+    "idleNotified": {
+      "type": "boolean",
+      "description": "(任意・transient) 退避通知の notify-once フラグ (issue #84)。idleTickCount が閾値に達し退避通知を 1 回出したら true にし、以後の退避 tick では再通知を抑止する。counter リセット (eligible>0 / in-flight marker 出現 / discover→eligible) で false へ再武装する。completeNotified とは独立で、idleNotified=true は完了通知を抑止しない (round4)。idleTickCount と同じく検査対象外・キー無しは false 扱い"
+    },
+    "completeNotified": {
+      "type": "boolean",
+      "description": "(任意・transient) 完了通知の notify-once フラグ (issue #84・round4)。全 step 終端 (all-terminal) 状態で完了通知を 1 回出したら true にし再通知を抑止する。all-terminal が true→false へ推移した (仕事が復帰し全終端が崩れた) tick で false へ再武装する。idleNotified とは独立フラグで、退避通知が先行して idleNotified=true でも完了通知は抑止されない (退避先行→全終端 の最頻経路で完了通知が届くことを構造保証する)。検査対象外・キー無しは false 扱い"
     }
   },
   "definitions": {

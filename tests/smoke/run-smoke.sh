@@ -2329,9 +2329,9 @@ ISSUE_TREE_RULE="$ROOT/rules/issue-tree.md"
 ISSUE_AUTHORING_RULE="$ROOT/rules/issue-authoring.md"
 
 # (a) rules 2 ファイル presence(item 14 の spec presence と同型・無条件)
-[ -f "$ISSUE_TREE_RULE" ] || fail "[17/18] (a) rules ファイルが存在しない: $ISSUE_TREE_RULE"
-[ -f "$ISSUE_AUTHORING_RULE" ] || fail "[17/18] (a) rules ファイルが存在しない: $ISSUE_AUTHORING_RULE"
-echo "[17/18] (a) issue tree / authoring rules presence OK (rules/issue-tree.md + rules/issue-authoring.md)"
+[ -f "$ISSUE_TREE_RULE" ] || fail "[17/19] (a) rules ファイルが存在しない: $ISSUE_TREE_RULE"
+[ -f "$ISSUE_AUTHORING_RULE" ] || fail "[17/19] (a) rules ファイルが存在しない: $ISSUE_AUTHORING_RULE"
+echo "[17/19] (a) issue tree / authoring rules presence OK (rules/issue-tree.md + rules/issue-authoring.md)"
 
 # (b) CLAUDE.harness.md 両 copy からの参照。両 rules ファイルを参照するか判定
 #     (0=両方参照 / 1=いずれか欠落)。fail を直接呼ばず戻り値で返し、正・負の両方に使う([14] と同流儀)。
@@ -2345,24 +2345,171 @@ harness_refs_both_rules() {
 }
 # templates/CLAUDE.harness.md は常に存在する
 harness_refs_both_rules "$ROOT/templates/CLAUDE.harness.md" \
-  || fail "[17/18] (b) templates/CLAUDE.harness.md が新設 rules ファイルを参照していない(未配線)"
+  || fail "[17/19] (b) templates/CLAUDE.harness.md が新設 rules ファイルを参照していない(未配線)"
 # .harness/CLAUDE.harness.md は kit checkout でのみ存在([10] と同じガード)。存在すれば同様に要求する
 if [ -f "$ROOT/.harness/CLAUDE.harness.md" ]; then
   harness_refs_both_rules "$ROOT/.harness/CLAUDE.harness.md" \
-    || fail "[17/18] (b) .harness/CLAUDE.harness.md が新設 rules ファイルを参照していない(未配線)"
-  echo "[17/18] (b) CLAUDE.harness.md 両 copy からの rules 参照 OK (templates/ + .harness/)"
+    || fail "[17/19] (b) .harness/CLAUDE.harness.md が新設 rules ファイルを参照していない(未配線)"
+  echo "[17/19] (b) CLAUDE.harness.md 両 copy からの rules 参照 OK (templates/ + .harness/)"
 else
-  echo "[17/18] (b) CLAUDE.harness.md rules 参照 OK (templates/ のみ・.harness/ 無し = kit checkout ではない)"
+  echo "[17/19] (b) CLAUDE.harness.md rules 参照 OK (templates/ のみ・.harness/ 無し = kit checkout ではない)"
 fi
 
 # (b) 負の自己検証: issue-tree.md への参照を抜いたコピーは fail(参照検査が vacuous でない証明)
 NEG_HARNESS_REF="$TMP/neg-harness-ref.md"
 grep -vF "${RULE_REFS[0]}" "$ROOT/templates/CLAUDE.harness.md" > "$NEG_HARNESS_REF"
 if harness_refs_both_rules "$NEG_HARNESS_REF"; then
-  fail "[17/18] (b) 参照検査が vacuous(issue-tree.md 参照を抜いても pass した)"
+  fail "[17/19] (b) 参照検査が vacuous(issue-tree.md 参照を抜いても pass した)"
 fi
-echo "[17/18] (b) rules 参照検査の負のケース OK (issue-tree.md 参照を抜いたコピーは fail 判定)"
+echo "[17/19] (b) rules 参照検査の負のケース OK (issue-tree.md 参照を抜いたコピーは fail 判定)"
 
-# --- 18. 完了 -----------------------------------------------------------------
-echo "[18/18] 全アサーション通過"
+# --- 18. decide-idle-evacuation (空転検知と退避 + 完了通知の判定・issue #84) --------
+# 選別ゼロ tick が続くときの退避 (安価 no-op tick) 判定 + 全終端時の完了通知を、pure decision
+# script へ切り出したもの (decide-statuses-post-action.py と同型)。idle 4 条件・退避閾値 N=2・
+# 完了/退避 の文言分岐・notify-once の 2 フラグ独立 (idleNotified / completeNotified)・リセットの
+# 全分岐を固定し、DoD の 5 fixture (N 連続空転→退避真 / 復帰 / some-sink 負例 / 全終端→完了 /
+# 退避先発→全終端→完了) を閉じる。閾値 N=2 の off-by-one や、退避/完了 の notify-once 相互抑止
+# (round4 の恒久 suppress バグ) が緑のまま素通しになるのを塞ぐ。
+IDLE_EVAC="$ROOT/scripts/decide-idle-evacuation.py"
+
+# $1=ラベル $2=入力 JSON $3=期待する出力 JSON (キー順を正規化して full 一致)
+assert_idle_evac() {
+  local label="$1" json="$2" want="$3" got wantc
+  got="$(printf '%s' "$json" | python3 "$IDLE_EVAC")" \
+    || fail "$label: decide-idle-evacuation の実行に失敗した"
+  got="$(printf '%s' "$got" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False))')"
+  wantc="$(printf '%s' "$want" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin),sort_keys=True,ensure_ascii=False))')"
+  [ "$got" = "$wantc" ] || fail "$label: 出力が期待と一致しない (got: $got / want: $wantc)"
+}
+
+# 入力の共通ひな形 (全 8 キーを明示・省略しない)。$1..$8 = eligible inflight all_sink blocked all_terminal cur_idle cur_idleN cur_compN
+idle_in() {
+  printf '{"eligible_count":%s,"inflight_marker_count":%s,"all_sink":%s,"blocked_behind_sink":%s,"all_terminal":%s,"current_idle_count":%s,"current_idle_notified":%s,"current_complete_notified":%s}' "$@"
+}
+
+# Fixture 1: N 連続空転 → 退避真 (N=2)。tick1 は閾値未満、tick2 で退避 + 退避通知 (notify-once 武装)
+assert_idle_evac "空転 tick1 (idle 0->1・閾値未満)" \
+  "$(idle_in 0 0 false false false 0 false false)" \
+  '{"new_idle_count":1,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+assert_idle_evac "空転 tick2 (idle 1->2・退避 + 退避通知発火)" \
+  "$(idle_in 0 0 false false false 1 false false)" \
+  '{"new_idle_count":2,"evacuate":true,"notify":true,"notify_kind":"idle","new_idle_notified":true,"new_complete_notified":false}'
+# notify-once: 退避継続中 (idleNotified 済み) は evacuate 継続だが再通知しない
+assert_idle_evac "空転 tick3 (退避継続・notify-once 抑止)" \
+  "$(idle_in 0 0 false false false 2 true false)" \
+  '{"new_idle_count":3,"evacuate":true,"notify":false,"notify_kind":"idle","new_idle_notified":true,"new_complete_notified":false}'
+
+# Fixture 2: 復帰 → 退避判定=偽・counter 0・idleNotified 再武装 (eligible>0 と marker 出現の 2 経路)
+assert_idle_evac "復帰 (eligible>0・リセット + 再武装)" \
+  "$(idle_in 1 0 false false false 2 true false)" \
+  '{"new_idle_count":0,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+assert_idle_evac "復帰 (marker 出現・リセット + 再武装)" \
+  "$(idle_in 0 1 false false false 2 true false)" \
+  '{"new_idle_count":0,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+
+# Fixture 3: some-sink + 推移的ブロック 負例 → idle=偽 (blocked・退避も完了通知も出さない)。
+#   閾値以上の counter でも blocked では退避しない (誤退避しない証明) + counter は保持 (リセットしない)
+assert_idle_evac "some-sink 負例 (blocked_behind_sink・閾値以上でも退避しない・counter 保持)" \
+  "$(idle_in 0 0 false true false 2 false false)" \
+  '{"new_idle_count":2,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+# all-sink 負例 (blocked の別枝) も退避しない
+assert_idle_evac "all-sink 負例 (all_sink・退避しない・counter 保持)" \
+  "$(idle_in 0 0 true false false 2 false false)" \
+  '{"new_idle_count":2,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+
+# Fixture 4: 全終端 (all_terminal) を N 連続 → notify_kind=complete (完了通知・退避文言でない)
+assert_idle_evac "全終端 tick1 (idle 0->1・閾値未満)" \
+  "$(idle_in 0 0 false false true 0 false false)" \
+  '{"new_idle_count":1,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+assert_idle_evac "全終端 tick2 (idle 1->2・完了通知発火)" \
+  "$(idle_in 0 0 false false true 1 false false)" \
+  '{"new_idle_count":2,"evacuate":true,"notify":true,"notify_kind":"complete","new_idle_notified":false,"new_complete_notified":true}'
+
+# Fixture 5 (round4 最頻経路): 退避通知が先発し idleNotified=true になった後に全終端へ推移
+#   → completeNotified の notify-once で完了通知が発火する (idleNotified に抑止されない)
+assert_idle_evac "退避先発→全終端 (idleNotified=true でも完了通知発火・round4)" \
+  "$(idle_in 0 0 false false true 2 true false)" \
+  '{"new_idle_count":3,"evacuate":true,"notify":true,"notify_kind":"complete","new_idle_notified":true,"new_complete_notified":true}'
+# completeNotified の再武装 (all-terminal true->false・仕事復帰) → completeNotified=false へ戻す
+assert_idle_evac "completeNotified 再武装 (全終端が崩れる)" \
+  "$(idle_in 1 0 false false false 0 false true)" \
+  '{"new_idle_count":0,"evacuate":false,"notify":false,"notify_kind":null,"new_idle_notified":false,"new_complete_notified":false}'
+# 完了通知 notify-once: 全終端継続 (completeNotified 済み) は再通知しない
+assert_idle_evac "全終端継続 (completeNotified 済み・notify-once 抑止)" \
+  "$(idle_in 0 0 false false true 3 false true)" \
+  '{"new_idle_count":4,"evacuate":true,"notify":false,"notify_kind":"complete","new_idle_notified":false,"new_complete_notified":true}'
+
+echo "[18/19] decide-idle-evacuation 判定ケース OK (N 連続空転→退避 + notify-once / 復帰リセット再武装 / some-sink・all-sink 負例(退避しない・counter 保持) / 全終端→完了 / 退避先発→全終端で完了通知(idleNotified 非抑止・round4) / completeNotified 再武装 + notify-once)"
+
+# --- end-to-end 結線 (DoD の some-sink 負例を台帳 shape で閉じる) --------------------------------
+# DoD:「step A=need for human review / step B=dependsOn:[A] の非終端」台帳で idle 判定=偽 (blocked)。
+# 上の判定ケースは decision script に blocked_behind_sink=true を直接渡すが、ここでは実際の台帳 shape を
+# 「空転検知と退避 + 完了通知」節の入力算出 jq (IDLE_STATE_JQ・commands/harness-orchestrate.md と同一・
+# 手動同期) へ通し、A/B 台帳が blocked_behind_sink=true へ解決すること + それを decision script に食わせて
+# evacuate=false (誤退避しない) になることを end-to-end で固定する ([16] 依存変換 end-to-end と同型・jq は
+# network 非依存で決定論のため smoke に乗る。IDLE_STATE_JQ の prose との一致は SELECT_IMPLEMENTER_JQ と
+# 同じく目視同期の受容コスト)。
+IDLE_STATE_JQ='
+  ( [ .steps[] | select((.issue.status != "closed issue") and (.pr.status != "merged pr")) ] ) as $nonterm
+  | ( [ .steps[] | select(.issue.status == "closed issue") | .id ] ) as $dep_terminal
+  | {
+      inflight_marker_count:
+        ( [ .steps[] | select((.dispatchMarker != null) or (.reviewLock != null) or (.issueReviewLock != null)) ] | length ),
+      all_terminal: ( ($nonterm | length) == 0 ),
+      all_sink:
+        ( ($nonterm | length) > 0
+          and ( $nonterm | all( (.issue.status == "need for human review") or (.pr.status == "need for human review") ) ) ),
+      blocked_behind_sink:
+        ( ( [ $nonterm[]
+              | select((.dispatchMarker == null) and (.reviewLock == null) and (.issueReviewLock == null))
+              | select( (.dependsOn // []) | map(. as $d | ($dep_terminal | index($d)) == null) | any ) ]
+            | length ) > 0 )
+    }'
+# A=need for human review (未終端 sink) / B=dependsOn:[A] の非終端 (ready for implementation・marker 無し)
+IDLE_E2E_SOMESINK='{"steps":[
+  {"id":"A","issue":{"number":1,"status":"need for human review","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null}},
+  {"id":"B","issue":{"number":2,"status":"ready for implementation","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null},"dependsOn":["A"]}
+]}'
+IDLE_E2E_STATE="$(printf '%s' "$IDLE_E2E_SOMESINK" | jq -c "$IDLE_STATE_JQ")"
+[ "$(printf '%s' "$IDLE_E2E_STATE" | jq -c '{all_sink,blocked_behind_sink,all_terminal,inflight_marker_count}')" \
+   = '{"all_sink":false,"blocked_behind_sink":true,"all_terminal":false,"inflight_marker_count":0}' ] \
+  || fail "[18/19] some-sink 台帳 shape が blocked_behind_sink=true へ解決しない (got: $IDLE_E2E_STATE)"
+# その入力を decision script へ (eligible=0・idle=2 = 閾値以上) -> evacuate=false (blocked は誤退避しない)
+IDLE_E2E_OUT="$(jq -cn --argjson st "$IDLE_E2E_STATE" \
+  '{eligible_count:0,inflight_marker_count:$st.inflight_marker_count,all_sink:$st.all_sink,blocked_behind_sink:$st.blocked_behind_sink,all_terminal:$st.all_terminal,current_idle_count:2,current_idle_notified:false,current_complete_notified:false}' \
+  | python3 "$IDLE_EVAC")"
+[ "$(printf '%s' "$IDLE_E2E_OUT" | jq -c '{evacuate,notify}')" = '{"evacuate":false,"notify":false}' ] \
+  || fail "[18/19] some-sink 台帳が idle 判定=偽 (evacuate=false) にならない (got: $IDLE_E2E_OUT)"
+# 負の自己検証: A を終端 (closed issue) にすると B は依存解消で blocked_behind_sink=false になる (ガードが vacuous でない)
+IDLE_E2E_UNBLOCKED='{"steps":[
+  {"id":"A","issue":{"number":1,"status":"closed issue","githubState":"closed"},"pr":{"number":null,"status":null,"githubState":null}},
+  {"id":"B","issue":{"number":2,"status":"ready for implementation","githubState":"open"},"pr":{"number":null,"status":null,"githubState":null},"dependsOn":["A"]}
+]}'
+[ "$(printf '%s' "$IDLE_E2E_UNBLOCKED" | jq -c "$IDLE_STATE_JQ" | jq -c '.blocked_behind_sink')" = 'false' ] \
+  || fail "[18/19] 依存先を終端にしても blocked_behind_sink=true のまま (ガードが恒真・vacuous)"
+echo "[18/19] some-sink 台帳 shape end-to-end 結線 OK (A=need for human review / B=dependsOn:[A] -> blocked_behind_sink=true -> evacuate=false / 依存終端で blocked=false の負の自己検証・IDLE_STATE_JQ は prose と手動同期)"
+
+# 不正入力 exit 2 の境界 (decide-statuses-post-action 等と同じ検証スタイル)
+IDLE_OK='{"eligible_count":0,"inflight_marker_count":0,"all_sink":false,"blocked_behind_sink":false,"all_terminal":false,"current_idle_count":0,"current_idle_notified":false,"current_complete_notified":false}'
+for bad in \
+  '{"inflight_marker_count":0,"all_sink":false,"blocked_behind_sink":false,"all_terminal":false,"current_idle_count":0,"current_idle_notified":false,"current_complete_notified":false}' \
+  '{"eligible_count":true,"inflight_marker_count":0,"all_sink":false,"blocked_behind_sink":false,"all_terminal":false,"current_idle_count":0,"current_idle_notified":false,"current_complete_notified":false}' \
+  '{"eligible_count":0,"inflight_marker_count":0,"all_sink":"no","blocked_behind_sink":false,"all_terminal":false,"current_idle_count":0,"current_idle_notified":false,"current_complete_notified":false}' \
+  '{"eligible_count":0,"inflight_marker_count":0,"all_sink":false,"blocked_behind_sink":false,"all_terminal":false,"current_idle_count":-1,"current_idle_notified":false,"current_complete_notified":false}' \
+  '{"eligible_count":0,"inflight_marker_count":0,"all_sink":false,"blocked_behind_sink":false,"all_terminal":false,"current_idle_count":0,"current_idle_notified":1,"current_complete_notified":false}' \
+  '[1,2]' \
+  'nope'
+do
+  ie_rc=0
+  ie_out="$(printf '%s' "$bad" | python3 "$IDLE_EVAC" 2>&1)" || ie_rc=$?
+  [ "$ie_rc" -eq 2 ] || fail "[18/19] decide-idle-evacuation 不正入力: exit 2 を期待したが $ie_rc (input: $bad)"
+  grep -qF "::error:: decide-idle-evacuation:" <<<"$ie_out" \
+    || fail "[18/19] decide-idle-evacuation 不正入力: script 名 prefix 付き ::error:: が無い (input: $bad / got: $ie_out)"
+done
+# 正常系ひな形が exit 0 (負のケースが vacuous でない確認)
+printf '%s' "$IDLE_OK" | python3 "$IDLE_EVAC" >/dev/null || fail "[18/19] decide-idle-evacuation 正常系ひな形が exit 0 でない"
+echo "[18/19] decide-idle-evacuation 不正入力 exit 2 境界 OK (欠損 / 型不正(int/bool) / 負値 / 非JSON / 非オブジェクト)"
+
+# --- 19. 完了 -----------------------------------------------------------------
+echo "[19/19] 全アサーション通過"
 echo "SMOKE OK"
