@@ -1155,6 +1155,41 @@ SELECT_ISSUE_WORKER_WANT='[{"id":"I5","number":205}]'
   || fail "選別(jq) issue review worker: issueReviewLock/githubState/cross-phase ガードの判定が期待と不一致 (got: $SELECT_ISSUE_WORKER_GOT / want: $SELECT_ISSUE_WORKER_WANT)"
 echo "[9/17] 選別(jq) issue reviewer / issue review worker の issueReviewLock + githubState + cross-phase ガード OK (issue #88・round1 🔴3: close済み/number未確定 issue を除外・in-flight step を除外・round2 🟡3: PR 実在 step を二重 dispatch から除外)"
 
+# 選別(jq) issue reviewer の dependsOn ガード(issue #117・#111/PR #115 follow-up)。
+# 上の I1〜I9 は dependsOn を持たず `(.dependsOn // [])` が常に `[]` で all(...) が恒真 = dependsOn
+# 述語が vacuous(空虚に充足)なまま。#111 が discover→enqueue に `Depends-on: #N` → 台帳 `dependsOn`
+# 変換を入れたことで「created issue が非終端依存の後ろで凍結する」issue 相の第一関門が実効化した。
+# ここでその第一関門を非 vacuous に固定する。
+#   - 検証対象は生きた第一関門 `SELECT_ISSUE_REVIEWER_JQ` の dependsOn 述語のみ(#117 決定 D1)。
+#     `SELECT_ISSUE_WORKER_JQ` の dependsOn 述語は `issue.status == "completed review"` select が
+#     dependsOn 参照前に落とす dead defense-in-depth(completed review 到達時点で全依存は closed issue
+#     済み)なので、到達不能な状態を人工合成してまで検証せず worker fixture は追加しない(#117 D1)。
+#   - 述語は実装役 W1〜W6(SELECT_DEPENDSON_INPUT)とバイト同一のため 6 境界 matrix は再現せず、
+#     frozen + eligible の最小 2 ケースで足りる(#117 D4)。
+#   - I1〜I9 と同じ exact-WANT 単一入力方式(#117 D2)。単一入力に created issue step を 2 つ同居させる:
+#     ID-FROZEN   … 非終端(starting review)の ID-NONTERM に依存 → $terminal に無く凍結 = 出力に出ない。
+#     ID-ELIGIBLE … 終端(closed issue)の ID-TERM に依存 → $terminal に入り eligible = 出力に出る。
+#   - **非 vacuity を担う load-bearing assert は frozen 側**: dependsOn 述語を jq から削る(= 述語恒真化)と
+#     ID-FROZEN が reviewer 出力へ漏れて exact-WANT が落ちる(I1〜I9 の「ガードを外すと I8 が漏れる」と同型)。
+#     ID-ELIGIBLE の包含は恒偽(always-false)を弾く対照で非 vacuity は担わない(述語を消しても eligible は通る)。
+#   - 本テストが検知するのは smoke コピーの回帰のみ。prod(harness-orchestrate.md)↔ smoke の同期は
+#     全 SELECT_*_JQ 共通の既存性質どおり手動(自動 drift 検知なし・#117 D3)。
+SELECT_ISSUE_DEPENDSON_INPUT='{"steps":[
+  {"id":"ID-TERM","issue":{"status":"closed issue","number":301,"githubState":"closed"},"pr":{"number":null}},
+  {"id":"ID-NONTERM","issue":{"status":"starting review","number":302,"githubState":"open"},"pr":{"number":null}},
+  {"id":"ID-FROZEN","issue":{"status":"created issue","number":303,"githubState":"open"},"pr":{"number":null},
+   "dependsOn":["ID-NONTERM"]},
+  {"id":"ID-ELIGIBLE","issue":{"status":"created issue","number":304,"githubState":"open"},"pr":{"number":null},
+   "dependsOn":["ID-TERM"]}
+]}'
+SELECT_ISSUE_DEPENDSON_GOT="$(printf '%s' "$SELECT_ISSUE_DEPENDSON_INPUT" | jq -c "$SELECT_ISSUE_REVIEWER_JQ")"
+# 期待 eligible: ID-ELIGIBLE のみ(依存先 ID-TERM が closed issue = 終端)。
+# 除外(frozen): ID-FROZEN(依存先 ID-NONTERM が非終端 = 凍結)。ID-NONTERM/ID-TERM 自身は status で脱落。
+SELECT_ISSUE_DEPENDSON_WANT='[{"id":"ID-ELIGIBLE","number":304}]'
+[ "$SELECT_ISSUE_DEPENDSON_GOT" = "$SELECT_ISSUE_DEPENDSON_WANT" ] \
+  || fail "選別(jq) issue reviewer: dependsOn ガードの判定が期待と不一致 — frozen が漏れた or eligible が出ない (got: $SELECT_ISSUE_DEPENDSON_GOT / want: $SELECT_ISSUE_DEPENDSON_WANT)"
+echo "[9/17] 選別(jq) issue reviewer の dependsOn ガード OK (issue #117・#111 follow-up: created issue が非終端依存の後ろで凍結・依存先 closed issue 後に eligible 化・非 vacuity は frozen 側 exact-WANT assert が担保・worker 述語は dead defense-in-depth で対象外)"
+
 # ledger_write 適用手続き(「ルーティング判定」節)の直接検証。
 # commands/harness-orchestrate.md の同手続きと同一のロジックをここで直接実行し、次を固定する:
 #   (i)  lw=null + clear_marker=true でも dispatchMarker が削除される (旧コードは
